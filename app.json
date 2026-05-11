@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "Orbita Messenger",
+    "slug": "orbita-messenger",
+    "scheme": "orbita",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.orbita.messenger"
+    },
+    "android": {
+      "package": "com.orbita.messenger",
+      "adaptiveIcon": {
+        "backgroundColor": "#E7F4FF"
+      }
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-contacts",
+      "expo-image-picker",
+      "expo-document-picker",
+      "expo-notifications",
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
