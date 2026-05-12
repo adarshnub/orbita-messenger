@@ -84,24 +84,48 @@ async function ensureProfile(supabase: SupabaseClient, user: User) {
   const metadataPhone = typeof user.user_metadata?.phone === "string" ? user.user_metadata.phone : "";
   const phone = user.phone ? normalizePhone(user.phone) : metadataPhone ? normalizePhone(metadataPhone) : null;
   const phoneHash = phone ? await sha256(phone) : null;
-  const displayName =
+  const displayNameFromAuth =
     typeof user.user_metadata?.display_name === "string" && user.user_metadata.display_name.trim()
       ? user.user_metadata.display_name.trim()
       : "You";
 
-  const { data, error } = await supabase
+  const now = new Date().toISOString();
+
+  const { data: existing, error: selectError } = await supabase
     .from("profiles")
-    .upsert(
-      {
-        id: user.id,
-        display_name: displayName,
+    .select("id")
+    .eq("id", user.id)
+    .maybeSingle();
+
+  if (selectError) throw selectError;
+
+  if (existing) {
+    const { data, error } = await supabase
+      .from("profiles")
+      .update({
         phone,
         phone_hash: phoneHash,
         is_online: true,
-        last_seen_at: new Date().toISOString(),
-      },
-      { onConflict: "id" },
-    )
+        last_seen_at: now,
+      })
+      .eq("id", user.id)
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  }
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .insert({
+      id: user.id,
+      display_name: displayNameFromAuth,
+      phone,
+      phone_hash: phoneHash,
+      is_online: true,
+      last_seen_at: now,
+    })
     .select()
     .single();
 
