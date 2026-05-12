@@ -80,6 +80,28 @@ function mapMessage(row: Record<string, unknown>) {
   };
 }
 
+async function createRealtimeEvents(
+  supabase: SupabaseClient,
+  targetUserIds: string[],
+  kind: string,
+  conversationId: string | null,
+  payload: Record<string, unknown> = {},
+) {
+  const uniqueTargetIds = [...new Set(targetUserIds)].filter(Boolean);
+  if (!uniqueTargetIds.length) return;
+
+  const { error } = await supabase.from("realtime_events").insert(
+    uniqueTargetIds.map((targetUserId) => ({
+      target_user_id: targetUserId,
+      conversation_id: conversationId,
+      kind,
+      payload,
+    })),
+  );
+
+  if (error) throw error;
+}
+
 async function ensureProfile(supabase: SupabaseClient, user: User) {
   const metadataPhone = typeof user.user_metadata?.phone === "string" ? user.user_metadata.phone : "";
   const phone = user.phone ? normalizePhone(user.phone) : metadataPhone ? normalizePhone(metadataPhone) : null;
@@ -192,6 +214,54 @@ async function loadMessages(supabase: SupabaseClient, userId: string, conversati
   return (data ?? []).map(mapMessage);
 }
 
+async function unreadCountForConversation(supabase: SupabaseClient, userId: string, conversationId: string) {
+  const { data: messages, error: messageError } = await supabase
+    .from("messages")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .neq("sender_id", userId)
+    .is("deleted_at", null);
+
+  if (messageError) throw messageError;
+  const messageIds = (messages ?? []).map((message) => message.id);
+  if (!messageIds.length) return 0;
+
+  const { count, error } = await supabase
+    .from("message_receipts")
+    .select("message_id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .in("message_id", messageIds)
+    .neq("status", "read");
+
+  if (error) throw error;
+  return count ?? 0;
+}
+
+async function markConversationRead(supabase: SupabaseClient, userId: string, conversationId: string) {
+  await getConversation(supabase, userId, conversationId);
+
+  const { data: messages, error: messageError } = await supabase
+    .from("messages")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .neq("sender_id", userId)
+    .is("deleted_at", null);
+
+  if (messageError) throw messageError;
+  const messageIds = (messages ?? []).map((message) => message.id);
+  if (!messageIds.length) return;
+
+  const now = new Date().toISOString();
+  const { error } = await supabase
+    .from("message_receipts")
+    .update({ status: "read", delivered_at: now, read_at: now })
+    .eq("user_id", userId)
+    .in("message_id", messageIds)
+    .neq("status", "read");
+
+  if (error) throw error;
+}
+
 async function loadConversations(supabase: SupabaseClient, userId: string) {
   const { data: memberships, error: membershipError } = await supabase
     .from("conversation_participants")
@@ -249,6 +319,7 @@ async function loadConversations(supabase: SupabaseClient, userId: string) {
         updatedAt: conversation.updated_at,
         participants: mappedParticipants,
         lastMessage: lastMessages?.[0] ? mapMessage(lastMessages[0]) : null,
+        unreadCount: await unreadCountForConversation(supabase, userId, conversation.id),
       };
     }),
   );
@@ -324,6 +395,10 @@ async function createDirectConversation(supabase: SupabaseClient, userId: string
     { conversation_id: conversation.id, user_id: otherUserId, role: "member" },
   ]);
   if (participantError) throw participantError;
+
+  await createRealtimeEvents(supabase, [otherUserId], "direct_conversation_created", conversation.id, {
+    createdBy: userId,
+  });
 
   const created = (await loadConversations(supabase, userId)).find((item) => item.id === conversation.id);
   if (!created) throw new Error("Unable to load created conversation.");
@@ -427,6 +502,12 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
     ];
     const { error: participantError } = await supabase.from("conversation_participants").insert(participants);
     if (participantError) throw participantError;
+
+    await createRealtimeEvents(supabase, memberIds, "group_created", conversation.id, {
+      title,
+      createdBy: user.id,
+    });
+
     const created = (await loadConversations(supabase, user.id)).find((item) => item.id === conversation.id);
     if (!created) throw new Error("Unable to load created group.");
     return { conversation: created };
@@ -447,6 +528,11 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
       { onConflict: "conversation_id,user_id" },
     );
     if (error) throw error;
+
+    await createRealtimeEvents(supabase, memberIds, "group_member_added", conversationId, {
+      addedBy: user.id,
+    });
+
     const updated = (await loadConversations(supabase, user.id)).find((item) => item.id === conversationId);
     if (!updated) throw new Error("Unable to load updated group.");
     return { conversation: updated };
@@ -454,6 +540,11 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
 
   if (action === "list_messages") {
     return { messages: await loadMessages(supabase, user.id, requiredString(payload, "conversationId")) };
+  }
+
+  if (action === "mark_conversation_read") {
+    await markConversationRead(supabase, user.id, requiredString(payload, "conversationId"));
+    return { ok: true };
   }
 
   if (action === "send_message") {
@@ -486,12 +577,24 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
       .neq("user_id", user.id);
 
     if (participants?.length) {
-      await supabase.from("message_receipts").insert(
+      const { error: receiptError } = await supabase.from("message_receipts").insert(
         participants.map((participant) => ({
           message_id: message.id,
           user_id: participant.user_id,
           status: "sent",
         })),
+      );
+      if (receiptError) throw receiptError;
+
+      await createRealtimeEvents(
+        supabase,
+        participants.map((participant) => participant.user_id),
+        "message_created",
+        conversationId,
+        {
+          messageId: message.id,
+          senderId: user.id,
+        },
       );
     }
 

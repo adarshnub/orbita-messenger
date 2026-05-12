@@ -29,6 +29,7 @@ import {
   supabase,
   verifyEmailOtp,
 } from "@/lib/supabase";
+import { subscribeMessengerRealtime } from "@/lib/messengerRealtime";
 import { colors, radii, shadow } from "@/theme/colors";
 
 type Tab = "chats" | "status" | "contacts" | "calls" | "settings";
@@ -288,6 +289,12 @@ function MessengerShell({ session }: { session: Session }) {
   const [profileOpen, setProfileOpen] = useState(false);
 
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
+  const conversationIds = useMemo(() => conversations.map((conversation) => conversation.id), [conversations]);
+  const conversationKey = conversationIds.join("|");
+  const unreadTotal = useMemo(
+    () => conversations.reduce((total, conversation) => total + conversation.unreadCount, 0),
+    [conversations],
+  );
 
   const loadBootstrap = useCallback(async () => {
     if (!supabase) return;
@@ -309,11 +316,13 @@ function MessengerShell({ session }: { session: Session }) {
     try {
       const data = await messengerApi.listMessages(conversationId);
       setSelectedMessages(data.messages);
+      await messengerApi.markConversationRead(conversationId);
+      await loadBootstrap();
       setError("");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Unable to load messages.");
     }
-  }, []);
+  }, [loadBootstrap]);
 
   useEffect(() => {
     loadBootstrap();
@@ -328,25 +337,28 @@ function MessengerShell({ session }: { session: Session }) {
   }, [loadMessages, selectedId]);
 
   useEffect(() => {
-    if (!supabase) return undefined;
-    const client = supabase;
-    const channel = client
-      .channel(`messenger-refresh:${session.user.id}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, () => {
-        loadBootstrap();
-        if (selectedId) loadMessages(selectedId);
-      })
-      .on("postgres_changes", { event: "*", schema: "public", table: "conversations" }, loadBootstrap)
-      .on("postgres_changes", { event: "*", schema: "public", table: "conversation_participants" }, loadBootstrap)
-      .on("postgres_changes", { event: "*", schema: "public", table: "contacts" }, loadBootstrap)
-      .on("postgres_changes", { event: "*", schema: "public", table: "profiles" }, loadBootstrap)
-      .on("postgres_changes", { event: "*", schema: "public", table: "status_posts" }, loadBootstrap)
-      .subscribe();
+    if (!profile) return undefined;
 
-    return () => {
-      client.removeChannel(channel);
-    };
-  }, [loadBootstrap, loadMessages, selectedId, session.user.id]);
+    return subscribeMessengerRealtime({
+      conversationIds,
+      userId: profile.id,
+      onConversationEvent: (conversationId) => {
+        void loadBootstrap();
+        if (conversationId === selectedId) {
+          void loadMessages(conversationId);
+        }
+      },
+      onRealtimeEvent: (conversationId) => {
+        void loadBootstrap();
+        if (conversationId && conversationId === selectedId) {
+          void loadMessages(conversationId);
+        }
+      },
+      onUserEvent: () => {
+        void loadBootstrap();
+      },
+    });
+  }, [conversationKey, conversationIds, loadBootstrap, loadMessages, profile, selectedId]);
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
@@ -368,7 +380,9 @@ function MessengerShell({ session }: { session: Session }) {
     if (!selected || !body) return;
     await run(async () => {
       const result = await messengerApi.sendMessage({ conversationId: selected.id, kind, body });
-      setSelectedMessages((current) => [...current, result.message]);
+      setSelectedMessages((current) =>
+        current.some((message) => message.id === result.message.id) ? current : [...current, result.message],
+      );
       setDraft("");
       await loadBootstrap();
     });
@@ -435,7 +449,7 @@ function MessengerShell({ session }: { session: Session }) {
           </View>
         </View>
       </View>
-      {!isWide ? <BottomTabs activeTab={activeTab} onChange={changeTab} /> : null}
+      {!isWide ? <BottomTabs activeTab={activeTab} onChange={changeTab} unreadTotal={unreadTotal} /> : null}
       {busy ? <View style={styles.busyOverlay}><ActivityIndicator color="#FFFFFF" /></View> : null}
       <NewChatModal
         contacts={contacts}
@@ -565,15 +579,35 @@ function Sidebar({
   );
 }
 
-function BottomTabs({ activeTab, onChange }: { activeTab: Tab; onChange: (tab: Tab) => void }) {
+function BottomTabs({
+  activeTab,
+  onChange,
+  unreadTotal,
+}: {
+  activeTab: Tab;
+  onChange: (tab: Tab) => void;
+  unreadTotal: number;
+}) {
   return (
     <View style={styles.bottomTabs}>
       {tabs.map((tab) => (
         <Pressable accessibilityLabel={tab.label} key={tab.id} onPress={() => onChange(tab.id)} style={styles.bottomTab}>
-          <Ionicons color={activeTab === tab.id ? colors.primaryDark : colors.muted} name={tab.icon} size={24} />
+          <View>
+            <Ionicons color={activeTab === tab.id ? colors.primaryDark : colors.muted} name={tab.icon} size={24} />
+            {tab.id === "chats" && unreadTotal > 0 ? <UnreadBadge count={unreadTotal} compact /> : null}
+          </View>
           <Text style={[styles.bottomTabLabel, activeTab === tab.id && styles.bottomTabLabelActive]}>{tab.label}</Text>
         </Pressable>
       ))}
+    </View>
+  );
+}
+
+function UnreadBadge({ compact, count }: { compact?: boolean; count: number }) {
+  const label = count > 99 ? "99+" : String(count);
+  return (
+    <View style={[styles.unreadBadge, compact && styles.unreadBadgeCompact]}>
+      <Text style={styles.unreadBadgeText}>{label}</Text>
     </View>
   );
 }
@@ -637,9 +671,12 @@ function Panel({
                     {conversation.lastMessage ? formatTime(conversation.lastMessage.createdAt) : ""}
                   </Text>
                 </View>
-                <Text numberOfLines={1} style={styles.chatPreview}>
-                  {conversation.lastMessage?.body ?? `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`}
-                </Text>
+                <View style={styles.rowBetween}>
+                  <Text numberOfLines={1} style={[styles.chatPreview, conversation.unreadCount > 0 && styles.chatPreviewUnread]}>
+                    {conversation.lastMessage?.body ?? `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`}
+                  </Text>
+                  {conversation.unreadCount > 0 ? <UnreadBadge count={conversation.unreadCount} /> : null}
+                </View>
               </View>
             </Pressable>
           ))
@@ -1320,6 +1357,26 @@ const styles = StyleSheet.create({
   chatTitle: { color: colors.ink, fontSize: 15, fontWeight: "800" },
   chatTime: { color: colors.faint, fontSize: 11 },
   chatPreview: { color: colors.muted, fontSize: 12, lineHeight: 18 },
+  chatPreviewUnread: { color: colors.ink, fontWeight: "800" },
+  unreadBadge: {
+    minWidth: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 6,
+    backgroundColor: colors.primaryDark,
+  },
+  unreadBadgeCompact: {
+    position: "absolute",
+    right: -12,
+    top: -8,
+    minWidth: 19,
+    height: 19,
+    borderRadius: 10,
+    paddingHorizontal: 5,
+  },
+  unreadBadgeText: { color: "#FFFFFF", fontSize: 11, fontWeight: "900" },
   chatPane: {
     flex: 1,
     minWidth: 0,

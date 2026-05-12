@@ -18,6 +18,7 @@ export type BackendConversation = {
   updatedAt: string;
   participants: Array<BackendProfile & { role: "owner" | "admin" | "member" }>;
   lastMessage: BackendMessage | null;
+  unreadCount: number;
 };
 
 export type BackendMessage = {

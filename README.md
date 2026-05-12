@@ -56,3 +56,5 @@ supabase db push
 supabase functions deploy messenger-api
 supabase functions deploy match-contacts
 ```
+
+Realtime messaging is event-driven through Supabase Realtime. The app subscribes to the current user's membership/receipt rows, targeted `realtime_events`, and each active conversation's message/participant stream, then refreshes through `messenger-api`; it does not poll. The `002_realtime_events.sql` migration is required for instant group-add and message notifications.

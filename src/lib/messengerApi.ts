@@ -10,6 +10,7 @@ type ApiAction =
   | "create_group"
   | "add_group_members"
   | "list_messages"
+  | "mark_conversation_read"
   | "send_message"
   | "create_status"
   | "list_statuses";
@@ -63,6 +64,9 @@ export const messengerApi = {
   },
   listMessages(conversationId: string) {
     return callApi<{ messages: BackendMessage[] }>("list_messages", { conversationId });
+  },
+  markConversationRead(conversationId: string) {
+    return callApi<{ ok: true }>("mark_conversation_read", { conversationId });
   },
   sendMessage(input: { conversationId: string; kind: BackendMessage["kind"]; body: string }) {
     return callApi<{ message: BackendMessage }>("send_message", input);
