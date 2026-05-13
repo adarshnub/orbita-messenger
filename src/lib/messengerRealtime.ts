@@ -3,6 +3,7 @@ import { supabase } from "./supabase";
 type RealtimeHandlers = {
   conversationIds: string[];
   onConversationEvent: (conversationId: string) => void;
+  onSubscribed?: () => void;
   onRealtimeEvent: (conversationId: string | null) => void;
   onUserEvent: () => void;
   userId: string;
@@ -11,6 +12,7 @@ type RealtimeHandlers = {
 export function subscribeMessengerRealtime({
   conversationIds,
   onConversationEvent,
+  onSubscribed,
   onRealtimeEvent,
   onUserEvent,
   userId,
@@ -65,7 +67,9 @@ export function subscribeMessengerRealtime({
           onRealtimeEvent(conversationId);
         },
       )
-      .subscribe(),
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") onSubscribed?.();
+      }),
   ];
 
   conversationIds.forEach((conversationId) => {

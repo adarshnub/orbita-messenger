@@ -8,7 +8,7 @@ type ApiRequest = {
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-orbita-signature",
 };
 
 function json(body: Record<string, unknown>, status = 200) {
@@ -51,6 +51,35 @@ async function sha256(value: string) {
     .join("");
 }
 
+async function hmacSha256(value: string, secret: string) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(signature))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function timingSafeEqual(a: string, b: string) {
+  if (a.length !== b.length) return false;
+  let result = 0;
+  for (let index = 0; index < a.length; index++) {
+    result |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  }
+  return result === 0;
+}
+
+async function verifyIntegrationSignature(rawBody: string, signature: string | null, secret: string | undefined) {
+  if (!signature || !secret) return false;
+  const expected = `sha256=${await hmacSha256(rawBody, secret)}`;
+  return timingSafeEqual(signature, expected);
+}
+
 function mapProfile(row: Record<string, unknown>) {
   return {
     id: row.id,
@@ -78,6 +107,61 @@ function mapMessage(row: Record<string, unknown>) {
     createdAt: row.created_at,
     status: "sent",
   };
+}
+
+async function insertMessageWithReceipts(
+  supabase: SupabaseClient,
+  conversationId: string,
+  senderId: string,
+  kind: string,
+  body: string,
+) {
+  const { data: message, error } = await supabase
+    .from("messages")
+    .insert({
+      conversation_id: conversationId,
+      sender_id: senderId,
+      kind,
+      encrypted_payload: { body },
+    })
+    .select()
+    .single();
+  if (error) throw error;
+
+  await supabase
+    .from("conversations")
+    .update({ updated_at: new Date().toISOString() })
+    .eq("id", conversationId);
+
+  const { data: participants } = await supabase
+    .from("conversation_participants")
+    .select("user_id")
+    .eq("conversation_id", conversationId)
+    .neq("user_id", senderId);
+
+  if (participants?.length) {
+    const { error: receiptError } = await supabase.from("message_receipts").insert(
+      participants.map((participant) => ({
+        message_id: message.id,
+        user_id: participant.user_id,
+        status: "sent",
+      })),
+    );
+    if (receiptError) throw receiptError;
+
+    await createRealtimeEvents(
+      supabase,
+      participants.map((participant) => participant.user_id),
+      "message_created",
+      conversationId,
+      {
+        messageId: message.id,
+        senderId,
+      },
+    );
+  }
+
+  return message;
 }
 
 async function createRealtimeEvents(
@@ -405,6 +489,180 @@ async function createDirectConversation(supabase: SupabaseClient, userId: string
   return created;
 }
 
+async function ensureTaskmanagerAgentProfile(
+  supabase: SupabaseClient,
+  taskmanagerOrgId: string,
+  displayName: string,
+) {
+  const { data: existingLink, error: linkError } = await supabase
+    .from("taskmanager_agent_links")
+    .select("agent_profile_id")
+    .eq("taskmanager_org_id", taskmanagerOrgId)
+    .limit(1)
+    .maybeSingle();
+  if (linkError) throw linkError;
+  if (existingLink?.agent_profile_id) return existingLink.agent_profile_id as string;
+
+  const safeOrg = taskmanagerOrgId.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+  const email = `orbita-agent+${safeOrg}@taskmanager.local`;
+  const { data: created, error: createError } = await supabase.auth.admin.createUser({
+    email,
+    email_confirm: true,
+    user_metadata: {
+      display_name: displayName,
+      taskmanager_org_id: taskmanagerOrgId,
+      kind: "taskmanager_agent",
+    },
+  });
+  if (createError || !created.user) {
+    throw createError ?? new Error("Unable to create Orbita agent user.");
+  }
+
+  const { error: profileError } = await supabase.from("profiles").upsert({
+    id: created.user.id,
+    display_name: displayName,
+    about: "Task Manager agent",
+    is_online: true,
+    last_seen_at: new Date().toISOString(),
+  });
+  if (profileError) throw profileError;
+
+  return created.user.id;
+}
+
+async function forwardTaskmanagerInbound(
+  supabase: SupabaseClient,
+  conversationId: string,
+  senderId: string,
+  messageId: string,
+  body: string,
+) {
+  const webhookUrl = Deno.env.get("TASK_MANAGER_ORBITA_WEBHOOK_URL");
+  const secret = Deno.env.get("TASK_MANAGER_ORBITA_SECRET");
+  if (!webhookUrl || !secret) return;
+
+  const { data: link, error } = await supabase
+    .from("taskmanager_agent_links")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .eq("enabled", true)
+    .maybeSingle();
+  if (error) throw error;
+  if (!link || link.agent_profile_id === senderId) return;
+
+  const raw = JSON.stringify({
+    taskmanagerOrgId: link.taskmanager_org_id,
+    taskmanagerUserId: link.taskmanager_user_id,
+    conversationId,
+    orbitaUserId: senderId,
+    messageId,
+    text: body,
+    sentAt: new Date().toISOString(),
+  });
+
+  const response = await fetch(webhookUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-orbita-signature": `sha256=${await hmacSha256(raw, secret)}`,
+    },
+    body: raw,
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    console.error(`Task Manager Orbita webhook failed: ${response.status} ${text}`);
+  }
+}
+
+async function handleServiceAction(
+  supabase: SupabaseClient,
+  action: string,
+  payload: Record<string, unknown>,
+) {
+  if (action === "link_taskmanager_user") {
+    const taskmanagerOrgId = requiredString(payload, "taskmanagerOrgId");
+    const taskmanagerUserId = requiredString(payload, "taskmanagerUserId");
+    const phone = normalizePhone(requiredString(payload, "phone"));
+    const agentDisplayName = (optionalString(payload, "agentDisplayName") || "Task Manager Agent").slice(0, 80);
+
+    const { data: orbitaProfile, error: profileError } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("phone", phone)
+      .maybeSingle();
+    if (profileError) throw profileError;
+    if (!orbitaProfile) throw new Error("No Orbita user found for that phone number.");
+
+    const { data: existing, error: existingError } = await supabase
+      .from("taskmanager_agent_links")
+      .select("*")
+      .eq("taskmanager_org_id", taskmanagerOrgId)
+      .eq("taskmanager_user_id", taskmanagerUserId)
+      .maybeSingle();
+    if (existingError) throw existingError;
+    if (existing?.enabled) {
+      return {
+        orbitaProfileId: existing.orbita_user_id,
+        conversationId: existing.conversation_id,
+      };
+    }
+
+    const agentProfileId = await ensureTaskmanagerAgentProfile(supabase, taskmanagerOrgId, agentDisplayName);
+    const conversation = await createDirectConversation(supabase, agentProfileId, orbitaProfile.id as string);
+
+    const { data: link, error: linkError } = await supabase
+      .from("taskmanager_agent_links")
+      .upsert(
+        {
+          taskmanager_org_id: taskmanagerOrgId,
+          taskmanager_user_id: taskmanagerUserId,
+          orbita_user_id: orbitaProfile.id,
+          agent_profile_id: agentProfileId,
+          conversation_id: conversation.id,
+          enabled: true,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "taskmanager_org_id,taskmanager_user_id" },
+      )
+      .select()
+      .single();
+    if (linkError) throw linkError;
+
+    return {
+      orbitaProfileId: link.orbita_user_id,
+      conversationId: link.conversation_id,
+    };
+  }
+
+  if (action === "send_agent_message") {
+    const taskmanagerOrgId = requiredString(payload, "taskmanagerOrgId");
+    const taskmanagerUserId = requiredString(payload, "taskmanagerUserId");
+    const conversationId = requiredString(payload, "conversationId");
+    const body = requiredString(payload, "body").slice(0, 5000);
+
+    const { data: link, error } = await supabase
+      .from("taskmanager_agent_links")
+      .select("*")
+      .eq("taskmanager_org_id", taskmanagerOrgId)
+      .eq("taskmanager_user_id", taskmanagerUserId)
+      .eq("conversation_id", conversationId)
+      .eq("enabled", true)
+      .single();
+    if (error) throw error;
+
+    const message = await insertMessageWithReceipts(
+      supabase,
+      conversationId,
+      link.agent_profile_id as string,
+      "text",
+      body,
+    );
+    return { message: mapMessage(message) };
+  }
+
+  throw new Error(`Unknown service action: ${action}`);
+}
+
 async function handleAction(supabase: SupabaseClient, user: User, action: string, payload: Record<string, unknown>) {
   await ensureProfile(supabase, user);
 
@@ -553,50 +811,10 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
     const kind = (optionalString(payload, "kind") || "text") as string;
     await getConversation(supabase, user.id, conversationId);
 
-    const { data: message, error } = await supabase
-      .from("messages")
-      .insert({
-        conversation_id: conversationId,
-        sender_id: user.id,
-        kind,
-        encrypted_payload: { body },
-      })
-      .select()
-      .single();
-    if (error) throw error;
-
-    await supabase
-      .from("conversations")
-      .update({ updated_at: new Date().toISOString() })
-      .eq("id", conversationId);
-
-    const { data: participants } = await supabase
-      .from("conversation_participants")
-      .select("user_id")
-      .eq("conversation_id", conversationId)
-      .neq("user_id", user.id);
-
-    if (participants?.length) {
-      const { error: receiptError } = await supabase.from("message_receipts").insert(
-        participants.map((participant) => ({
-          message_id: message.id,
-          user_id: participant.user_id,
-          status: "sent",
-        })),
-      );
-      if (receiptError) throw receiptError;
-
-      await createRealtimeEvents(
-        supabase,
-        participants.map((participant) => participant.user_id),
-        "message_created",
-        conversationId,
-        {
-          messageId: message.id,
-          senderId: user.id,
-        },
-      );
-    }
+    const message = await insertMessageWithReceipts(supabase, conversationId, user.id, kind, body);
+    await forwardTaskmanagerInbound(supabase, conversationId, user.id, message.id as string, body).catch((error) => {
+      console.error(error instanceof Error ? error.message : error);
+    });
 
     return { message: mapMessage(message) };
   }
@@ -637,15 +855,28 @@ serve(async (req) => {
       return json({ error: "Missing Supabase function environment." }, 500);
     }
 
+    const supabase = createClient(supabaseUrl, serviceRoleKey);
+    const rawBody = await req.text();
+    const body = JSON.parse(rawBody) as ApiRequest;
+    const serviceActions = new Set(["link_taskmanager_user", "send_agent_message"]);
+
+    if (serviceActions.has(body.action)) {
+      const validSignature = await verifyIntegrationSignature(
+        rawBody,
+        req.headers.get("x-orbita-signature"),
+        Deno.env.get("TASK_MANAGER_ORBITA_SECRET"),
+      );
+      if (!validSignature) return json({ error: "Invalid Orbita integration signature." }, 401);
+      const result = await handleServiceAction(supabase, body.action, body.payload ?? {});
+      return json(result);
+    }
+
     const authHeader = req.headers.get("Authorization");
     if (!authHeader) return json({ error: "Missing authorization." }, 401);
 
-    const supabase = createClient(supabaseUrl, serviceRoleKey);
     const jwt = authHeader.replace("Bearer ", "");
     const { data, error } = await supabase.auth.getUser(jwt);
     if (error || !data.user) return json({ error: "Invalid session." }, 401);
-
-    const body = (await req.json()) as ApiRequest;
     const result = await handleAction(supabase, data.user, body.action, body.payload ?? {});
     return json(result);
   } catch (error) {

@@ -3,6 +3,7 @@ import { Session } from "@supabase/supabase-js";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
   Modal,
   Platform,
   Pressable,
@@ -339,26 +340,40 @@ function MessengerShell({ session }: { session: Session }) {
   useEffect(() => {
     if (!profile) return undefined;
 
+    const refreshActiveConversation = (conversationId = selectedId) => {
+      void loadBootstrap();
+      if (conversationId) {
+        void loadMessages(conversationId);
+      }
+    };
+
     return subscribeMessengerRealtime({
       conversationIds,
       userId: profile.id,
       onConversationEvent: (conversationId) => {
-        void loadBootstrap();
-        if (conversationId === selectedId) {
-          void loadMessages(conversationId);
-        }
+        refreshActiveConversation(conversationId === selectedId ? conversationId : "");
       },
       onRealtimeEvent: (conversationId) => {
-        void loadBootstrap();
-        if (conversationId && conversationId === selectedId) {
-          void loadMessages(conversationId);
-        }
+        refreshActiveConversation(conversationId && conversationId === selectedId ? conversationId : "");
+      },
+      onSubscribed: () => {
+        refreshActiveConversation();
       },
       onUserEvent: () => {
         void loadBootstrap();
       },
     });
-  }, [conversationKey, conversationIds, loadBootstrap, loadMessages, profile, selectedId]);
+  }, [conversationKey, loadBootstrap, loadMessages, profile, selectedId]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active") return;
+      void loadBootstrap();
+      if (selectedId) void loadMessages(selectedId);
+    });
+
+    return () => subscription.remove();
+  }, [loadBootstrap, loadMessages, selectedId]);
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
