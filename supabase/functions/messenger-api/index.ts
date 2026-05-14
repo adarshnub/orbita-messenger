@@ -528,12 +528,17 @@ async function ensureTaskmanagerAgentProfile(
       kind: "taskmanager_agent",
     },
   });
-  if (createError || !created.user) {
-    throw createError ?? new Error("Unable to create Orbita agent user.");
+  let agentUser = created.user;
+  if (createError || !agentUser) {
+    const existingAgent = await findAuthUserByEmail(supabase, email);
+    if (!existingAgent) {
+      throw createError ?? new Error("Unable to create Orbita agent user.");
+    }
+    agentUser = existingAgent;
   }
 
   const { error: profileError } = await supabase.from("profiles").upsert({
-    id: created.user.id,
+    id: agentUser.id,
     display_name: displayName,
     about: "Task Manager agent",
     is_online: true,
@@ -541,7 +546,18 @@ async function ensureTaskmanagerAgentProfile(
   });
   if (profileError) throw profileError;
 
-  return created.user.id;
+  return agentUser.id;
+}
+
+async function findAuthUserByEmail(supabase: SupabaseClient, email: string) {
+  for (let page = 1; page <= 20; page++) {
+    const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 100 });
+    if (error) throw error;
+    const user = data.users.find((item) => item.email?.toLowerCase() === email.toLowerCase());
+    if (user) return user;
+    if (data.users.length < 100) return null;
+  }
+  return null;
 }
 
 async function forwardTaskmanagerInbound(
