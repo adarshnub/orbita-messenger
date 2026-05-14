@@ -20,19 +20,68 @@ async function callApi<T>(action: ApiAction, payload: Record<string, unknown> = 
     throw new Error("Supabase is not configured. Add .env credentials first.");
   }
 
+  const token = await getAccessToken();
   const { data, error } = await supabase.functions.invoke("messenger-api", {
     body: { action, payload },
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
   });
 
-  if (error) {
-    throw new Error(error.message);
+  if (error && isExpiredTokenError(error.message)) {
+    const retryToken = await getAccessToken({ forceRefresh: true });
+    const retry = await supabase.functions.invoke("messenger-api", {
+      body: { action, payload },
+      headers: {
+        Authorization: `Bearer ${retryToken}`,
+      },
+    });
+    if (retry.error) {
+      throw new Error(retry.error.message);
+    }
+    if (retry.data?.error) {
+      throw new Error(retry.data.error);
+    }
+    return retry.data as T;
   }
+
+  if (error) throw new Error(error.message);
 
   if (data?.error) {
     throw new Error(data.error);
   }
 
   return data as T;
+}
+
+async function getAccessToken(options: { forceRefresh?: boolean } = {}) {
+  if (!supabase) throw new Error("Supabase is not configured. Add .env credentials first.");
+
+  if (options.forceRefresh) {
+    const { data, error } = await supabase.auth.refreshSession();
+    if (error || !data.session?.access_token) {
+      await supabase.auth.signOut();
+      throw new Error("Your session expired. Please sign in again.");
+    }
+    return data.session.access_token;
+  }
+
+  const { data, error } = await supabase.auth.getSession();
+  if (error || !data.session?.access_token) {
+    await supabase.auth.signOut();
+    throw new Error("Your session expired. Please sign in again.");
+  }
+
+  const expiresAt = data.session.expires_at ? data.session.expires_at * 1000 : 0;
+  if (expiresAt && expiresAt < Date.now() + 60_000) {
+    return getAccessToken({ forceRefresh: true });
+  }
+
+  return data.session.access_token;
+}
+
+function isExpiredTokenError(message: string) {
+  return /expired|invalid.*token|token.*invalid|jwt/i.test(message);
 }
 
 export const messengerApi = {

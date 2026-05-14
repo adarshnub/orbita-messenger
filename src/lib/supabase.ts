@@ -39,12 +39,20 @@ export async function signInWithEmail(email: string, phone: string) {
   });
 }
 
-export async function verifyEmailOtp(email: string, token: string) {
+export async function verifyEmailOtp(email: string, token: string, phone?: string) {
   if (!supabase) {
     return { error: new Error("Supabase is not configured. Add .env credentials first.") };
   }
 
-  return supabase.auth.verifyOtp({ email, token, type: "email" });
+  const result = await supabase.auth.verifyOtp({ email, token, type: "email" });
+  if (!result.error && phone) {
+    await supabase.auth.updateUser({
+      data: {
+        phone,
+      },
+    });
+  }
+  return result;
 }
 
 export async function signInWithDevOtpBypass(email: string, phone: string) {

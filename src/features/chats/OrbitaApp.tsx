@@ -44,7 +44,7 @@ const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap
 ];
 
 const DEV_BYPASS_OTP = "123456";
-const DEV_OTP_ENABLED = __DEV__;
+const DEV_OTP_ENABLED = __DEV__ || process.env.EXPO_PUBLIC_ENABLE_DEV_OTP === "1";
 
 function initials(name: string) {
   return name
@@ -193,7 +193,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
     setLoading(true);
     const result = isDevBypass
       ? await signInWithDevOtpBypass(normalizedEmail, normalizedPhone)
-      : await verifyEmailOtp(normalizedEmail, otp.trim());
+      : await verifyEmailOtp(normalizedEmail, otp.trim(), normalizedPhone);
     setLoading(false);
 
     if (result.error) {

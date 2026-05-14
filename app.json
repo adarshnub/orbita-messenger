@@ -17,7 +17,12 @@
       "package": "com.orbita.messenger",
       "adaptiveIcon": {
         "backgroundColor": "#E7F4FF"
-      }
+      },
+      "permissions": [
+        "android.permission.READ_CONTACTS",
+        "android.permission.WRITE_CONTACTS",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "bundler": "metro",
@@ -34,6 +39,13 @@
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "b3ad437f-4130-4eb6-aa01-d7a40a83e78a"
+      }
+    },
+    "owner": "adarshnub"
   }
 }

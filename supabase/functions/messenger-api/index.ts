@@ -205,6 +205,20 @@ async function ensureProfile(supabase: SupabaseClient, user: User) {
 
   if (selectError) throw selectError;
 
+  if (phone) {
+    const { data: phoneOwner, error: phoneOwnerError } = await supabase
+      .from("profiles")
+      .select("id")
+      .eq("phone", phone)
+      .maybeSingle();
+    if (phoneOwnerError) throw phoneOwnerError;
+    if (phoneOwner && phoneOwner.id !== user.id) {
+      throw new Error(
+        "This phone number is already linked to another Orbita login. Use the original email for this phone, or remove the old profile before signing in with a new account.",
+      );
+    }
+  }
+
   if (existing) {
     const { data, error } = await supabase
       .from("profiles")
@@ -880,7 +894,24 @@ serve(async (req) => {
     const result = await handleAction(supabase, data.user, body.action, body.payload ?? {});
     return json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unexpected server error.";
+    const message = errorMessage(error);
+    console.error(message, error);
     return json({ error: message }, 400);
   }
 });
+
+function errorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const message = record.message ?? record.error_description ?? record.details ?? record.hint;
+    if (typeof message === "string" && message.trim()) return message;
+    try {
+      return JSON.stringify(record);
+    } catch {
+      return "Unexpected server error.";
+    }
+  }
+  return "Unexpected server error.";
+}
