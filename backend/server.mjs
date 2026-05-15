@@ -1,21 +1,148 @@
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient, SupabaseClient, User } from "https://esm.sh/@supabase/supabase-js@2";
+import { createHmac, createHash, randomUUID, timingSafeEqual as nodeTimingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createClient } from "@supabase/supabase-js";
+import WebSocket from "ws";
 
-type ApiRequest = {
-  action: string;
-  payload?: Record<string, unknown>;
-};
+loadEnv();
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-orbita-signature",
-};
+const port = Number(process.env.ORBITA_API_PORT ?? process.env.PORT ?? 8787);
+const supabaseUrl = process.env.SUPABASE_URL ?? process.env.EXPO_PUBLIC_SUPABASE_URL;
+const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-function json(body: Record<string, unknown>, status = 200) {
-  return Response.json(body, { status, headers: corsHeaders });
+if (!supabaseUrl || !serviceRoleKey) {
+  const missing = [
+    !supabaseUrl ? "SUPABASE_URL or EXPO_PUBLIC_SUPABASE_URL" : null,
+    !serviceRoleKey ? "SUPABASE_SERVICE_ROLE_KEY" : null,
+  ].filter(Boolean);
+  console.error(`Missing ${missing.join(", ")}.`);
+  process.exit(1);
 }
 
-function requiredString(payload: Record<string, unknown>, key: string) {
+const supabase = createClient(supabaseUrl, serviceRoleKey, {
+  auth: {
+    autoRefreshToken: false,
+    persistSession: false,
+  },
+  realtime: {
+    transport: WebSocket,
+  },
+});
+
+const corsHeaders = {
+  "Access-Control-Allow-Origin": process.env.ORBITA_CORS_ORIGIN || "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-orbita-signature",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+};
+
+createServer(async (req, res) => {
+  const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
+
+  if (req.method === "OPTIONS") {
+    sendJson(res, 200, { ok: true });
+    return;
+  }
+
+  try {
+    if (req.method === "GET" && pathname === "/health") {
+      sendJson(res, 200, { ok: true, service: "orbita-backend" });
+      return;
+    }
+
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "Method not allowed." });
+      return;
+    }
+
+    const rawBody = await readBody(req);
+    const body = rawBody ? JSON.parse(rawBody) : {};
+    const action = requiredString(body, "action");
+    const payload = isRecord(body.payload) ? body.payload : {};
+
+    if (pathname === "/api/service") {
+      const validSignature = verifyIntegrationSignature(
+        rawBody,
+        req.headers["x-orbita-signature"],
+        process.env.TASK_MANAGER_ORBITA_SECRET,
+      );
+      if (!validSignature) {
+        sendJson(res, 401, { error: "Invalid Orbita integration signature." });
+        return;
+      }
+
+      sendJson(res, 200, await handleServiceAction(action, payload));
+      return;
+    }
+
+    if (pathname === "/api/messenger" || pathname === "/api/messenger-api") {
+      const authHeader = String(req.headers.authorization ?? "");
+      if (!authHeader) {
+        sendJson(res, 401, { error: "Missing authorization." });
+        return;
+      }
+
+      const jwt = authHeader.replace(/^Bearer\s+/i, "");
+      const { data, error } = await supabase.auth.getUser(jwt);
+      if (error || !data.user) {
+        sendJson(res, 401, { error: "Invalid session." });
+        return;
+      }
+
+      sendJson(res, 200, await handleAction(data.user, action, payload));
+      return;
+    }
+
+    sendJson(res, 404, { error: "Route not found." });
+  } catch (error) {
+    const message = errorMessage(error);
+    console.error(message, error);
+    sendJson(res, 400, { error: message });
+  }
+}).listen(port, () => {
+  console.log(`Orbita backend listening on http://localhost:${port}`);
+});
+
+function loadEnv() {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  for (const path of [resolve(root, ".env"), resolve(root, ".env.local")]) {
+    try {
+      const text = readFileSync(path, "utf8");
+      for (const line of text.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const index = trimmed.indexOf("=");
+        if (index === -1) continue;
+        const key = trimmed.slice(0, index).trim();
+        const rawValue = trimmed.slice(index + 1).trim();
+        const value = rawValue.replace(/^['"]|['"]$/g, "");
+        if (!(key in process.env)) process.env[key] = value;
+      }
+    } catch {
+      // Optional local env files.
+    }
+  }
+}
+
+function readBody(req) {
+  return new Promise((resolveBody, rejectBody) => {
+    const chunks = [];
+    req.on("data", (chunk) => chunks.push(chunk));
+    req.on("end", () => resolveBody(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", rejectBody);
+  });
+}
+
+function sendJson(res, status, body) {
+  res.writeHead(status, {
+    ...corsHeaders,
+    "Content-Type": "application/json",
+  });
+  res.end(JSON.stringify(body));
+}
+
+function requiredString(payload, key) {
   const value = payload[key];
   if (typeof value !== "string" || !value.trim()) {
     throw new Error(`${key} is required.`);
@@ -23,17 +150,21 @@ function requiredString(payload: Record<string, unknown>, key: string) {
   return value.trim();
 }
 
-function optionalString(payload: Record<string, unknown>, key: string) {
+function optionalString(payload, key) {
   const value = payload[key];
   return typeof value === "string" ? value.trim() : "";
 }
 
-function stringArray(payload: Record<string, unknown>, key: string) {
+function stringArray(payload, key) {
   const value = payload[key];
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
 }
 
-function normalizePhone(phone: string, defaultCountryCode = "+91") {
+function isRecord(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function normalizePhone(phone, defaultCountryCode = "+91") {
   const trimmed = phone.trim();
   const hasPlus = trimmed.startsWith("+");
   const digits = trimmed.replace(/\D/g, "");
@@ -43,44 +174,24 @@ function normalizePhone(phone: string, defaultCountryCode = "+91") {
   return `+${digits}`;
 }
 
-async function sha256(value: string) {
-  const input = new TextEncoder().encode(value);
-  const hash = await crypto.subtle.digest("SHA-256", input);
-  return Array.from(new Uint8Array(hash))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+function sha256(value) {
+  return createHash("sha256").update(value).digest("hex");
 }
 
-async function hmacSha256(value: string, secret: string) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(signature))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+function hmacSha256(value, secret) {
+  return createHmac("sha256", secret).update(value).digest("hex");
 }
 
-function timingSafeEqual(a: string, b: string) {
-  if (a.length !== b.length) return false;
-  let result = 0;
-  for (let index = 0; index < a.length; index++) {
-    result |= a.charCodeAt(index) ^ b.charCodeAt(index);
-  }
-  return result === 0;
+function verifyIntegrationSignature(rawBody, signature, secret) {
+  const signatureValue = Array.isArray(signature) ? signature[0] : signature;
+  if (!signatureValue || !secret) return false;
+  const expected = `sha256=${hmacSha256(rawBody, secret)}`;
+  const actualBuffer = Buffer.from(signatureValue);
+  const expectedBuffer = Buffer.from(expected);
+  return actualBuffer.length === expectedBuffer.length && nodeTimingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-async function verifyIntegrationSignature(rawBody: string, signature: string | null, secret: string | undefined) {
-  if (!signature || !secret) return false;
-  const expected = `sha256=${await hmacSha256(rawBody, secret)}`;
-  return timingSafeEqual(signature, expected);
-}
-
-function mapProfile(row: Record<string, unknown>) {
+function mapProfile(row) {
   return {
     id: row.id,
     displayName: row.display_name,
@@ -92,12 +203,12 @@ function mapProfile(row: Record<string, unknown>) {
   };
 }
 
-function messageBody(row: Record<string, unknown>) {
-  const payload = row.encrypted_payload as Record<string, unknown> | null;
+function messageBody(row) {
+  const payload = row.encrypted_payload;
   return typeof payload?.body === "string" ? payload.body : "";
 }
 
-function mapMessage(row: Record<string, unknown>) {
+function mapMessage(row) {
   return {
     id: row.id,
     conversationId: row.conversation_id,
@@ -109,13 +220,22 @@ function mapMessage(row: Record<string, unknown>) {
   };
 }
 
-async function insertMessageWithReceipts(
-  supabase: SupabaseClient,
-  conversationId: string,
-  senderId: string,
-  kind: string,
-  body: string,
-) {
+async function createRealtimeEvents(targetUserIds, kind, conversationId, payload = {}) {
+  const uniqueTargetIds = [...new Set(targetUserIds)].filter(Boolean);
+  if (!uniqueTargetIds.length) return;
+
+  const { error } = await supabase.from("realtime_events").insert(
+    uniqueTargetIds.map((targetUserId) => ({
+      target_user_id: targetUserId,
+      conversation_id: conversationId,
+      kind,
+      payload,
+    })),
+  );
+  if (error) throw error;
+}
+
+async function insertMessageWithReceipts(conversationId, senderId, kind, body) {
   const { data: message, error } = await supabase
     .from("messages")
     .insert({
@@ -128,16 +248,18 @@ async function insertMessageWithReceipts(
     .single();
   if (error) throw error;
 
-  await supabase
+  const { error: updateError } = await supabase
     .from("conversations")
     .update({ updated_at: new Date().toISOString() })
     .eq("id", conversationId);
+  if (updateError) throw updateError;
 
-  const { data: participants } = await supabase
+  const { data: participants, error: participantError } = await supabase
     .from("conversation_participants")
     .select("user_id")
     .eq("conversation_id", conversationId)
     .neq("user_id", senderId);
+  if (participantError) throw participantError;
 
   if (participants?.length) {
     const { error: receiptError } = await supabase.from("message_receipts").insert(
@@ -150,51 +272,24 @@ async function insertMessageWithReceipts(
     if (receiptError) throw receiptError;
 
     await createRealtimeEvents(
-      supabase,
       participants.map((participant) => participant.user_id),
       "message_created",
       conversationId,
-      {
-        messageId: message.id,
-        senderId,
-      },
+      { messageId: message.id, senderId },
     );
   }
 
   return message;
 }
 
-async function createRealtimeEvents(
-  supabase: SupabaseClient,
-  targetUserIds: string[],
-  kind: string,
-  conversationId: string | null,
-  payload: Record<string, unknown> = {},
-) {
-  const uniqueTargetIds = [...new Set(targetUserIds)].filter(Boolean);
-  if (!uniqueTargetIds.length) return;
-
-  const { error } = await supabase.from("realtime_events").insert(
-    uniqueTargetIds.map((targetUserId) => ({
-      target_user_id: targetUserId,
-      conversation_id: conversationId,
-      kind,
-      payload,
-    })),
-  );
-
-  if (error) throw error;
-}
-
-async function ensureProfile(supabase: SupabaseClient, user: User) {
+async function ensureProfile(user) {
   const metadataPhone = typeof user.user_metadata?.phone === "string" ? user.user_metadata.phone : "";
   const phone = user.phone ? normalizePhone(user.phone) : metadataPhone ? normalizePhone(metadataPhone) : null;
-  const phoneHash = phone ? await sha256(phone) : null;
+  const phoneHash = phone ? sha256(phone) : null;
   const displayNameFromAuth =
     typeof user.user_metadata?.display_name === "string" && user.user_metadata.display_name.trim()
       ? user.user_metadata.display_name.trim()
       : "You";
-
   const now = new Date().toISOString();
 
   const { data: existing, error: selectError } = await supabase
@@ -202,7 +297,6 @@ async function ensureProfile(supabase: SupabaseClient, user: User) {
     .select("id")
     .eq("id", user.id)
     .maybeSingle();
-
   if (selectError) throw selectError;
 
   if (phone) {
@@ -213,25 +307,17 @@ async function ensureProfile(supabase: SupabaseClient, user: User) {
       .maybeSingle();
     if (phoneOwnerError) throw phoneOwnerError;
     if (phoneOwner && phoneOwner.id !== user.id) {
-      throw new Error(
-        "This phone number is already linked to another Orbita login. Use the original email for this phone, or remove the old profile before signing in with a new account.",
-      );
+      throw new Error("This phone number is already linked to another Orbita login.");
     }
   }
 
   if (existing) {
     const { data, error } = await supabase
       .from("profiles")
-      .update({
-        phone,
-        phone_hash: phoneHash,
-        is_online: true,
-        last_seen_at: now,
-      })
+      .update({ phone, phone_hash: phoneHash, is_online: true, last_seen_at: now })
       .eq("id", user.id)
       .select()
       .single();
-
     if (error) throw error;
     return data;
   }
@@ -248,25 +334,23 @@ async function ensureProfile(supabase: SupabaseClient, user: User) {
     })
     .select()
     .single();
-
   if (error) throw error;
   return data;
 }
 
-async function getProfile(supabase: SupabaseClient, userId: string) {
+async function getProfile(userId) {
   const { data, error } = await supabase.from("profiles").select("*").eq("id", userId).single();
   if (error) throw error;
   return data;
 }
 
-async function getConversation(supabase: SupabaseClient, userId: string, conversationId: string) {
+async function getConversation(userId, conversationId) {
   const { data: membership, error: membershipError } = await supabase
     .from("conversation_participants")
     .select("conversation_id")
     .eq("conversation_id", conversationId)
     .eq("user_id", userId)
     .maybeSingle();
-
   if (membershipError) throw membershipError;
   if (!membership) throw new Error("You are not a member of this conversation.");
 
@@ -275,31 +359,29 @@ async function getConversation(supabase: SupabaseClient, userId: string, convers
   return data;
 }
 
-async function isAdmin(supabase: SupabaseClient, userId: string, conversationId: string) {
+async function isAdmin(userId, conversationId) {
   const { data, error } = await supabase
     .from("conversation_participants")
     .select("role")
     .eq("conversation_id", conversationId)
     .eq("user_id", userId)
     .maybeSingle();
-
   if (error) throw error;
   return data?.role === "owner" || data?.role === "admin";
 }
 
-async function loadContacts(supabase: SupabaseClient, userId: string) {
+async function loadContacts(userId) {
   const { data, error } = await supabase
     .from("contacts")
     .select("contact_user_id, profiles!contacts_contact_user_id_fkey(*)")
     .eq("owner_id", userId)
     .order("created_at", { ascending: false });
-
   if (error) throw error;
   return (data ?? []).map((row) => mapProfile(row.profiles));
 }
 
-async function loadMessages(supabase: SupabaseClient, userId: string, conversationId: string) {
-  await getConversation(supabase, userId, conversationId);
+async function loadMessages(userId, conversationId) {
+  await getConversation(userId, conversationId);
   const { data, error } = await supabase
     .from("messages")
     .select("*")
@@ -307,19 +389,17 @@ async function loadMessages(supabase: SupabaseClient, userId: string, conversati
     .is("deleted_at", null)
     .order("created_at", { ascending: true })
     .limit(100);
-
   if (error) throw error;
   return (data ?? []).map(mapMessage);
 }
 
-async function unreadCountForConversation(supabase: SupabaseClient, userId: string, conversationId: string) {
+async function unreadCountForConversation(userId, conversationId) {
   const { data: messages, error: messageError } = await supabase
     .from("messages")
     .select("id")
     .eq("conversation_id", conversationId)
     .neq("sender_id", userId)
     .is("deleted_at", null);
-
   if (messageError) throw messageError;
   const messageIds = (messages ?? []).map((message) => message.id);
   if (!messageIds.length) return 0;
@@ -330,21 +410,18 @@ async function unreadCountForConversation(supabase: SupabaseClient, userId: stri
     .eq("user_id", userId)
     .in("message_id", messageIds)
     .neq("status", "read");
-
   if (error) throw error;
   return count ?? 0;
 }
 
-async function markConversationRead(supabase: SupabaseClient, userId: string, conversationId: string) {
-  await getConversation(supabase, userId, conversationId);
-
+async function markConversationRead(userId, conversationId) {
+  await getConversation(userId, conversationId);
   const { data: messages, error: messageError } = await supabase
     .from("messages")
     .select("id")
     .eq("conversation_id", conversationId)
     .neq("sender_id", userId)
     .is("deleted_at", null);
-
   if (messageError) throw messageError;
   const messageIds = (messages ?? []).map((message) => message.id);
   if (!messageIds.length) return;
@@ -356,16 +433,14 @@ async function markConversationRead(supabase: SupabaseClient, userId: string, co
     .eq("user_id", userId)
     .in("message_id", messageIds)
     .neq("status", "read");
-
   if (error) throw error;
 }
 
-async function loadConversations(supabase: SupabaseClient, userId: string) {
+async function loadConversations(userId) {
   const { data: memberships, error: membershipError } = await supabase
     .from("conversation_participants")
     .select("conversation_id")
     .eq("user_id", userId);
-
   if (membershipError) throw membershipError;
   const ids = [...new Set((memberships ?? []).map((row) => row.conversation_id))];
   if (!ids.length) return [];
@@ -375,7 +450,6 @@ async function loadConversations(supabase: SupabaseClient, userId: string) {
     .select("*")
     .in("id", ids)
     .order("updated_at", { ascending: false });
-
   if (error) throw error;
 
   return Promise.all(
@@ -385,7 +459,6 @@ async function loadConversations(supabase: SupabaseClient, userId: string) {
         .select("role, profiles(*)")
         .eq("conversation_id", conversation.id)
         .order("joined_at", { ascending: true });
-
       if (participantError) throw participantError;
 
       const { data: lastMessages, error: lastError } = await supabase
@@ -395,7 +468,6 @@ async function loadConversations(supabase: SupabaseClient, userId: string) {
         .is("deleted_at", null)
         .order("created_at", { ascending: false })
         .limit(1);
-
       if (lastError) throw lastError;
 
       const mappedParticipants = (participants ?? []).map((row) => ({
@@ -417,53 +489,48 @@ async function loadConversations(supabase: SupabaseClient, userId: string) {
         updatedAt: conversation.updated_at,
         participants: mappedParticipants,
         lastMessage: lastMessages?.[0] ? mapMessage(lastMessages[0]) : null,
-        unreadCount: await unreadCountForConversation(supabase, userId, conversation.id),
+        unreadCount: await unreadCountForConversation(userId, conversation.id),
       };
     }),
   );
 }
 
-async function loadStatuses(supabase: SupabaseClient, userId: string) {
+async function loadStatuses(userId) {
   const { data: contacts, error: contactsError } = await supabase
     .from("contacts")
     .select("contact_user_id")
     .eq("owner_id", userId);
-
   if (contactsError) throw contactsError;
 
-  const authorIds = [userId, ...((contacts ?? []).map((contact) => contact.contact_user_id))];
-  if (!authorIds.length) return [];
-
+  const authorIds = [userId, ...(contacts ?? []).map((contact) => contact.contact_user_id)];
   const { data, error } = await supabase
     .from("status_posts")
     .select("*, profiles!status_posts_author_id_fkey(*), status_views(viewer_id)")
     .in("author_id", authorIds)
     .gt("expires_at", new Date().toISOString())
     .order("created_at", { ascending: false });
-
   if (error) throw error;
 
   return (data ?? []).map((row) => ({
-      id: row.id,
-      author: mapProfile(row.profiles),
-      kind: row.kind,
-      text: typeof row.encrypted_payload?.text === "string" ? row.encrypted_payload.text : "",
-      mediaUrl: typeof row.encrypted_payload?.mediaUrl === "string" ? row.encrypted_payload.mediaUrl : null,
-      visibility: row.visibility,
-      createdAt: row.created_at,
-      expiresAt: row.expires_at,
-      viewCount: Array.isArray(row.status_views) ? row.status_views.length : 0,
-    }));
+    id: row.id,
+    author: mapProfile(row.profiles),
+    kind: row.kind,
+    text: typeof row.encrypted_payload?.text === "string" ? row.encrypted_payload.text : "",
+    mediaUrl: typeof row.encrypted_payload?.mediaUrl === "string" ? row.encrypted_payload.mediaUrl : null,
+    visibility: row.visibility,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    viewCount: Array.isArray(row.status_views) ? row.status_views.length : 0,
+  }));
 }
 
-async function createDirectConversation(supabase: SupabaseClient, userId: string, otherUserId: string) {
+async function createDirectConversation(userId, otherUserId) {
   if (userId === otherUserId) throw new Error("Choose another user.");
 
   const { data: shared, error: sharedError } = await supabase
     .from("conversation_participants")
     .select("conversation_id, conversations!inner(kind)")
     .eq("user_id", userId);
-
   if (sharedError) throw sharedError;
 
   for (const row of shared ?? []) {
@@ -475,7 +542,9 @@ async function createDirectConversation(supabase: SupabaseClient, userId: string
       .eq("user_id", otherUserId)
       .maybeSingle();
     if (peer) {
-      const existing = (await loadConversations(supabase, userId)).find((conversation) => conversation.id === peer.conversation_id);
+      const existing = (await loadConversations(userId)).find(
+        (conversation) => conversation.id === peer.conversation_id,
+      );
       if (!existing) throw new Error("Unable to load existing conversation.");
       return existing;
     }
@@ -494,20 +563,14 @@ async function createDirectConversation(supabase: SupabaseClient, userId: string
   ]);
   if (participantError) throw participantError;
 
-  await createRealtimeEvents(supabase, [otherUserId], "direct_conversation_created", conversation.id, {
-    createdBy: userId,
-  });
+  await createRealtimeEvents([otherUserId], "direct_conversation_created", conversation.id, { createdBy: userId });
 
-  const created = (await loadConversations(supabase, userId)).find((item) => item.id === conversation.id);
+  const created = (await loadConversations(userId)).find((item) => item.id === conversation.id);
   if (!created) throw new Error("Unable to load created conversation.");
   return created;
 }
 
-async function ensureTaskmanagerAgentProfile(
-  supabase: SupabaseClient,
-  taskmanagerOrgId: string,
-  displayName: string,
-) {
+async function ensureTaskmanagerAgentProfile(taskmanagerOrgId, displayName) {
   const { data: existingLink, error: linkError } = await supabase
     .from("taskmanager_agent_links")
     .select("agent_profile_id")
@@ -515,7 +578,7 @@ async function ensureTaskmanagerAgentProfile(
     .limit(1)
     .maybeSingle();
   if (linkError) throw linkError;
-  if (existingLink?.agent_profile_id) return existingLink.agent_profile_id as string;
+  if (existingLink?.agent_profile_id) return existingLink.agent_profile_id;
 
   const safeOrg = taskmanagerOrgId.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
   const email = `orbita-agent+${safeOrg}@taskmanager.local`;
@@ -530,10 +593,8 @@ async function ensureTaskmanagerAgentProfile(
   });
   let agentUser = created.user;
   if (createError || !agentUser) {
-    const existingAgent = await findAuthUserByEmail(supabase, email);
-    if (!existingAgent) {
-      throw createError ?? new Error("Unable to create Orbita agent user.");
-    }
+    const existingAgent = await findAuthUserByEmail(email);
+    if (!existingAgent) throw createError ?? new Error("Unable to create Orbita agent user.");
     agentUser = existingAgent;
   }
 
@@ -549,7 +610,7 @@ async function ensureTaskmanagerAgentProfile(
   return agentUser.id;
 }
 
-async function findAuthUserByEmail(supabase: SupabaseClient, email: string) {
+async function findAuthUserByEmail(email) {
   for (let page = 1; page <= 20; page++) {
     const { data, error } = await supabase.auth.admin.listUsers({ page, perPage: 100 });
     if (error) throw error;
@@ -560,17 +621,11 @@ async function findAuthUserByEmail(supabase: SupabaseClient, email: string) {
   return null;
 }
 
-async function forwardTaskmanagerInbound(
-  supabase: SupabaseClient,
-  conversationId: string,
-  senderId: string,
-  messageId: string,
-  body: string,
-): Promise<{ forwarded: boolean; reason?: string }> {
-  const webhookUrl = Deno.env.get("TASK_MANAGER_ORBITA_WEBHOOK_URL");
-  const secret = Deno.env.get("TASK_MANAGER_ORBITA_SECRET");
+async function forwardTaskmanagerInbound(conversationId, senderId, messageId, body) {
+  const webhookUrl = process.env.TASK_MANAGER_ORBITA_WEBHOOK_URL;
+  const secret = process.env.TASK_MANAGER_ORBITA_SECRET;
   if (!webhookUrl || !secret) {
-    return { forwarded: false, reason: "TASK_MANAGER_ORBITA_WEBHOOK_URL or TASK_MANAGER_ORBITA_SECRET is not set." };
+    return { forwarded: false, reason: "Task Manager webhook is not configured." };
   }
 
   const { data: link, error } = await supabase
@@ -597,7 +652,7 @@ async function forwardTaskmanagerInbound(
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "x-orbita-signature": `sha256=${await hmacSha256(raw, secret)}`,
+      "x-orbita-signature": `sha256=${hmacSha256(raw, secret)}`,
     },
     body: raw,
   });
@@ -607,14 +662,11 @@ async function forwardTaskmanagerInbound(
     console.error(reason);
     return { forwarded: false, reason };
   }
+
   return { forwarded: true };
 }
 
-async function handleServiceAction(
-  supabase: SupabaseClient,
-  action: string,
-  payload: Record<string, unknown>,
-) {
+async function handleServiceAction(action, payload) {
   if (action === "link_taskmanager_user") {
     const taskmanagerOrgId = requiredString(payload, "taskmanagerOrgId");
     const taskmanagerUserId = requiredString(payload, "taskmanagerUserId");
@@ -637,14 +689,11 @@ async function handleServiceAction(
       .maybeSingle();
     if (existingError) throw existingError;
     if (existing?.enabled) {
-      return {
-        orbitaProfileId: existing.orbita_user_id,
-        conversationId: existing.conversation_id,
-      };
+      return { orbitaProfileId: existing.orbita_user_id, conversationId: existing.conversation_id };
     }
 
-    const agentProfileId = await ensureTaskmanagerAgentProfile(supabase, taskmanagerOrgId, agentDisplayName);
-    const conversation = await createDirectConversation(supabase, agentProfileId, orbitaProfile.id as string);
+    const agentProfileId = await ensureTaskmanagerAgentProfile(taskmanagerOrgId, agentDisplayName);
+    const conversation = await createDirectConversation(agentProfileId, orbitaProfile.id);
 
     const { data: link, error: linkError } = await supabase
       .from("taskmanager_agent_links")
@@ -664,10 +713,7 @@ async function handleServiceAction(
       .single();
     if (linkError) throw linkError;
 
-    return {
-      orbitaProfileId: link.orbita_user_id,
-      conversationId: link.conversation_id,
-    };
+    return { orbitaProfileId: link.orbita_user_id, conversationId: link.conversation_id };
   }
 
   if (action === "send_agent_message") {
@@ -686,28 +732,22 @@ async function handleServiceAction(
       .single();
     if (error) throw error;
 
-    const message = await insertMessageWithReceipts(
-      supabase,
-      conversationId,
-      link.agent_profile_id as string,
-      "text",
-      body,
-    );
+    const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, "text", body);
     return { message: mapMessage(message) };
   }
 
   throw new Error(`Unknown service action: ${action}`);
 }
 
-async function handleAction(supabase: SupabaseClient, user: User, action: string, payload: Record<string, unknown>) {
-  await ensureProfile(supabase, user);
+async function handleAction(user, action, payload) {
+  await ensureProfile(user);
 
   if (action === "bootstrap") {
     return {
-      profile: mapProfile(await getProfile(supabase, user.id)),
-      contacts: await loadContacts(supabase, user.id),
-      conversations: await loadConversations(supabase, user.id),
-      statuses: await loadStatuses(supabase, user.id),
+      profile: mapProfile(await getProfile(user.id)),
+      contacts: await loadContacts(user.id),
+      conversations: await loadConversations(user.id),
+      statuses: await loadStatuses(user.id),
     };
   }
 
@@ -743,7 +783,7 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
       .limit(20);
     if (nameError) throw nameError;
 
-    const users = new Map<string, Record<string, unknown>>();
+    const users = new Map();
     [...(byPhone ?? []), ...(byName ?? [])].forEach((profile) => users.set(profile.id, profile));
     return { users: [...users.values()].map(mapProfile) };
   }
@@ -758,6 +798,7 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
       .maybeSingle();
     if (error) throw error;
     if (!contact) throw new Error("No Orbita user found for that phone number.");
+
     const { error: insertError } = await supabase
       .from("contacts")
       .upsert({ owner_id: user.id, contact_user_id: contact.id }, { onConflict: "owner_id,contact_user_id" });
@@ -766,9 +807,7 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
   }
 
   if (action === "create_direct_conversation") {
-    const otherUserId = requiredString(payload, "otherUserId");
-    const conversation = await createDirectConversation(supabase, user.id, otherUserId);
-    return { conversation };
+    return { conversation: await createDirectConversation(user.id, requiredString(payload, "otherUserId")) };
   }
 
   if (action === "create_group") {
@@ -780,7 +819,7 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
         kind: "group",
         title,
         created_by: user.id,
-        invite_code: crypto.randomUUID().slice(0, 8).toUpperCase(),
+        invite_code: randomUUID().slice(0, 8).toUpperCase(),
       })
       .select()
       .single();
@@ -788,21 +827,13 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
 
     const participants = [
       { conversation_id: conversation.id, user_id: user.id, role: "owner" },
-      ...memberIds.map((memberId) => ({
-        conversation_id: conversation.id,
-        user_id: memberId,
-        role: "member",
-      })),
+      ...memberIds.map((memberId) => ({ conversation_id: conversation.id, user_id: memberId, role: "member" })),
     ];
     const { error: participantError } = await supabase.from("conversation_participants").insert(participants);
     if (participantError) throw participantError;
 
-    await createRealtimeEvents(supabase, memberIds, "group_created", conversation.id, {
-      title,
-      createdBy: user.id,
-    });
-
-    const created = (await loadConversations(supabase, user.id)).find((item) => item.id === conversation.id);
+    await createRealtimeEvents(memberIds, "group_created", conversation.id, { title, createdBy: user.id });
+    const created = (await loadConversations(user.id)).find((item) => item.id === conversation.id);
     if (!created) throw new Error("Unable to load created group.");
     return { conversation: created };
   }
@@ -810,135 +841,79 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
   if (action === "add_group_members") {
     const conversationId = requiredString(payload, "conversationId");
     const memberIds = [...new Set(stringArray(payload, "memberIds").filter((id) => id !== user.id))];
-    const conversation = await getConversation(supabase, user.id, conversationId);
+    const conversation = await getConversation(user.id, conversationId);
     if (conversation.kind !== "group") throw new Error("Members can only be added to groups.");
-    if (!(await isAdmin(supabase, user.id, conversationId))) throw new Error("Only group admins can add members.");
+    if (!(await isAdmin(user.id, conversationId))) throw new Error("Only group admins can add members.");
+
     const { error } = await supabase.from("conversation_participants").upsert(
-      memberIds.map((memberId) => ({
-        conversation_id: conversationId,
-        user_id: memberId,
-        role: "member",
-      })),
+      memberIds.map((memberId) => ({ conversation_id: conversationId, user_id: memberId, role: "member" })),
       { onConflict: "conversation_id,user_id" },
     );
     if (error) throw error;
 
-    await createRealtimeEvents(supabase, memberIds, "group_member_added", conversationId, {
-      addedBy: user.id,
-    });
-
-    const updated = (await loadConversations(supabase, user.id)).find((item) => item.id === conversationId);
+    await createRealtimeEvents(memberIds, "group_member_added", conversationId, { addedBy: user.id });
+    const updated = (await loadConversations(user.id)).find((item) => item.id === conversationId);
     if (!updated) throw new Error("Unable to load updated group.");
     return { conversation: updated };
   }
 
   if (action === "list_messages") {
-    return { messages: await loadMessages(supabase, user.id, requiredString(payload, "conversationId")) };
+    return { messages: await loadMessages(user.id, requiredString(payload, "conversationId")) };
   }
 
   if (action === "mark_conversation_read") {
-    await markConversationRead(supabase, user.id, requiredString(payload, "conversationId"));
+    await markConversationRead(user.id, requiredString(payload, "conversationId"));
     return { ok: true };
   }
 
   if (action === "send_message") {
     const conversationId = requiredString(payload, "conversationId");
     const body = requiredString(payload, "body").slice(0, 5000);
-    const kind = (optionalString(payload, "kind") || "text") as string;
-    await getConversation(supabase, user.id, conversationId);
+    const kind = optionalString(payload, "kind") || "text";
+    await getConversation(user.id, conversationId);
 
-    const message = await insertMessageWithReceipts(supabase, conversationId, user.id, kind, body);
-    const taskManagerForward = await forwardTaskmanagerInbound(
-      supabase,
-      conversationId,
-      user.id,
-      message.id as string,
-      body,
-    ).catch((error) => {
-      const reason = errorMessage(error);
-      console.error(reason, error);
-      return { forwarded: false, reason };
-    });
+    const message = await insertMessageWithReceipts(conversationId, user.id, kind, body);
+    const taskManagerForward = await forwardTaskmanagerInbound(conversationId, user.id, message.id, body).catch(
+      (error) => {
+        const reason = errorMessage(error);
+        console.error(reason, error);
+        return { forwarded: false, reason };
+      },
+    );
 
     return { message: mapMessage(message), taskManagerForward };
   }
 
   if (action === "create_status") {
     const text = requiredString(payload, "text").slice(0, 700);
-    const visibility = (optionalString(payload, "visibility") || "contacts") as string;
+    const visibility = optionalString(payload, "visibility") || "contacts";
     const { data, error } = await supabase
       .from("status_posts")
-      .insert({
-        author_id: user.id,
-        kind: "text",
-        encrypted_payload: { text },
-        visibility,
-      })
+      .insert({ author_id: user.id, kind: "text", encrypted_payload: { text }, visibility })
       .select("*, profiles!status_posts_author_id_fkey(*), status_views(viewer_id)")
       .single();
     if (error) throw error;
-    const created = (await loadStatuses(supabase, user.id)).find((status) => status.id === data.id);
+
+    const created = (await loadStatuses(user.id)).find((status) => status.id === data.id);
     if (!created) throw new Error("Unable to load created status.");
     return { status: created };
   }
 
   if (action === "list_statuses") {
-    return { statuses: await loadStatuses(supabase, user.id) };
+    return { statuses: await loadStatuses(user.id) };
   }
 
   throw new Error(`Unknown action: ${action}`);
 }
 
-serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-
-  try {
-    const supabaseUrl = Deno.env.get("SUPABASE_URL");
-    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (!supabaseUrl || !serviceRoleKey) {
-      return json({ error: "Missing Supabase function environment." }, 500);
-    }
-
-    const supabase = createClient(supabaseUrl, serviceRoleKey);
-    const rawBody = await req.text();
-    const body = JSON.parse(rawBody) as ApiRequest;
-    const serviceActions = new Set(["link_taskmanager_user", "send_agent_message"]);
-
-    if (serviceActions.has(body.action)) {
-      const validSignature = await verifyIntegrationSignature(
-        rawBody,
-        req.headers.get("x-orbita-signature"),
-        Deno.env.get("TASK_MANAGER_ORBITA_SECRET"),
-      );
-      if (!validSignature) return json({ error: "Invalid Orbita integration signature." }, 401);
-      const result = await handleServiceAction(supabase, body.action, body.payload ?? {});
-      return json(result);
-    }
-
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) return json({ error: "Missing authorization." }, 401);
-
-    const jwt = authHeader.replace("Bearer ", "");
-    const { data, error } = await supabase.auth.getUser(jwt);
-    if (error || !data.user) return json({ error: "Invalid session." }, 401);
-    const result = await handleAction(supabase, data.user, body.action, body.payload ?? {});
-    return json(result);
-  } catch (error) {
-    const message = errorMessage(error);
-    console.error(message, error);
-    return json({ error: message }, 400);
-  }
-});
-
-function errorMessage(error: unknown) {
+function errorMessage(error) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   if (error && typeof error === "object") {
-    const record = error as Record<string, unknown>;
-    const message = record.message ?? record.error_description ?? record.details ?? record.hint;
+    const message = error.message ?? error.error_description ?? error.details ?? error.hint;
     if (typeof message === "string" && message.trim()) return message;
     try {
-      return JSON.stringify(record);
+      return JSON.stringify(error);
     } catch {
       return "Unexpected server error.";
     }

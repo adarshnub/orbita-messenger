@@ -6,7 +6,8 @@ Orbita Messenger is an Expo React Native app for Android, iOS, and web with a Wh
 
 - Expo + Expo Router + TypeScript
 - React Native Web for browser support
-- Supabase Auth, Postgres, Realtime, Storage, Edge Functions, and RLS
+- Supabase Auth, Postgres, Realtime, Storage, and RLS
+- Required standalone Node backend for messenger and Task Manager integration APIs
 - `npm` for package management
 
 ## Local setup
@@ -25,36 +26,42 @@ Orbita Messenger is an Expo React Native app for Android, iOS, and web with a Wh
    npm run web
    ```
 
+4. Start the standalone backend in a second terminal:
+
+   ```bash
+   npm run backend
+   ```
+
 The app includes local sample data so the UI works before Supabase is connected.
 
-## Supabase
+## Backend
 
 The initial schema and RLS policies live in `supabase/migrations/001_initial_schema.sql`.
-The app backend is exposed through Supabase Edge Functions:
+Orbita uses the standalone Node backend in `backend/server.mjs` for messenger and Task Manager integration APIs. Set `EXPO_PUBLIC_ORBITA_API_URL=http://localhost:8787` and run `npm run backend`. The backend verifies Supabase JWTs and uses Supabase as Auth/Postgres/Realtime.
 
-- `supabase/functions/messenger-api/index.ts` handles profile bootstrap/settings, contacts, 1:1 chats, groups, member adds, messages, and statuses.
-- `supabase/functions/match-contacts/index.ts` is available for hashed bulk contact matching.
+The frontend only calls `EXPO_PUBLIC_ORBITA_API_URL`. If that value is missing, API calls fail fast instead of trying another backend path.
 
 Frontend `.env` values:
 
 ```bash
 EXPO_PUBLIC_SUPABASE_URL=
 EXPO_PUBLIC_SUPABASE_ANON_KEY=
+EXPO_PUBLIC_ORBITA_API_URL=http://localhost:8787
 ```
 
-Supabase Edge Functions also need the standard Supabase runtime secrets, which are automatically present when deployed from a Supabase project:
+The standalone backend needs server-side secrets:
 
 ```bash
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
+TASK_MANAGER_ORBITA_WEBHOOK_URL=
+TASK_MANAGER_ORBITA_SECRET=
 ```
 
-Apply the migration and deploy the functions before using the app:
+Apply the Supabase migrations before using the app:
 
 ```bash
 supabase db push
-supabase functions deploy messenger-api
-supabase functions deploy match-contacts
 ```
 
-Realtime messaging is event-driven through Supabase Realtime. The app subscribes to the current user's membership/receipt rows, targeted `realtime_events`, and each active conversation's message/participant stream, then refreshes through `messenger-api`; it does not poll. The `002_realtime_events.sql` migration is required for instant group-add and message notifications.
+Realtime messaging is event-driven through Supabase Realtime. The app subscribes to the current user's membership/receipt rows, targeted `realtime_events`, and each active conversation's message/participant stream, then refreshes through the standalone backend; it does not poll. The `002_realtime_events.sql` migration is required for instant group-add and message notifications.

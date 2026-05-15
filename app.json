@@ -15,6 +15,7 @@
     },
     "android": {
       "package": "com.orbita.messenger",
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "backgroundColor": "#E7F4FF"
       },

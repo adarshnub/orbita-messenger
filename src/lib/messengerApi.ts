@@ -1,5 +1,11 @@
 import { BackendConversation, BackendMessage, BackendProfile, BackendStatus, BootstrapPayload } from "@/features/chats/backendTypes";
+import Constants from "expo-constants";
+import { Platform } from "react-native";
 import { supabase } from "./supabase";
+
+const rawOrbitaApiUrl = process.env.EXPO_PUBLIC_ORBITA_API_URL?.replace(/\/$/, "");
+const orbitaApiUrl = resolveOrbitaApiUrl(rawOrbitaApiUrl);
+const API_TIMEOUT_MS = 12_000;
 
 type ApiAction =
   | "bootstrap"
@@ -19,39 +25,63 @@ async function callApi<T>(action: ApiAction, payload: Record<string, unknown> = 
   if (!supabase) {
     throw new Error("Supabase is not configured. Add .env credentials first.");
   }
-
-  const token = await getAccessToken();
-  const { data, error } = await supabase.functions.invoke("messenger-api", {
-    body: { action, payload },
-    headers: {
-      Authorization: `Bearer ${token}`,
-    },
-  });
-
-  if (error && isExpiredTokenError(error.message)) {
-    const retryToken = await getAccessToken({ forceRefresh: true });
-    const retry = await supabase.functions.invoke("messenger-api", {
-      body: { action, payload },
-      headers: {
-        Authorization: `Bearer ${retryToken}`,
-      },
-    });
-    if (retry.error) {
-      throw new Error(retry.error.message);
-    }
-    if (retry.data?.error) {
-      throw new Error(retry.data.error);
-    }
-    return retry.data as T;
+  if (!orbitaApiUrl) {
+    throw new Error("Orbita backend is not configured. Add EXPO_PUBLIC_ORBITA_API_URL to .env.");
   }
 
-  if (error) throw new Error(error.message);
+  const token = await getAccessToken();
+  try {
+    return await callBackendApi<T>(action, payload, token);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!isExpiredTokenError(message)) throw error;
 
-  if (data?.error) {
-    throw new Error(data.error);
+    const retryToken = await getAccessToken({ forceRefresh: true });
+    return callBackendApi<T>(action, payload, retryToken);
+  }
+}
+
+async function callBackendApi<T>(action: ApiAction, payload: Record<string, unknown>, token: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${orbitaApiUrl}/api/messenger`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ action, payload }),
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Orbita backend request timed out. Check that the backend is running at ${orbitaApiUrl}.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+  const data = (await response.json().catch(() => null)) as unknown;
+
+  if (!response.ok) {
+    const message = apiError(data) ?? `Orbita backend request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  const error = apiError(data);
+  if (error) {
+    throw new Error(error);
   }
 
   return data as T;
+}
+
+function apiError(data: unknown) {
+  if (!data || typeof data !== "object" || !("error" in data)) return null;
+  const error = (data as { error?: unknown }).error;
+  return typeof error === "string" ? error : null;
 }
 
 async function getAccessToken(options: { forceRefresh?: boolean } = {}) {
@@ -82,6 +112,31 @@ async function getAccessToken(options: { forceRefresh?: boolean } = {}) {
 
 function isExpiredTokenError(message: string) {
   return /expired|invalid.*token|token.*invalid|jwt/i.test(message);
+}
+
+function resolveOrbitaApiUrl(value?: string) {
+  if (!value) return "";
+  if (Platform.OS === "web") return value;
+
+  try {
+    const url = new URL(value);
+    const pointsAtLocalMachine = ["localhost", "127.0.0.1", "0.0.0.0"].includes(url.hostname);
+    if (!pointsAtLocalMachine) return value;
+
+    const host = expoDevHost() ?? (Platform.OS === "android" ? "10.0.2.2" : "localhost");
+    url.hostname = host;
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return value;
+  }
+}
+
+function expoDevHost() {
+  const expoConfigHost = (Constants.expoConfig as { hostUri?: string } | null)?.hostUri;
+  const manifestHost = (Constants.manifest as { debuggerHost?: string } | null)?.debuggerHost;
+  const hostUri = expoConfigHost ?? manifestHost;
+  if (!hostUri) return null;
+  return hostUri.replace(/^https?:\/\//, "").split(":")[0] || null;
 }
 
 export const messengerApi = {
@@ -118,7 +173,10 @@ export const messengerApi = {
     return callApi<{ ok: true }>("mark_conversation_read", { conversationId });
   },
   sendMessage(input: { conversationId: string; kind: BackendMessage["kind"]; body: string }) {
-    return callApi<{ message: BackendMessage }>("send_message", input);
+    return callApi<{
+      message: BackendMessage;
+      taskManagerForward?: { forwarded: boolean; reason?: string };
+    }>("send_message", input);
   },
   createStatus(input: { text: string; visibility: BackendStatus["visibility"] }) {
     return callApi<{ status: BackendStatus }>("create_status", input);

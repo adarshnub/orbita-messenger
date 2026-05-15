@@ -1,13 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Session } from "@supabase/supabase-js";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   AppState,
+  BackHandler,
+  Keyboard,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,6 +17,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   BackendConversation,
   BackendMessage,
@@ -34,7 +37,12 @@ import { subscribeMessengerRealtime } from "@/lib/messengerRealtime";
 import { colors, radii, shadow } from "@/theme/colors";
 
 type Tab = "chats" | "status" | "contacts" | "calls" | "settings";
+type ChatMessage = BackendMessage & { localState?: "sending" | "failed" };
 
+const KEYBOARD_COMPOSER_GAP = 18;
+const EDGE_SWIPE_WIDTH = 34;
+const EDGE_SWIPE_TRIGGER = 72;
+const EDGE_SWIPE_VERTICAL_LIMIT = 64;
 const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: "chats", label: "Chats", icon: "chatbubbles-outline" },
   { id: "status", label: "Status", icon: "aperture-outline" },
@@ -271,6 +279,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
 
 function MessengerShell({ session }: { session: Session }) {
   const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const isWide = width >= 840;
   const [activeTab, setActiveTab] = useState<Tab>("chats");
   const [profile, setProfile] = useState<BackendProfile | null>(null);
@@ -278,7 +287,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [conversations, setConversations] = useState<BackendConversation[]>([]);
   const [statuses, setStatuses] = useState<BackendStatus[]>([]);
   const [selectedId, setSelectedId] = useState("");
-  const [selectedMessages, setSelectedMessages] = useState<BackendMessage[]>([]);
+  const [selectedMessages, setSelectedMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -288,14 +297,22 @@ function MessengerShell({ session }: { session: Session }) {
   const [membersOpen, setMembersOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const bootstrapRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const messageRefreshTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const conversationsRef = useRef<BackendConversation[]>([]);
 
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
   const conversationIds = useMemo(() => conversations.map((conversation) => conversation.id), [conversations]);
   const conversationKey = conversationIds.join("|");
+  const profileId = profile?.id ?? "";
   const unreadTotal = useMemo(
     () => conversations.reduce((total, conversation) => total + conversation.unreadCount, 0),
     [conversations],
   );
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   const loadBootstrap = useCallback(async () => {
     if (!supabase) return;
@@ -313,17 +330,73 @@ function MessengerShell({ session }: { session: Session }) {
     }
   }, []);
 
+  const markConversationReadLocally = useCallback((conversationId: string) => {
+    const hasUnread = conversationsRef.current.some(
+      (conversation) => conversation.id === conversationId && conversation.unreadCount > 0,
+    );
+    if (hasUnread) {
+      void messengerApi.markConversationRead(conversationId).catch((nextError) => {
+        setError(nextError instanceof Error ? nextError.message : "Unable to mark messages as read.");
+      });
+    }
+    setConversations((current) =>
+      current.map((conversation) =>
+        conversation.id === conversationId ? { ...conversation, unreadCount: 0 } : conversation,
+      ),
+    );
+  }, []);
+
+  const updateConversationPreview = useCallback((message: BackendMessage) => {
+    setConversations((current) =>
+      current.map((conversation) =>
+        conversation.id === message.conversationId
+          ? { ...conversation, lastMessage: message, updatedAt: message.createdAt, unreadCount: 0 }
+          : conversation,
+      ),
+    );
+  }, []);
+
   const loadMessages = useCallback(async (conversationId: string) => {
     try {
       const data = await messengerApi.listMessages(conversationId);
-      setSelectedMessages(data.messages);
-      await messengerApi.markConversationRead(conversationId);
-      await loadBootstrap();
+      setSelectedMessages((current) => {
+        const pending = current.filter(
+          (message) => message.conversationId === conversationId && message.localState,
+        );
+        return [...data.messages, ...pending];
+      });
+      markConversationReadLocally(conversationId);
       setError("");
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : "Unable to load messages.");
     }
+  }, [markConversationReadLocally]);
+
+  const scheduleBootstrapRefresh = useCallback(() => {
+    if (bootstrapRefreshTimer.current) clearTimeout(bootstrapRefreshTimer.current);
+    bootstrapRefreshTimer.current = setTimeout(() => {
+      bootstrapRefreshTimer.current = null;
+      void loadBootstrap();
+    }, 500);
   }, [loadBootstrap]);
+
+  const scheduleMessageRefresh = useCallback((conversationId: string) => {
+    const current = messageRefreshTimers.current.get(conversationId);
+    if (current) clearTimeout(current);
+    const next = setTimeout(() => {
+      messageRefreshTimers.current.delete(conversationId);
+      void loadMessages(conversationId);
+    }, 350);
+    messageRefreshTimers.current.set(conversationId, next);
+  }, [loadMessages]);
+
+  useEffect(() => {
+    return () => {
+      if (bootstrapRefreshTimer.current) clearTimeout(bootstrapRefreshTimer.current);
+      messageRefreshTimers.current.forEach((timer) => clearTimeout(timer));
+      messageRefreshTimers.current.clear();
+    };
+  }, []);
 
   useEffect(() => {
     loadBootstrap();
@@ -338,42 +411,58 @@ function MessengerShell({ session }: { session: Session }) {
   }, [loadMessages, selectedId]);
 
   useEffect(() => {
-    if (!profile) return undefined;
+    if (!profileId) return undefined;
 
     const refreshActiveConversation = (conversationId = selectedId) => {
-      void loadBootstrap();
+      scheduleBootstrapRefresh();
       if (conversationId) {
-        void loadMessages(conversationId);
+        scheduleMessageRefresh(conversationId);
       }
     };
 
     return subscribeMessengerRealtime({
       conversationIds,
-      userId: profile.id,
+      userId: profileId,
       onConversationEvent: (conversationId) => {
         refreshActiveConversation(conversationId === selectedId ? conversationId : "");
       },
       onRealtimeEvent: (conversationId) => {
         refreshActiveConversation(conversationId && conversationId === selectedId ? conversationId : "");
       },
-      onSubscribed: () => {
-        refreshActiveConversation();
-      },
       onUserEvent: () => {
-        void loadBootstrap();
+        scheduleBootstrapRefresh();
       },
     });
-  }, [conversationKey, loadBootstrap, loadMessages, profile, selectedId]);
+  }, [conversationKey, profileId, scheduleBootstrapRefresh, scheduleMessageRefresh, selectedId]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
       if (state !== "active") return;
-      void loadBootstrap();
-      if (selectedId) void loadMessages(selectedId);
+      scheduleBootstrapRefresh();
+      if (selectedId) scheduleMessageRefresh(selectedId);
     });
 
     return () => subscription.remove();
-  }, [loadBootstrap, loadMessages, selectedId]);
+  }, [scheduleBootstrapRefresh, scheduleMessageRefresh, selectedId]);
+
+  useEffect(() => {
+    if (Platform.OS !== "android") return undefined;
+
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (selectedId) {
+        setSelectedId("");
+        setActiveTab("chats");
+        return true;
+      }
+      if (activeTab !== "chats") {
+        setActiveTab("chats");
+        return true;
+      }
+      return false;
+    });
+
+    return () => subscription.remove();
+  }, [activeTab, selectedId]);
 
   async function run(action: () => Promise<void>) {
     setBusy(true);
@@ -391,16 +480,48 @@ function MessengerShell({ session }: { session: Session }) {
     await supabase?.auth.signOut();
   }
 
+  async function retryBootstrap() {
+    setLoading(true);
+    await loadBootstrap();
+  }
+
   async function sendMessage(kind: BackendMessage["kind"] = "text", body = draft.trim()) {
-    if (!selected || !body) return;
-    await run(async () => {
-      const result = await messengerApi.sendMessage({ conversationId: selected.id, kind, body });
+    const text = body.trim();
+    if (!selected || !text || !profile) return;
+
+    const tempId = `local-${Date.now()}`;
+    const optimisticMessage: ChatMessage = {
+      id: tempId,
+      conversationId: selected.id,
+      senderId: profile.id,
+      kind,
+      body: text,
+      createdAt: new Date().toISOString(),
+      status: "sent",
+      localState: "sending",
+    };
+
+    setDraft("");
+    setError("");
+    setSelectedMessages((current) => [...current, optimisticMessage]);
+    updateConversationPreview(optimisticMessage);
+
+    try {
+      const result = await messengerApi.sendMessage({ conversationId: selected.id, kind, body: text });
+      setSelectedMessages((current) => {
+        const withoutTemp = current.filter((message) => message.id !== tempId);
+        return withoutTemp.some((message) => message.id === result.message.id)
+          ? withoutTemp
+          : [...withoutTemp, result.message];
+      });
+      updateConversationPreview(result.message);
+      scheduleBootstrapRefresh();
+    } catch (nextError) {
       setSelectedMessages((current) =>
-        current.some((message) => message.id === result.message.id) ? current : [...current, result.message],
+        current.map((message) => (message.id === tempId ? { ...message, localState: "failed" } : message)),
       );
-      setDraft("");
-      await loadBootstrap();
-    });
+      setError(nextError instanceof Error ? nextError.message : "Unable to send message.");
+    }
   }
 
   function changeTab(tab: Tab) {
@@ -408,14 +529,40 @@ function MessengerShell({ session }: { session: Session }) {
     if (tab !== "chats") setSelectedId("");
   }
 
-  if (loading || !profile) {
+  if (loading) {
     return <FullScreenLoader />;
   }
 
+  if (!profile) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <View style={styles.loadingErrorScreen}>
+          <View style={styles.emptyIcon}>
+            <Ionicons color={colors.primaryDark} name="cloud-offline-outline" size={26} />
+          </View>
+          <Text style={styles.emptyTitle}>Unable to load Orbita</Text>
+          <Text style={styles.emptyCopy}>
+            {error || "Check that the Orbita backend is running and reachable from this device."}
+          </Text>
+          <View style={styles.modalActions}>
+            <Pressable onPress={signOut} style={styles.secondaryButton}>
+              <Text style={styles.secondaryText}>Sign out</Text>
+            </Pressable>
+            <Pressable onPress={retryBootstrap} style={styles.primaryButton}>
+              <Text style={styles.primaryText}>Retry</Text>
+            </Pressable>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   const showPanel = isWide || activeTab !== "chats" || !selected;
+  const showBottomTabs = !isWide && !(activeTab === "chats" && selected);
+  const bottomInset = Math.max(insets.bottom, Platform.OS === "android" ? 8 : 0);
 
   return (
-    <SafeAreaView style={styles.safe}>
+    <SafeAreaView edges={["top", "left", "right"]} style={styles.safe}>
       <View style={styles.appFrame}>
         {isWide ? <Sidebar activeTab={activeTab} onChange={changeTab} onNewChat={() => setNewChatOpen(true)} /> : null}
         <View style={styles.workspace}>
@@ -426,7 +573,13 @@ function MessengerShell({ session }: { session: Session }) {
             onSignOut={signOut}
           />
           {error ? <Text style={styles.errorBar}>{error}</Text> : null}
-          <View style={[styles.content, !isWide && styles.contentMobile]}>
+          <View
+            style={[
+              styles.content,
+              !isWide && [styles.contentMobile, { paddingBottom: showBottomTabs ? 64 + bottomInset : 0 }],
+              !isWide && activeTab === "chats" && selected && styles.contentMobileChat,
+            ]}
+          >
             {showPanel ? (
               <Panel
                 activeTab={activeTab}
@@ -448,6 +601,7 @@ function MessengerShell({ session }: { session: Session }) {
             ) : null}
             {activeTab === "chats" && selected ? (
               <ChatPane
+                bottomInset={bottomInset}
                 conversation={selected}
                 currentUserId={profile.id}
                 draft={draft}
@@ -464,7 +618,9 @@ function MessengerShell({ session }: { session: Session }) {
           </View>
         </View>
       </View>
-      {!isWide ? <BottomTabs activeTab={activeTab} onChange={changeTab} unreadTotal={unreadTotal} /> : null}
+      {showBottomTabs ? (
+        <BottomTabs activeTab={activeTab} bottomInset={bottomInset} onChange={changeTab} unreadTotal={unreadTotal} />
+      ) : null}
       {busy ? <View style={styles.busyOverlay}><ActivityIndicator color="#FFFFFF" /></View> : null}
       <NewChatModal
         contacts={contacts}
@@ -596,15 +752,17 @@ function Sidebar({
 
 function BottomTabs({
   activeTab,
+  bottomInset,
   onChange,
   unreadTotal,
 }: {
   activeTab: Tab;
+  bottomInset: number;
   onChange: (tab: Tab) => void;
   unreadTotal: number;
 }) {
   return (
-    <View style={styles.bottomTabs}>
+    <View style={[styles.bottomTabs, { paddingBottom: bottomInset + 8 }]}>
       {tabs.map((tab) => (
         <Pressable accessibilityLabel={tab.label} key={tab.id} onPress={() => onChange(tab.id)} style={styles.bottomTab}>
           <View>
@@ -723,6 +881,7 @@ function PanelTitle({
 }
 
 function ChatPane({
+  bottomInset,
   conversation,
   currentUserId,
   messages,
@@ -733,9 +892,10 @@ function ChatPane({
   onAddMembers,
   isWide,
 }: {
+  bottomInset: number;
   conversation: BackendConversation;
   currentUserId: string;
-  messages: BackendMessage[];
+  messages: ChatMessage[];
   draft: string;
   setDraft: (value: string) => void;
   onSend: () => void;
@@ -743,8 +903,87 @@ function ChatPane({
   onAddMembers: () => void;
   isWide: boolean;
 }) {
+  const { width } = useWindowDimensions();
+  const scrollRef = useRef<ScrollView | null>(null);
+  const [keyboardInset, setKeyboardInset] = useState(0);
+
+  const scrollToLatest = useCallback((animated = true) => {
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollToEnd({ animated });
+    });
+  }, []);
+
+  const updateKeyboardInset = useCallback(
+    (height?: number) => {
+      if (isWide || Platform.OS === "web") {
+        setKeyboardInset(0);
+        return;
+      }
+
+      const keyboardHeight = Math.max(0, Math.round(height ?? 0));
+      const nextInset = keyboardHeight ? keyboardHeight + KEYBOARD_COMPOSER_GAP : 0;
+      setKeyboardInset(nextInset);
+      scrollToLatest(false);
+    },
+    [isWide, scrollToLatest],
+  );
+
+  useEffect(() => {
+    scrollToLatest(false);
+  }, [conversation.id, messages.length, scrollToLatest]);
+
+  useEffect(() => {
+    if (isWide || Platform.OS === "web") return undefined;
+
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showSubscription = Keyboard.addListener(showEvent, (event) => {
+      updateKeyboardInset(event.endCoordinates.height);
+    });
+    const hideSubscription = Keyboard.addListener(hideEvent, () => {
+      setKeyboardInset(0);
+      scrollToLatest(false);
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [isWide, scrollToLatest, updateKeyboardInset]);
+
+  const edgeSwipeResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gestureState) => {
+          if (isWide || Platform.OS === "web") return false;
+
+          const startsAtLeftEdge = gestureState.x0 <= EDGE_SWIPE_WIDTH;
+          const startsAtRightEdge = gestureState.x0 >= width - EDGE_SWIPE_WIDTH;
+          const inwardFromLeft = startsAtLeftEdge && gestureState.dx > 14;
+          const inwardFromRight = startsAtRightEdge && gestureState.dx < -14;
+          const mostlyHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.2;
+
+          return (inwardFromLeft || inwardFromRight) && mostlyHorizontal;
+        },
+        onPanResponderRelease: (_event, gestureState) => {
+          const enoughDistance = Math.abs(gestureState.dx) >= EDGE_SWIPE_TRIGGER;
+          const controlledVerticalDrift = Math.abs(gestureState.dy) <= EDGE_SWIPE_VERTICAL_LIMIT;
+          if (enoughDistance && controlledVerticalDrift) onBack();
+        },
+        onShouldBlockNativeResponder: () => false,
+      }),
+    [isWide, onBack, width],
+  );
+
   return (
-    <View style={[styles.chatPane, !isWide && styles.chatPaneMobile]}>
+    <View
+      {...(!isWide ? edgeSwipeResponder.panHandlers : {})}
+      style={[
+        styles.chatPane,
+        !isWide && styles.chatPaneMobile,
+        !isWide && { paddingBottom: keyboardInset || bottomInset },
+      ]}
+    >
       <View style={styles.chatHeader}>
         <View style={styles.row}>
           {!isWide ? <IconButton icon="arrow-back" label="Back to chats" onPress={onBack} /> : null}
@@ -761,7 +1000,13 @@ function ChatPane({
           <IconButton icon="call-outline" label="Voice call" />
         </View>
       </View>
-      <ScrollView contentContainerStyle={styles.messageList}>
+      <ScrollView
+        contentContainerStyle={styles.messageList}
+        keyboardShouldPersistTaps="handled"
+        onContentSizeChange={() => scrollToLatest()}
+        onLayout={() => scrollToLatest(false)}
+        ref={scrollRef}
+      >
         {messages.length ? (
           messages.map((message) => {
             const mine = message.senderId === currentUserId;
@@ -775,7 +1020,15 @@ function ChatPane({
                   <Text style={styles.messageText}>{message.body}</Text>
                   <View style={styles.messageMeta}>
                     <Text style={styles.metaText}>{formatTime(message.createdAt)}</Text>
-                    {mine ? <Ionicons color={colors.faint} name="checkmark-done" size={15} /> : null}
+                    {mine && message.localState === "sending" ? (
+                      <ActivityIndicator color={colors.faint} size="small" />
+                    ) : null}
+                    {mine && message.localState === "failed" ? (
+                      <Ionicons color={colors.danger} name="alert-circle" size={15} />
+                    ) : null}
+                    {mine && !message.localState ? (
+                      <Ionicons color={colors.faint} name="checkmark-done" size={15} />
+                    ) : null}
                   </View>
                 </View>
               </View>
@@ -787,9 +1040,22 @@ function ChatPane({
       </ScrollView>
       <View style={styles.composer}>
         <TextInput
+          blurOnSubmit={false}
           multiline
           onChangeText={setDraft}
-          onSubmitEditing={onSend}
+          onKeyPress={(event) => {
+            if (Platform.OS !== "web") return;
+            const webEvent = event as unknown as {
+              nativeEvent: { key?: string; shiftKey?: boolean };
+              preventDefault?: () => void;
+            };
+            if (webEvent.nativeEvent.key !== "Enter" || webEvent.nativeEvent.shiftKey) return;
+            webEvent.preventDefault?.();
+            onSend();
+          }}
+          onSubmitEditing={() => {
+            if (Platform.OS !== "web") onSend();
+          }}
           placeholder="Message"
           placeholderTextColor={colors.faint}
           style={styles.composerInput}
@@ -1220,6 +1486,7 @@ function ModalActions({
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.page },
   loadingScreen: { flex: 1, alignItems: "center", justifyContent: "center" },
+  loadingErrorScreen: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 14 },
   loginScreen: { flex: 1, justifyContent: "center", padding: 24, backgroundColor: colors.page },
   loginMark: {
     width: 72,
@@ -1307,6 +1574,7 @@ const styles = StyleSheet.create({
   errorBar: { color: colors.danger, backgroundColor: "#FFF0F0", paddingHorizontal: 14, paddingVertical: 8 },
   content: { flex: 1, flexDirection: "row", padding: 18, gap: 18 },
   contentMobile: { padding: 0, paddingBottom: 72 },
+  contentMobileChat: { paddingBottom: 0, flexDirection: "column", gap: 0, width: "100%" },
   listPanel: {
     width: Platform.select({ web: 390, default: 330 }),
     maxWidth: "100%",
@@ -1338,9 +1606,8 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    minHeight: 72,
-    paddingTop: 8,
-    paddingBottom: Platform.select({ ios: 18, default: 10 }),
+    minHeight: 66,
+    paddingTop: 7,
     paddingHorizontal: 6,
     flexDirection: "row",
     justifyContent: "space-around",
@@ -1401,7 +1668,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F8FCFF",
     overflow: "hidden",
   },
-  chatPaneMobile: { borderRadius: 0, borderWidth: 0 },
+  chatPaneMobile: { width: "100%", maxWidth: "100%", borderRadius: 0, borderWidth: 0 },
   chatHeader: {
     minHeight: 74,
     paddingHorizontal: 12,
@@ -1416,14 +1683,14 @@ const styles = StyleSheet.create({
   chatHeaderTitle: { color: colors.ink, fontSize: 17, fontWeight: "900" },
   chatHeaderSub: { color: colors.muted, fontSize: 12 },
   messageList: { flexGrow: 1, padding: 18, gap: 12 },
-  messageWrap: { maxWidth: "78%" },
+  messageWrap: { width: "78%", maxWidth: "78%", minWidth: 0, flexShrink: 1 },
   messageMine: { alignSelf: "flex-end" },
   messageTheirs: { alignSelf: "flex-start" },
   senderName: { color: colors.primaryDark, fontSize: 12, fontWeight: "800", marginBottom: 4, marginLeft: 8 },
-  bubble: { padding: 11, borderRadius: 14, gap: 6 },
-  mineBubble: { backgroundColor: colors.bubbleMine, borderTopRightRadius: 4 },
+  bubble: { alignSelf: "flex-start", maxWidth: "100%", padding: 11, borderRadius: 14, gap: 6 },
+  mineBubble: { alignSelf: "flex-end", backgroundColor: colors.bubbleMine, borderTopRightRadius: 4 },
   theirBubble: { backgroundColor: colors.bubbleTheirs, borderTopLeftRadius: 4, borderColor: colors.line, borderWidth: 1 },
-  messageText: { color: colors.ink, fontSize: 15, lineHeight: 21 },
+  messageText: { flexShrink: 1, color: colors.ink, fontSize: 15, lineHeight: 21 },
   messageMeta: { alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 4 },
   metaText: { color: colors.faint, fontSize: 10 },
   composer: {
