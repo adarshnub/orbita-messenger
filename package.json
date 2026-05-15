@@ -45,6 +45,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.1.10",
+    "eas-cli": "^18.13.0",
     "typescript": "5.9.3",
     "vitest": "4.1.5"
   }

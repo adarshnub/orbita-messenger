@@ -3,13 +3,17 @@ import { Session } from "@supabase/supabase-js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
   AppState,
   BackHandler,
+  Easing,
   Keyboard,
+  KeyboardAvoidingView,
   Modal,
   PanResponder,
   Platform,
   Pressable,
+  SafeAreaView as RNSafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -43,6 +47,7 @@ const KEYBOARD_COMPOSER_GAP = 18;
 const EDGE_SWIPE_WIDTH = 34;
 const EDGE_SWIPE_TRIGGER = 72;
 const EDGE_SWIPE_VERTICAL_LIMIT = 64;
+const MESSAGE_RECONCILE_WINDOW_MS = 12_000;
 const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: "chats", label: "Chats", icon: "chatbubbles-outline" },
   { id: "status", label: "Status", icon: "aperture-outline" },
@@ -65,6 +70,115 @@ function initials(name: string) {
 
 function formatTime(iso: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+}
+
+function messageSignature(message: Pick<BackendMessage, "senderId" | "body">) {
+  return `${message.senderId}::${message.body.trim().toLowerCase()}`;
+}
+
+function mergeMessages(incoming: BackendMessage[], local: ChatMessage[]) {
+  const pending = local.filter((message) => message.localState);
+  const stable = [...incoming];
+  const stableById = new Set(stable.map((message) => message.id));
+
+  pending.forEach((pendingMessage) => {
+    if (stableById.has(pendingMessage.id)) return;
+    const pendingTime = Date.parse(pendingMessage.createdAt);
+    const match = stable.some((serverMessage) => {
+      const sameSenderAndBody = messageSignature(serverMessage) === messageSignature(pendingMessage);
+      if (!sameSenderAndBody) return false;
+      const serverTime = Date.parse(serverMessage.createdAt);
+      return Math.abs(serverTime - pendingTime) <= MESSAGE_RECONCILE_WINDOW_MS;
+    });
+    if (!match) stable.push(pendingMessage);
+  });
+
+  stable.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  return stable;
+}
+
+function OrbitaLogo({ size = 64 }: { size?: number }) {
+  const spin = useRef(new Animated.Value(0)).current;
+  const counterSpin = useRef(new Animated.Value(0)).current;
+  const pulse = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    const spinLoop = Animated.loop(
+      Animated.timing(spin, {
+        toValue: 1,
+        duration: 4200,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
+    );
+    const pulseLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1.07, duration: 900, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 900, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ]),
+    );
+
+    spinLoop.start();
+    const counterSpinLoop = Animated.loop(
+      Animated.timing(counterSpin, {
+        toValue: 1,
+        duration: 6100,
+        easing: Easing.linear,
+        useNativeDriver: true,
+      }),
+    );
+    counterSpinLoop.start();
+    pulseLoop.start();
+    return () => {
+      spinLoop.stop();
+      counterSpinLoop.stop();
+      pulseLoop.stop();
+    };
+  }, [counterSpin, pulse, spin]);
+
+  const spinInterpolate = spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
+  const counterSpinInterpolate = counterSpin.interpolate({ inputRange: [0, 1], outputRange: ["360deg", "0deg"] });
+
+  return (
+    <Animated.View style={[styles.logoFrame, { width: size, height: size, borderRadius: size / 3, transform: [{ scale: pulse }] }]}>
+      <View style={[styles.logoCore, { width: size - 22, height: size - 22, borderRadius: (size - 22) / 2 }]} />
+      <Animated.View
+        style={[
+          styles.logoOrbit,
+          {
+            width: size - 12,
+            height: size - 12,
+            borderRadius: (size - 12) / 2,
+            transform: [{ rotate: spinInterpolate }],
+          },
+        ]}
+      />
+      <Animated.View
+        style={[
+          styles.logoOrbitAlt,
+          {
+            width: size - 4,
+            height: size - 4,
+            borderRadius: (size - 4) / 2,
+            transform: [{ rotate: counterSpinInterpolate }],
+          },
+        ]}
+      />
+      <Ionicons color="#FFFFFF" name="planet-outline" size={Math.max(24, size * 0.45)} />
+    </Animated.View>
+  );
+}
+
+function OrbitaBrand({ compact }: { compact?: boolean }) {
+  return (
+    <View style={styles.brandRow}>
+      <OrbitaLogo size={compact ? 40 : 48} />
+      <View>
+        <Text style={[styles.brandTitle, compact && styles.brandTitleCompact]}>Orbita</Text>
+        {!compact ? <Text style={styles.brandTagline}>Messaging, with momentum</Text> : null}
+      </View>
+    </View>
+  );
 }
 
 function Avatar({ name, size = 46 }: { name: string; size?: number }) {
@@ -129,7 +243,8 @@ function FullScreenLoader() {
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.loadingScreen}>
-        <ActivityIndicator color={colors.primaryDark} />
+        <OrbitaLogo />
+        <Text style={styles.loadingLabel}>Syncing your universe...</Text>
       </View>
     </SafeAreaView>
   );
@@ -213,12 +328,21 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
   }
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.loginScreen}>
-        <View style={styles.loginMark}>
-          <Ionicons color="#FFFFFF" name="planet-outline" size={34} />
-        </View>
-        <Text style={styles.loginTitle}>Orbita Messenger</Text>
+    <SafeAreaView edges={["top", "left", "right"]} style={styles.safe}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        enabled={Platform.OS !== "web"}
+        style={styles.loginKeyboard}
+      >
+      <ScrollView
+        contentContainerStyle={styles.loginScroll}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.loginScreen}>
+        <View style={styles.loginGlow} />
+        <OrbitaBrand />
+        <Text style={styles.loginTitle}>Sign In</Text>
         <Text style={styles.loginCopy}>
           Sign in with your email OTP and add your phone number to access messages, groups, status, and settings.
         </Text>
@@ -272,7 +396,9 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
             <Text style={styles.hintText}>Required: EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.</Text>
           ) : null}
         </View>
-      </View>
+        </View>
+      </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -292,6 +418,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [agentThinkingFor, setAgentThinkingFor] = useState<Record<string, string>>({});
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [groupOpen, setGroupOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
@@ -314,6 +441,12 @@ function MessengerShell({ session }: { session: Session }) {
     conversationsRef.current = conversations;
   }, [conversations]);
 
+  useEffect(() => {
+    if (!error) return undefined;
+    const timer = setTimeout(() => setError(""), 2800);
+    return () => clearTimeout(timer);
+  }, [error]);
+
   const loadBootstrap = useCallback(async () => {
     if (!supabase) return;
     try {
@@ -335,9 +468,7 @@ function MessengerShell({ session }: { session: Session }) {
       (conversation) => conversation.id === conversationId && conversation.unreadCount > 0,
     );
     if (hasUnread) {
-      void messengerApi.markConversationRead(conversationId).catch((nextError) => {
-        setError(nextError instanceof Error ? nextError.message : "Unable to mark messages as read.");
-      });
+      void messengerApi.markConversationRead(conversationId).catch(() => undefined);
     }
     setConversations((current) =>
       current.map((conversation) =>
@@ -360,17 +491,32 @@ function MessengerShell({ session }: { session: Session }) {
     try {
       const data = await messengerApi.listMessages(conversationId);
       setSelectedMessages((current) => {
-        const pending = current.filter(
-          (message) => message.conversationId === conversationId && message.localState,
-        );
-        return [...data.messages, ...pending];
+        const local = current.filter((message) => message.conversationId === conversationId);
+        const merged = mergeMessages(data.messages, local);
+        const thinkingSince = agentThinkingFor[conversationId];
+        if (thinkingSince) {
+          const since = Date.parse(thinkingSince);
+          const gotAgentReply = merged.some(
+            (message) => message.senderId !== profileId && Date.parse(message.createdAt) >= since,
+          );
+          if (gotAgentReply) {
+            setAgentThinkingFor((currentThinking) => {
+              const next = { ...currentThinking };
+              delete next[conversationId];
+              return next;
+            });
+          }
+        }
+        return merged;
       });
       markConversationReadLocally(conversationId);
       setError("");
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to load messages.");
+      if (selectedId === conversationId) {
+        setError(nextError instanceof Error ? nextError.message : "Unable to load messages.");
+      }
     }
-  }, [markConversationReadLocally]);
+  }, [agentThinkingFor, markConversationReadLocally, profileId, selectedId]);
 
   const scheduleBootstrapRefresh = useCallback(() => {
     if (bootstrapRefreshTimer.current) clearTimeout(bootstrapRefreshTimer.current);
@@ -515,11 +661,17 @@ function MessengerShell({ session }: { session: Session }) {
           : [...withoutTemp, result.message];
       });
       updateConversationPreview(result.message);
+      setAgentThinkingFor((current) => ({ ...current, [selected.id]: result.message.createdAt }));
       scheduleBootstrapRefresh();
     } catch (nextError) {
       setSelectedMessages((current) =>
         current.map((message) => (message.id === tempId ? { ...message, localState: "failed" } : message)),
       );
+      setAgentThinkingFor((current) => {
+        const next = { ...current };
+        delete next[selected.id];
+        return next;
+      });
       setError(nextError instanceof Error ? nextError.message : "Unable to send message.");
     }
   }
@@ -601,6 +753,7 @@ function MessengerShell({ session }: { session: Session }) {
             ) : null}
             {activeTab === "chats" && selected ? (
               <ChatPane
+                agentThinking={Boolean(selected && agentThinkingFor[selected.id])}
                 bottomInset={bottomInset}
                 conversation={selected}
                 currentUserId={profile.id}
@@ -706,7 +859,7 @@ function AppHeader({
 }) {
   return (
     <View style={[styles.header, !isWide && styles.headerMobile]}>
-      <Text style={styles.appName}>Orbita</Text>
+      <OrbitaBrand compact={!isWide} />
       <View style={styles.headerActions}>
         <IconButton icon="create-outline" label="New chat" onPress={onNewChat} />
         <IconButton icon="person-circle-outline" label="Profile" onPress={onOpenProfile} />
@@ -881,6 +1034,7 @@ function PanelTitle({
 }
 
 function ChatPane({
+  agentThinking,
   bottomInset,
   conversation,
   currentUserId,
@@ -892,6 +1046,7 @@ function ChatPane({
   onAddMembers,
   isWide,
 }: {
+  agentThinking: boolean;
   bottomInset: number;
   conversation: BackendConversation;
   currentUserId: string;
@@ -991,7 +1146,11 @@ function ChatPane({
           <View style={styles.chatRowBody}>
             <Text numberOfLines={1} style={styles.chatHeaderTitle}>{conversation.title}</Text>
             <Text style={styles.chatHeaderSub}>
-              {conversation.kind === "group" ? `${conversation.participants.length} members` : "1:1 conversation"}
+              {agentThinking
+                ? `${conversation.title.split(" ")[0] || "Agent"} is thinking...`
+                : conversation.kind === "group"
+                  ? `${conversation.participants.length} members`
+                  : "1:1 conversation"}
             </Text>
           </View>
         </View>
@@ -1037,6 +1196,14 @@ function ChatPane({
         ) : (
           <EmptyState icon="lock-closed-outline" title="No messages" copy="Send the first message in this conversation." compact />
         )}
+        {agentThinking ? (
+          <View style={[styles.messageWrap, styles.messageTheirs]}>
+            <View style={[styles.bubble, styles.theirBubble, styles.thinkingBubble]}>
+              <ActivityIndicator color={colors.primaryDark} size="small" />
+              <Text style={styles.thinkingText}>Thinking...</Text>
+            </View>
+          </View>
+        ) : null}
       </ScrollView>
       <View style={styles.composer}>
         <TextInput
@@ -1485,24 +1652,68 @@ function ModalActions({
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.page },
-  loadingScreen: { flex: 1, alignItems: "center", justifyContent: "center" },
-  loadingErrorScreen: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 14 },
-  loginScreen: { flex: 1, justifyContent: "center", padding: 24, backgroundColor: colors.page },
-  loginMark: {
-    width: 72,
-    height: 72,
-    borderRadius: 22,
+  loadingScreen: { flex: 1, alignItems: "center", justifyContent: "center", gap: 14 },
+  loadingLabel: { color: colors.muted, fontSize: 14, fontWeight: "700" },
+  logoFrame: {
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: colors.primaryDark,
-    ...shadow,
+    backgroundColor: "#0D2A44",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.18)",
+    shadowColor: colors.primaryDark,
+    shadowOpacity: 0.32,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
   },
-  loginTitle: { color: colors.ink, fontSize: 30, fontWeight: "900", marginTop: 22 },
+  logoCore: {
+    position: "absolute",
+    backgroundColor: "rgba(115,198,255,0.26)",
+  },
+  logoOrbit: {
+    position: "absolute",
+    borderWidth: 1.8,
+    borderColor: "rgba(255,255,255,0.45)",
+    borderTopColor: "#FFFFFF",
+  },
+  logoOrbitAlt: {
+    position: "absolute",
+    borderWidth: 1.4,
+    borderColor: "rgba(115,198,255,0.55)",
+    borderLeftColor: "rgba(255,255,255,0.78)",
+  },
+  brandRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  brandTitle: { color: colors.ink, fontSize: 25, fontWeight: "900" },
+  brandTitleCompact: { fontSize: 21 },
+  brandTagline: { color: colors.muted, fontSize: 12, fontWeight: "700", marginTop: 1 },
+  loadingErrorScreen: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 14 },
+  loginKeyboard: { flex: 1 },
+  loginScroll: { flexGrow: 1, justifyContent: "center" },
+  loginScreen: { flex: 1, justifyContent: "center", padding: 24, backgroundColor: colors.page },
+  loginGlow: {
+    position: "absolute",
+    width: 260,
+    height: 260,
+    right: -100,
+    top: -48,
+    borderRadius: 130,
+    backgroundColor: "rgba(123,205,255,0.22)",
+  },
+  loginTitle: { color: colors.ink, fontSize: 32, fontWeight: "900", marginTop: 24 },
   loginCopy: { color: colors.muted, fontSize: 15, lineHeight: 22, marginTop: 8, maxWidth: 420 },
-  loginForm: { marginTop: 28, gap: 12, maxWidth: 440 },
+  loginForm: {
+    marginTop: 24,
+    gap: 12,
+    maxWidth: 440,
+    padding: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(115,198,255,0.25)",
+    backgroundColor: "rgba(255,255,255,0.78)",
+  },
   loginInput: {
     height: 52,
-    borderRadius: radii.md,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: colors.line,
     paddingHorizontal: 14,
@@ -1523,7 +1734,7 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.55 },
   noticeText: { color: colors.primaryDark, fontSize: 13, fontWeight: "700" },
   hintText: { color: colors.muted, fontSize: 12, lineHeight: 18 },
-  appFrame: { flex: 1, flexDirection: "row", backgroundColor: colors.page },
+  appFrame: { flex: 1, flexDirection: "row", backgroundColor: "#F1F7FC" },
   sidebar: {
     width: Platform.select({ web: 104, default: 82 }),
     backgroundColor: "#EEF8FF",
@@ -1566,14 +1777,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderBottomColor: colors.line,
     borderBottomWidth: 1,
-    backgroundColor: colors.surface,
+    backgroundColor: "rgba(255,255,255,0.84)",
   },
   headerMobile: { minHeight: 62, paddingHorizontal: 16 },
-  appName: { color: colors.ink, fontSize: 24, fontWeight: "900", letterSpacing: 0 },
   headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
-  errorBar: { color: colors.danger, backgroundColor: "#FFF0F0", paddingHorizontal: 14, paddingVertical: 8 },
+  errorBar: { color: colors.danger, backgroundColor: "#FFF3F3", paddingHorizontal: 14, paddingVertical: 8 },
   content: { flex: 1, flexDirection: "row", padding: 18, gap: 18 },
-  contentMobile: { padding: 0, paddingBottom: 72 },
+  contentMobile: { padding: 0, paddingBottom: 72, backgroundColor: "#F1F7FC" },
   contentMobileChat: { paddingBottom: 0, flexDirection: "column", gap: 0, width: "100%" },
   listPanel: {
     width: Platform.select({ web: 390, default: 330 }),
@@ -1592,14 +1802,16 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
-  panelHeading: { color: colors.ink, fontSize: 24, fontWeight: "900" },
+  panelHeading: { color: colors.ink, fontSize: 39, fontWeight: "900" },
   iconButton: {
     width: 40,
     height: 40,
     borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: colors.surfaceBlue,
+    backgroundColor: "#EAF4FD",
+    borderWidth: 1,
+    borderColor: "rgba(64,130,173,0.15)",
   },
   bottomTabs: {
     position: "absolute",
@@ -1619,8 +1831,17 @@ const styles = StyleSheet.create({
   bottomTabLabel: { color: colors.muted, fontSize: 11, fontWeight: "800" },
   bottomTabLabelActive: { color: colors.primaryDark },
   listContent: { padding: 12, gap: 10 },
-  chatRow: { flexDirection: "row", alignItems: "center", gap: 12, padding: 10, borderRadius: radii.md },
-  chatRowActive: { backgroundColor: colors.surfaceBlue },
+  chatRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(102,177,225,0.18)",
+    backgroundColor: "rgba(255,255,255,0.84)",
+  },
+  chatRowActive: { backgroundColor: "#E6F3FE", borderColor: "rgba(102,177,225,0.45)" },
   contactRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1636,8 +1857,8 @@ const styles = StyleSheet.create({
   chatRowBody: { flex: 1, minWidth: 0 },
   row: { flexDirection: "row", alignItems: "center", gap: 12 },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  chatTitle: { color: colors.ink, fontSize: 15, fontWeight: "800" },
-  chatTime: { color: colors.faint, fontSize: 11 },
+  chatTitle: { color: colors.ink, fontSize: 16, fontWeight: "900" },
+  chatTime: { color: colors.faint, fontSize: 12, fontWeight: "700" },
   chatPreview: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   chatPreviewUnread: { color: colors.ink, fontWeight: "800" },
   unreadBadge: {
@@ -1665,7 +1886,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.lg,
     borderColor: colors.line,
     borderWidth: 1,
-    backgroundColor: "#F8FCFF",
+    backgroundColor: "#F5FAFF",
     overflow: "hidden",
   },
   chatPaneMobile: { width: "100%", maxWidth: "100%", borderRadius: 0, borderWidth: 0 },
@@ -1677,12 +1898,12 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     borderBottomColor: colors.line,
     borderBottomWidth: 1,
-    backgroundColor: colors.surface,
+    backgroundColor: "rgba(255,255,255,0.88)",
     gap: 10,
   },
   chatHeaderTitle: { color: colors.ink, fontSize: 17, fontWeight: "900" },
   chatHeaderSub: { color: colors.muted, fontSize: 12 },
-  messageList: { flexGrow: 1, padding: 18, gap: 12 },
+  messageList: { flexGrow: 1, padding: 18, gap: 12, backgroundColor: "#F1F7FC" },
   messageWrap: { width: "78%", maxWidth: "78%", minWidth: 0, flexShrink: 1 },
   messageMine: { alignSelf: "flex-end" },
   messageTheirs: { alignSelf: "flex-start" },
@@ -1690,11 +1911,15 @@ const styles = StyleSheet.create({
   bubble: { alignSelf: "flex-start", maxWidth: "100%", padding: 11, borderRadius: 14, gap: 6 },
   mineBubble: { alignSelf: "flex-end", backgroundColor: colors.bubbleMine, borderTopRightRadius: 4 },
   theirBubble: { backgroundColor: colors.bubbleTheirs, borderTopLeftRadius: 4, borderColor: colors.line, borderWidth: 1 },
+  thinkingBubble: { flexDirection: "row", alignItems: "center", gap: 8 },
+  thinkingText: { color: colors.muted, fontSize: 13, fontWeight: "700" },
   messageText: { flexShrink: 1, color: colors.ink, fontSize: 15, lineHeight: 21 },
   messageMeta: { alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 4 },
   metaText: { color: colors.faint, fontSize: 10 },
   composer: {
-    padding: 10,
+    paddingHorizontal: 10,
+    paddingTop: 10,
+    paddingBottom: 12,
     flexDirection: "row",
     alignItems: "flex-end",
     gap: 8,
