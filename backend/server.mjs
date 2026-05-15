@@ -9,6 +9,7 @@ import WebSocket from "ws";
 loadEnv();
 
 const port = Number(process.env.ORBITA_API_PORT ?? process.env.PORT ?? 8787);
+const host = process.env.ORBITA_API_HOST ?? "0.0.0.0";
 const supabaseUrl = process.env.SUPABASE_URL ?? process.env.EXPO_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -100,8 +101,8 @@ createServer(async (req, res) => {
     console.error(message, error);
     sendJson(res, 400, { error: message });
   }
-}).listen(port, () => {
-  console.log(`Orbita backend listening on http://localhost:${port}`);
+}).listen(port, host, () => {
+  console.log(`Orbita backend listening on http://${host}:${port}`);
 });
 
 function loadEnv() {
