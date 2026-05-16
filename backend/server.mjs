@@ -192,10 +192,22 @@ function verifyIntegrationSignature(rawBody, signature, secret) {
   return actualBuffer.length === expectedBuffer.length && nodeTimingSafeEqual(actualBuffer, expectedBuffer);
 }
 
-function mapProfile(row) {
+function isDefaultDisplayName(name) {
+  const normalized = typeof name === "string" ? name.trim().toLowerCase() : "";
+  return !normalized || normalized === "you" || normalized === "orbita user";
+}
+
+function profileDisplayName(row, viewerId = "") {
+  const rawName = typeof row.display_name === "string" ? row.display_name.trim() : "";
+  if (!isDefaultDisplayName(rawName)) return rawName;
+  if (viewerId && row.id === viewerId) return "You";
+  return row.phone || "Orbita user";
+}
+
+function mapProfile(row, viewerId = "") {
   return {
     id: row.id,
-    displayName: row.display_name,
+    displayName: profileDisplayName(row, viewerId),
     phone: row.phone,
     avatarUrl: row.avatar_url,
     about: row.about,
@@ -290,7 +302,7 @@ async function ensureProfile(user) {
   const displayNameFromAuth =
     typeof user.user_metadata?.display_name === "string" && user.user_metadata.display_name.trim()
       ? user.user_metadata.display_name.trim()
-      : "You";
+      : "Orbita user";
   const now = new Date().toISOString();
 
   const { data: existing, error: selectError } = await supabase
@@ -378,7 +390,7 @@ async function loadContacts(userId) {
     .eq("owner_id", userId)
     .order("created_at", { ascending: false });
   if (error) throw error;
-  return (data ?? []).map((row) => mapProfile(row.profiles));
+  return (data ?? []).map((row) => mapProfile(row.profiles, userId));
 }
 
 async function loadMessages(userId, conversationId) {
@@ -453,7 +465,7 @@ async function loadConversations(userId) {
     .order("updated_at", { ascending: false });
   if (error) throw error;
 
-  return Promise.all(
+  const loaded = await Promise.all(
     (conversations ?? []).map(async (conversation) => {
       const { data: participants, error: participantError } = await supabase
         .from("conversation_participants")
@@ -472,7 +484,7 @@ async function loadConversations(userId) {
       if (lastError) throw lastError;
 
       const mappedParticipants = (participants ?? []).map((row) => ({
-        ...mapProfile(row.profiles),
+        ...mapProfile(row.profiles, userId),
         role: row.role,
       }));
       const directPeer = mappedParticipants.find((profile) => profile.id !== userId);
@@ -494,6 +506,32 @@ async function loadConversations(userId) {
       };
     }),
   );
+
+  const bestDirectByPeer = new Map();
+  return loaded.filter((conversation) => {
+    if (conversation.kind !== "direct") return true;
+    const peer = conversation.participants.find((participant) => participant.id !== userId);
+    if (!peer) return true;
+    const existing = bestDirectByPeer.get(peer.id);
+    if (!existing) {
+      bestDirectByPeer.set(peer.id, conversation);
+      return true;
+    }
+    const conversationScore = (conversation.lastMessage ? 2 : 0) + (conversation.unreadCount > 0 ? 1 : 0);
+    const existingScore = (existing.lastMessage ? 2 : 0) + (existing.unreadCount > 0 ? 1 : 0);
+    if (
+      conversationScore > existingScore ||
+      (conversationScore === existingScore && Date.parse(conversation.updatedAt) > Date.parse(existing.updatedAt))
+    ) {
+      bestDirectByPeer.set(peer.id, conversation);
+      return true;
+    }
+    return false;
+  }).filter((conversation) => {
+    if (conversation.kind !== "direct") return true;
+    const peer = conversation.participants.find((participant) => participant.id !== userId);
+    return !peer || bestDirectByPeer.get(peer.id)?.id === conversation.id;
+  });
 }
 
 async function loadStatuses(userId) {
@@ -514,7 +552,7 @@ async function loadStatuses(userId) {
 
   return (data ?? []).map((row) => ({
     id: row.id,
-    author: mapProfile(row.profiles),
+    author: mapProfile(row.profiles, userId),
     kind: row.kind,
     text: typeof row.encrypted_payload?.text === "string" ? row.encrypted_payload.text : "",
     mediaUrl: typeof row.encrypted_payload?.mediaUrl === "string" ? row.encrypted_payload.mediaUrl : null,
@@ -534,6 +572,7 @@ async function createDirectConversation(userId, otherUserId) {
     .eq("user_id", userId);
   if (sharedError) throw sharedError;
 
+  let hasExistingDirect = false;
   for (const row of shared ?? []) {
     if (row.conversations?.kind !== "direct") continue;
     const { data: peer } = await supabase
@@ -543,12 +582,19 @@ async function createDirectConversation(userId, otherUserId) {
       .eq("user_id", otherUserId)
       .maybeSingle();
     if (peer) {
-      const existing = (await loadConversations(userId)).find(
-        (conversation) => conversation.id === peer.conversation_id,
-      );
-      if (!existing) throw new Error("Unable to load existing conversation.");
-      return existing;
+      hasExistingDirect = true;
+      break;
     }
+  }
+
+  if (hasExistingDirect) {
+    const existing = (await loadConversations(userId)).find(
+      (conversation) =>
+        conversation.kind === "direct" &&
+        conversation.participants.some((participant) => participant.id === otherUserId),
+      );
+    if (!existing) throw new Error("Unable to load existing conversation.");
+    return existing;
   }
 
   const { data: conversation, error } = await supabase
@@ -745,7 +791,7 @@ async function handleAction(user, action, payload) {
 
   if (action === "bootstrap") {
     return {
-      profile: mapProfile(await getProfile(user.id)),
+      profile: mapProfile(await getProfile(user.id), user.id),
       contacts: await loadContacts(user.id),
       conversations: await loadConversations(user.id),
       statuses: await loadStatuses(user.id),
@@ -762,7 +808,7 @@ async function handleAction(user, action, payload) {
       .select()
       .single();
     if (error) throw error;
-    return { profile: mapProfile(data) };
+    return { profile: mapProfile(data, user.id) };
   }
 
   if (action === "search_users") {
@@ -804,7 +850,7 @@ async function handleAction(user, action, payload) {
       .from("contacts")
       .upsert({ owner_id: user.id, contact_user_id: contact.id }, { onConflict: "owner_id,contact_user_id" });
     if (insertError) throw insertError;
-    return { contact: mapProfile(contact) };
+    return { contact: mapProfile(contact, user.id) };
   }
 
   if (action === "create_direct_conversation") {

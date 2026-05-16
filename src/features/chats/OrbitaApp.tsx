@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Session } from "@supabase/supabase-js";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -9,17 +9,20 @@ import {
   Easing,
   Keyboard,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   PanResponder,
   Platform,
   Pressable,
   SafeAreaView as RNSafeAreaView,
   ScrollView,
+  StyleProp,
   StyleSheet,
   Text,
   TextInput,
   useWindowDimensions,
   View,
+  ViewStyle,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import {
@@ -45,6 +48,7 @@ type Tab = "chats" | "status" | "contacts" | "calls" | "settings";
 type ChatMessage = BackendMessage & { localState?: "sending" | "failed" };
 
 const KEYBOARD_COMPOSER_GAP = 18;
+const KEYBOARD_SAFETY_GAP = Platform.OS === "android" ? 34 : 14;
 const EDGE_SWIPE_WIDTH = 34;
 const EDGE_SWIPE_TRIGGER = 72;
 const EDGE_SWIPE_VERTICAL_LIMIT = 64;
@@ -73,8 +77,71 @@ function formatTime(iso: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
 }
 
+function normalizeUrl(url: string) {
+  return url.startsWith("www.") ? `https://${url}` : url;
+}
+
+function splitTrailingPunctuation(url: string) {
+  const match = url.match(/^(.+?)([.,!?;:]+)?$/);
+  return {
+    cleanUrl: match?.[1] ?? url,
+    trailing: match?.[2] ?? "",
+  };
+}
+
+function openMessageUrl(url: string) {
+  void Linking.openURL(normalizeUrl(url)).catch(() => undefined);
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function messageSignature(message: Pick<BackendMessage, "senderId" | "body">) {
   return `${message.senderId}::${message.body.trim().toLowerCase()}`;
+}
+
+function isTaskManagerAgentConversation(conversation: BackendConversation) {
+  return conversation.participants.some((participant) => participant.about?.trim().toLowerCase() === "task manager agent");
+}
+
+function keyboardClearance(height?: number, bottomInset = 0, keyboardTop?: number, windowHeight?: number) {
+  const keyboardHeight = Math.max(0, Math.round(height ?? 0));
+  const hasKeyboardTop = typeof keyboardTop === "number" && keyboardTop > 0 && typeof windowHeight === "number";
+  const overlap =
+    hasKeyboardTop
+      ? Math.max(0, Math.round(windowHeight - keyboardTop))
+      : 0;
+  const neededClearance = hasKeyboardTop ? overlap : keyboardHeight;
+  if (!neededClearance) return 0;
+  return neededClearance + bottomInset + KEYBOARD_SAFETY_GAP;
+}
+
+function useKeyboardClearance(enabled = true) {
+  const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
+  const [clearance, setClearance] = useState(0);
+
+  useEffect(() => {
+    if (!enabled || Platform.OS === "web") {
+      setClearance(0);
+      return undefined;
+    }
+
+    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
+    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
+    const showSubscription = Keyboard.addListener(showEvent, (event) => {
+      setClearance(keyboardClearance(event.endCoordinates.height, insets.bottom, event.endCoordinates.screenY, height));
+    });
+    const hideSubscription = Keyboard.addListener(hideEvent, () => setClearance(0));
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [enabled, height, insets.bottom]);
+
+  return clearance;
 }
 
 function mergeMessages(incoming: BackendMessage[], local: ChatMessage[]) {
@@ -190,6 +257,234 @@ function Avatar({ name, size = 46 }: { name: string; size?: number }) {
   );
 }
 
+function SkeletonBlock({ style }: { style?: StyleProp<ViewStyle> }) {
+  const opacity = useRef(new Animated.Value(0.42)).current;
+
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(opacity, { toValue: 0.86, duration: 760, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(opacity, { toValue: 0.42, duration: 760, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [opacity]);
+
+  return <Animated.View style={[styles.skeletonBlock, style, { opacity }]} />;
+}
+
+function ChatRowsSkeleton({ count = 5 }: { count?: number }) {
+  return (
+    <>
+      {Array.from({ length: count }).map((_, index) => (
+        <View key={index} style={styles.chatRow}>
+          <SkeletonBlock style={styles.skeletonAvatar} />
+          <View style={styles.chatRowBody}>
+            <View style={styles.rowBetween}>
+              <SkeletonBlock style={styles.skeletonTitle} />
+              <SkeletonBlock style={styles.skeletonTime} />
+            </View>
+            <SkeletonBlock style={[styles.skeletonLine, index % 2 === 0 ? styles.skeletonLineLong : styles.skeletonLineMid]} />
+          </View>
+        </View>
+      ))}
+    </>
+  );
+}
+
+function MessageListSkeleton() {
+  return (
+    <>
+      <View style={[styles.messageWrap, styles.messageTheirs]}>
+        <View style={[styles.skeletonBubble, styles.skeletonBubbleIncoming]}>
+          <SkeletonBlock style={styles.skeletonMessageLineWide} />
+          <SkeletonBlock style={styles.skeletonMessageLineMid} />
+        </View>
+      </View>
+      <View style={[styles.messageWrap, styles.messageMine]}>
+        <View style={[styles.skeletonBubble, styles.skeletonBubbleOutgoing]}>
+          <SkeletonBlock style={styles.skeletonMessageLineWide} />
+          <SkeletonBlock style={styles.skeletonMessageLineShort} />
+        </View>
+      </View>
+      <View style={[styles.messageWrap, styles.messageTheirs]}>
+        <View style={[styles.skeletonBubble, styles.skeletonBubbleIncoming]}>
+          <SkeletonBlock style={styles.skeletonMessageLineMid} />
+          <SkeletonBlock style={styles.skeletonMedia} />
+        </View>
+      </View>
+      <View style={[styles.messageWrap, styles.messageMine]}>
+        <View style={[styles.skeletonBubble, styles.skeletonBubbleOutgoing]}>
+          <SkeletonBlock style={styles.skeletonMessageLineShort} />
+        </View>
+      </View>
+    </>
+  );
+}
+
+function MessageBody({ mine, text }: { mine: boolean; text: string }) {
+  return (
+    <Text style={[styles.messageText, mine && styles.messageTextMine]}>
+      {renderMessageInline(text, mine, "message")}
+    </Text>
+  );
+}
+
+function renderMessageInline(text: string, mine: boolean, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const tokenPattern = /\[([^\]]+)\]\(((?:https?:\/\/|www\.)[^)\s]+)\)|((?:https?:\/\/|www\.)[^\s<]+)/gi;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenPattern.exec(text))) {
+    if (match.index > cursor) {
+      nodes.push(...renderMessageFormatting(text.slice(cursor, match.index), mine, `${keyPrefix}-text-${cursor}`));
+    }
+
+    const label = match[1] || match[3] || "";
+    const rawUrl = match[2] || match[3] || "";
+    const { cleanUrl, trailing } = splitTrailingPunctuation(rawUrl);
+    nodes.push(
+      <Text
+        accessibilityRole="link"
+        key={`${keyPrefix}-link-${match.index}`}
+        onPress={() => openMessageUrl(cleanUrl)}
+        style={[styles.messageLink, mine && styles.messageLinkMine]}
+      >
+        {label === rawUrl ? cleanUrl : label}
+      </Text>,
+    );
+    if (trailing) nodes.push(<Text key={`${keyPrefix}-trail-${match.index}`}>{trailing}</Text>);
+    cursor = match.index + match[0].length;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(...renderMessageFormatting(text.slice(cursor), mine, `${keyPrefix}-text-${cursor}`));
+  }
+
+  return nodes;
+}
+
+function renderMessageFormatting(text: string, mine: boolean, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const formatPattern = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(__([^_]+)__)|(\*([^*\n]+)\*)|(_([^_\n]+)_)/g;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = formatPattern.exec(text))) {
+    if (match.index > cursor) nodes.push(text.slice(cursor, match.index));
+
+    const code = match[2];
+    const strong = match[4] || match[6];
+    const emphasis = match[8] || match[10];
+    if (code) {
+      nodes.push(
+        <Text key={`${keyPrefix}-code-${match.index}`} style={[styles.messageCode, mine && styles.messageCodeMine]}>
+          {code}
+        </Text>,
+      );
+    } else if (strong) {
+      nodes.push(
+        <Text key={`${keyPrefix}-strong-${match.index}`} style={styles.messageStrong}>
+          {strong}
+        </Text>,
+      );
+    } else if (emphasis) {
+      nodes.push(
+        <Text key={`${keyPrefix}-em-${match.index}`} style={styles.messageEmphasis}>
+          {emphasis}
+        </Text>,
+      );
+    }
+    cursor = match.index + match[0].length;
+  }
+
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
+}
+
+function StatusSkeleton() {
+  return (
+    <>
+      <View style={styles.statusComposer}>
+        <SkeletonBlock style={styles.skeletonAvatarLarge} />
+        <View style={styles.chatRowBody}>
+          <SkeletonBlock style={styles.skeletonTitle} />
+          <SkeletonBlock style={styles.skeletonLineMid} />
+        </View>
+      </View>
+      <View style={styles.statusCard}>
+        <View style={styles.row}>
+          <SkeletonBlock style={styles.skeletonAvatar} />
+          <View style={styles.chatRowBody}>
+            <SkeletonBlock style={styles.skeletonTitle} />
+            <SkeletonBlock style={styles.skeletonLineShort} />
+          </View>
+        </View>
+        <SkeletonBlock style={styles.skeletonStatusText} />
+      </View>
+    </>
+  );
+}
+
+function SettingsSkeleton() {
+  return (
+    <>
+      <View style={styles.profileCard}>
+        <SkeletonBlock style={styles.skeletonAvatarXL} />
+        <View style={styles.chatRowBody}>
+          <SkeletonBlock style={styles.skeletonTitleWide} />
+          <SkeletonBlock style={styles.skeletonLineMid} />
+          <SkeletonBlock style={styles.skeletonLineShort} />
+        </View>
+      </View>
+      {Array.from({ length: 3 }).map((_, index) => (
+        <View key={index} style={styles.settingRow}>
+          <SkeletonBlock style={styles.skeletonIcon} />
+          <View style={styles.chatRowBody}>
+            <SkeletonBlock style={styles.skeletonTitle} />
+            <SkeletonBlock style={styles.skeletonLineLong} />
+          </View>
+        </View>
+      ))}
+    </>
+  );
+}
+
+function AppShellSkeleton() {
+  return (
+    <SafeAreaView edges={["top", "left", "right"]} style={styles.safe}>
+      <View style={styles.appFrame}>
+        <View style={styles.workspace}>
+          <View style={[styles.header, styles.headerMobile]}>
+            <View style={styles.brandRow}>
+              <SkeletonBlock style={styles.skeletonLogo} />
+              <SkeletonBlock style={styles.skeletonBrand} />
+            </View>
+            <View style={styles.headerActions}>
+              <SkeletonBlock style={styles.skeletonIconButton} />
+              <SkeletonBlock style={styles.skeletonIconButton} />
+              <SkeletonBlock style={styles.skeletonIconButton} />
+            </View>
+          </View>
+          <View style={[styles.content, styles.contentMobile]}>
+            <View style={[styles.listPanel, styles.mobilePanel]}>
+              <View style={styles.panelTitle}>
+                <SkeletonBlock style={styles.skeletonPanelHeading} />
+                <SkeletonBlock style={styles.skeletonIconButton} />
+              </View>
+              <ScrollView contentContainerStyle={styles.listContent}>
+                <ChatRowsSkeleton count={6} />
+              </ScrollView>
+            </View>
+          </View>
+        </View>
+      </View>
+    </SafeAreaView>
+  );
+}
+
 function IconButton({
   icon,
   label,
@@ -258,6 +553,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
   const [otpSent, setOtpSent] = useState(false);
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const keyboardInset = useKeyboardClearance();
 
   async function requestOtp() {
     const normalizedEmail = email.trim().toLowerCase();
@@ -336,7 +632,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
         style={styles.loginKeyboard}
       >
       <ScrollView
-        contentContainerStyle={styles.loginScroll}
+        contentContainerStyle={[styles.loginScroll, keyboardInset ? { paddingBottom: keyboardInset } : null]}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
@@ -417,6 +713,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [selectedMessages, setSelectedMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMessagesFor, setLoadingMessagesFor] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [agentThinkingFor, setAgentThinkingFor] = useState<Record<string, string>>({});
@@ -428,8 +725,11 @@ function MessengerShell({ session }: { session: Session }) {
   const bootstrapRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageRefreshTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const conversationsRef = useRef<BackendConversation[]>([]);
+  const agentThinkingForRef = useRef<Record<string, string>>({});
+  const selectedIdRef = useRef("");
   const lastUnreadTotalRef = useRef<number | null>(null);
   const incomingHapticAtRef = useRef(0);
+  const bootstrapHasLoadedRef = useRef(false);
 
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
   const conversationIds = useMemo(() => conversations.map((conversation) => conversation.id), [conversations]);
@@ -443,6 +743,14 @@ function MessengerShell({ session }: { session: Session }) {
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
+
+  useEffect(() => {
+    agentThinkingForRef.current = agentThinkingFor;
+  }, [agentThinkingFor]);
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
 
   useEffect(() => {
     if (!error) return undefined;
@@ -459,23 +767,35 @@ function MessengerShell({ session }: { session: Session }) {
 
   const loadBootstrap = useCallback(async () => {
     if (!supabase) return;
-    try {
-      const data = await messengerApi.bootstrap();
-      const nextUnreadTotal = data.conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
-      if (lastUnreadTotalRef.current !== null && nextUnreadTotal > lastUnreadTotalRef.current) {
-        playIncomingHaptic();
+    const maxAttempts = bootstrapHasLoadedRef.current ? 1 : 3;
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        const data = await messengerApi.bootstrap();
+        const nextUnreadTotal = data.conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
+        if (lastUnreadTotalRef.current !== null && nextUnreadTotal > lastUnreadTotalRef.current) {
+          playIncomingHaptic();
+        }
+        lastUnreadTotalRef.current = nextUnreadTotal;
+        bootstrapHasLoadedRef.current = true;
+        setProfile(data.profile);
+        setContacts(data.contacts);
+        setConversations(data.conversations);
+        setStatuses(data.statuses);
+        setError("");
+        setLoading(false);
+        return;
+      } catch (nextError) {
+        lastError = nextError;
+        if (attempt < maxAttempts) {
+          await delay(450 * attempt);
+        }
       }
-      lastUnreadTotalRef.current = nextUnreadTotal;
-      setProfile(data.profile);
-      setContacts(data.contacts);
-      setConversations(data.conversations);
-      setStatuses(data.statuses);
-      setError("");
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : "Unable to load backend data.");
-    } finally {
-      setLoading(false);
     }
+
+    setError(lastError instanceof Error ? lastError.message : "Unable to load backend data.");
+    setLoading(false);
   }, [playIncomingHaptic]);
 
   const markConversationReadLocally = useCallback((conversationId: string) => {
@@ -515,7 +835,7 @@ function MessengerShell({ session }: { session: Session }) {
           return Date.now() - Date.parse(message.createdAt) < 60_000;
         });
         if (hasFreshIncoming) playIncomingHaptic();
-        const thinkingSince = agentThinkingFor[conversationId];
+        const thinkingSince = agentThinkingForRef.current[conversationId];
         if (thinkingSince) {
           const since = Date.parse(thinkingSince);
           const gotAgentReply = merged.some(
@@ -534,11 +854,13 @@ function MessengerShell({ session }: { session: Session }) {
       markConversationReadLocally(conversationId);
       setError("");
     } catch (nextError) {
-      if (selectedId === conversationId) {
+      if (selectedIdRef.current === conversationId) {
         setError(nextError instanceof Error ? nextError.message : "Unable to load messages.");
       }
+    } finally {
+      setLoadingMessagesFor((current) => (current === conversationId ? "" : current));
     }
-  }, [agentThinkingFor, markConversationReadLocally, playIncomingHaptic, profileId, selectedId]);
+  }, [markConversationReadLocally, playIncomingHaptic, profileId]);
 
   const scheduleBootstrapRefresh = useCallback(() => {
     if (bootstrapRefreshTimer.current) clearTimeout(bootstrapRefreshTimer.current);
@@ -573,8 +895,11 @@ function MessengerShell({ session }: { session: Session }) {
   useEffect(() => {
     if (!selectedId) {
       setSelectedMessages([]);
+      setLoadingMessagesFor("");
       return;
     }
+    setSelectedMessages([]);
+    setLoadingMessagesFor(selectedId);
     loadMessages(selectedId);
   }, [loadMessages, selectedId]);
 
@@ -684,7 +1009,9 @@ function MessengerShell({ session }: { session: Session }) {
       });
       updateConversationPreview(result.message);
       void hapticMessageSent();
-      setAgentThinkingFor((current) => ({ ...current, [selected.id]: result.message.createdAt }));
+      if (isTaskManagerAgentConversation(selected)) {
+        setAgentThinkingFor((current) => ({ ...current, [selected.id]: result.message.createdAt }));
+      }
       scheduleBootstrapRefresh();
     } catch (nextError) {
       setSelectedMessages((current) =>
@@ -705,7 +1032,7 @@ function MessengerShell({ session }: { session: Session }) {
   }
 
   if (loading) {
-    return <FullScreenLoader />;
+    return <AppShellSkeleton />;
   }
 
   if (!profile) {
@@ -783,6 +1110,7 @@ function MessengerShell({ session }: { session: Session }) {
                 draft={draft}
                 isWide={isWide}
                 messages={selectedMessages}
+                messagesLoading={loadingMessagesFor === selected.id}
                 onAddMembers={() => setMembersOpen(true)}
                 onBack={() => setSelectedId("")}
                 onSend={() => sendMessage()}
@@ -1062,6 +1390,7 @@ function ChatPane({
   conversation,
   currentUserId,
   messages,
+  messagesLoading,
   draft,
   setDraft,
   onSend,
@@ -1074,6 +1403,7 @@ function ChatPane({
   conversation: BackendConversation;
   currentUserId: string;
   messages: ChatMessage[];
+  messagesLoading: boolean;
   draft: string;
   setDraft: (value: string) => void;
   onSend: () => void;
@@ -1083,7 +1413,7 @@ function ChatPane({
 }) {
   const { width } = useWindowDimensions();
   const scrollRef = useRef<ScrollView | null>(null);
-  const [keyboardInset, setKeyboardInset] = useState(0);
+  const keyboardInset = useKeyboardClearance(!isWide);
 
   const scrollToLatest = useCallback((animated = true) => {
     requestAnimationFrame(() => {
@@ -1091,43 +1421,13 @@ function ChatPane({
     });
   }, []);
 
-  const updateKeyboardInset = useCallback(
-    (height?: number) => {
-      if (isWide || Platform.OS === "web") {
-        setKeyboardInset(0);
-        return;
-      }
-
-      const keyboardHeight = Math.max(0, Math.round(height ?? 0));
-      const nextInset = keyboardHeight ? keyboardHeight + KEYBOARD_COMPOSER_GAP : 0;
-      setKeyboardInset(nextInset);
-      scrollToLatest(false);
-    },
-    [isWide, scrollToLatest],
-  );
-
   useEffect(() => {
     scrollToLatest(false);
   }, [conversation.id, messages.length, scrollToLatest]);
 
   useEffect(() => {
-    if (isWide || Platform.OS === "web") return undefined;
-
-    const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
-    const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
-    const showSubscription = Keyboard.addListener(showEvent, (event) => {
-      updateKeyboardInset(event.endCoordinates.height);
-    });
-    const hideSubscription = Keyboard.addListener(hideEvent, () => {
-      setKeyboardInset(0);
-      scrollToLatest(false);
-    });
-
-    return () => {
-      showSubscription.remove();
-      hideSubscription.remove();
-    };
-  }, [isWide, scrollToLatest, updateKeyboardInset]);
+    if (keyboardInset) scrollToLatest(false);
+  }, [keyboardInset, scrollToLatest]);
 
   const edgeSwipeResponder = useMemo(
     () =>
@@ -1159,7 +1459,7 @@ function ChatPane({
       style={[
         styles.chatPane,
         !isWide && styles.chatPaneMobile,
-        !isWide && { paddingBottom: keyboardInset || bottomInset },
+        !isWide && { paddingBottom: keyboardInset || Math.max(bottomInset, KEYBOARD_COMPOSER_GAP) },
       ]}
     >
       <View style={styles.chatHeader}>
@@ -1189,7 +1489,9 @@ function ChatPane({
         onLayout={() => scrollToLatest(false)}
         ref={scrollRef}
       >
-        {messages.length ? (
+        {messagesLoading ? (
+          <MessageListSkeleton />
+        ) : messages.length ? (
           messages.map((message) => {
             const mine = message.senderId === currentUserId;
             const sender = conversation.participants.find((participant) => participant.id === message.senderId);
@@ -1199,7 +1501,7 @@ function ChatPane({
                   <Text style={styles.senderName}>{sender?.displayName ?? "Member"}</Text>
                 ) : null}
                 <View style={[styles.bubble, mine ? styles.mineBubble : styles.theirBubble]}>
-                  <Text style={[styles.messageText, mine && styles.messageTextMine]}>{message.body}</Text>
+                  <MessageBody mine={mine} text={message.body} />
                   <View style={styles.messageMeta}>
                     <Text style={[styles.metaText, mine && styles.metaTextMine]}>{formatTime(message.createdAt)}</Text>
                     {mine && message.localState === "sending" ? (
@@ -1445,9 +1747,7 @@ function NewChatModal({
   }
 
   return (
-    <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard}>
+    <KeyboardAwareModal onClose={onClose} visible={visible}>
           <Text style={styles.modalTitle}>New chat</Text>
           <View style={styles.inlineForm}>
             <TextInput
@@ -1476,7 +1776,24 @@ function NewChatModal({
             )) : <EmptyState compact icon="person-add-outline" title="No contacts" copy="Add a registered phone number first." />}
           </ScrollView>
           <ModalActions onCancel={onClose} />
-        </View>
+    </KeyboardAwareModal>
+  );
+}
+
+function KeyboardAwareModal({ children, onClose, visible }: { children: ReactNode; onClose: () => void; visible: boolean }) {
+  const keyboardInset = useKeyboardClearance(visible);
+
+  return (
+    <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
+      <View style={[styles.modalBackdrop, keyboardInset ? { paddingBottom: keyboardInset } : null]}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+          enabled={Platform.OS !== "web"}
+          keyboardVerticalOffset={KEYBOARD_SAFETY_GAP}
+          style={styles.modalKeyboardFrame}
+        >
+          <View style={styles.modalCard}>{children}</View>
+        </KeyboardAvoidingView>
       </View>
     </Modal>
   );
@@ -1508,16 +1825,12 @@ function GroupModal({
   }
 
   return (
-    <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard}>
+    <KeyboardAwareModal onClose={onClose} visible={visible}>
           <Text style={styles.modalTitle}>Create group</Text>
           <TextInput onChangeText={setTitle} placeholder="Group name" placeholderTextColor={colors.faint} style={styles.modalInput} value={title} />
           <ContactPicker contacts={contacts} selected={selected} toggle={toggle} />
           <ModalActions onCancel={onClose} onSubmit={submit} submitLabel="Create" disabled={!title.trim()} />
-        </View>
-      </View>
-    </Modal>
+    </KeyboardAwareModal>
   );
 }
 
@@ -1548,15 +1861,11 @@ function AddMembersModal({
   }
 
   return (
-    <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard}>
+    <KeyboardAwareModal onClose={onClose} visible={visible}>
           <Text style={styles.modalTitle}>Add members</Text>
           <ContactPicker contacts={available} selected={selected} toggle={toggle} />
           <ModalActions onCancel={onClose} onSubmit={submit} submitLabel="Add" disabled={!selected.length} />
-        </View>
-      </View>
-    </Modal>
+    </KeyboardAwareModal>
   );
 }
 
@@ -1603,15 +1912,11 @@ function StatusModal({
   }
 
   return (
-    <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard}>
+    <KeyboardAwareModal onClose={onClose} visible={visible}>
           <Text style={styles.modalTitle}>New status</Text>
           <TextInput multiline onChangeText={setText} placeholder="Share a quick update" placeholderTextColor={colors.faint} style={[styles.modalInput, styles.statusInput]} value={text} />
           <ModalActions onCancel={onClose} onSubmit={submit} submitLabel="Post" disabled={!text.trim()} />
-        </View>
-      </View>
-    </Modal>
+    </KeyboardAwareModal>
   );
 }
 
@@ -1635,16 +1940,12 @@ function ProfileModal({
   }, [profile]);
 
   return (
-    <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
-      <View style={styles.modalBackdrop}>
-        <View style={styles.modalCard}>
+    <KeyboardAwareModal onClose={onClose} visible={visible}>
           <Text style={styles.modalTitle}>Profile</Text>
           <TextInput onChangeText={setDisplayName} placeholder="Display name" placeholderTextColor={colors.faint} style={styles.modalInput} value={displayName} />
           <TextInput onChangeText={setAbout} placeholder="About" placeholderTextColor={colors.faint} style={styles.modalInput} value={about} />
           <ModalActions onCancel={onClose} onSubmit={() => onSave(displayName, about)} submitLabel="Save" disabled={!displayName.trim()} />
-        </View>
-      </View>
-    </Modal>
+    </KeyboardAwareModal>
   );
 }
 
@@ -1856,6 +2157,30 @@ const styles = StyleSheet.create({
   bottomTabLabel: { color: colors.muted, fontSize: 11, fontWeight: "800" },
   bottomTabLabelActive: { color: colors.primaryDark },
   listContent: { padding: 12, gap: 10 },
+  skeletonBlock: { backgroundColor: "#DDD7EB" },
+  skeletonLogo: { width: 48, height: 48, borderRadius: 16, backgroundColor: "rgba(255,255,255,0.35)" },
+  skeletonBrand: { width: 116, height: 22, borderRadius: 8 },
+  skeletonPanelHeading: { width: 138, height: 38, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.36)" },
+  skeletonIconButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.36)" },
+  skeletonAvatar: { width: 46, height: 46, borderRadius: 23 },
+  skeletonAvatarLarge: { width: 54, height: 54, borderRadius: 27 },
+  skeletonAvatarXL: { width: 64, height: 64, borderRadius: 32 },
+  skeletonIcon: { width: 22, height: 22, borderRadius: 8 },
+  skeletonTitle: { width: 118, height: 16, borderRadius: 7 },
+  skeletonTitleWide: { width: 156, height: 20, borderRadius: 8 },
+  skeletonTime: { width: 54, height: 12, borderRadius: 6 },
+  skeletonLine: { height: 13, borderRadius: 7, marginTop: 9 },
+  skeletonLineLong: { width: "82%" },
+  skeletonLineMid: { width: "62%" },
+  skeletonLineShort: { width: "42%" },
+  skeletonStatusText: { width: "88%", height: 56, borderRadius: 12 },
+  skeletonBubble: { gap: 9, padding: 12, borderRadius: 16 },
+  skeletonBubbleIncoming: { backgroundColor: "rgba(255,255,255,0.82)", borderTopLeftRadius: 4 },
+  skeletonBubbleOutgoing: { alignSelf: "flex-end", backgroundColor: "rgba(101,81,196,0.30)", borderTopRightRadius: 4 },
+  skeletonMessageLineWide: { width: 210, maxWidth: "100%", height: 14, borderRadius: 7 },
+  skeletonMessageLineMid: { width: 154, maxWidth: "85%", height: 14, borderRadius: 7 },
+  skeletonMessageLineShort: { width: 92, maxWidth: "60%", height: 14, borderRadius: 7 },
+  skeletonMedia: { width: 150, height: 92, borderRadius: 12, marginTop: 2 },
   chatRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1941,6 +2266,19 @@ const styles = StyleSheet.create({
   thinkingText: { color: colors.muted, fontSize: 13, fontWeight: "700" },
   messageText: { flexShrink: 1, color: colors.ink, fontSize: 15, lineHeight: 21 },
   messageTextMine: { color: "#FFFFFF" },
+  messageStrong: { fontWeight: "900" },
+  messageEmphasis: { fontStyle: "italic" },
+  messageLink: { color: colors.primaryDark, fontWeight: "900", textDecorationLine: "underline" },
+  messageLinkMine: { color: colors.accentSoft },
+  messageCode: {
+    paddingHorizontal: 5,
+    borderRadius: 5,
+    overflow: "hidden",
+    color: colors.ink,
+    backgroundColor: colors.primarySoft,
+    fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
+  },
+  messageCodeMine: { color: "#FFFFFF", backgroundColor: "rgba(255,255,255,0.18)" },
   messageMeta: { alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 4 },
   metaText: { color: colors.faint, fontSize: 10 },
   metaTextMine: { color: "rgba(255,255,255,0.72)" },
@@ -2021,6 +2359,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(16, 32, 51, 0.24)",
   },
   modalBackdrop: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.overlay, padding: 18 },
+  modalKeyboardFrame: { width: "100%", maxWidth: 430, maxHeight: "100%" },
   modalCard: { width: "100%", maxWidth: 430, maxHeight: "86%", borderRadius: radii.lg, backgroundColor: colors.surface, padding: 18, gap: 14 },
   modalTitle: { color: colors.ink, fontSize: 22, fontWeight: "900" },
   modalInput: {
