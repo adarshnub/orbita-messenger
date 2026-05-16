@@ -29,6 +29,7 @@ import {
   BackendStatus,
 } from "@/features/chats/backendTypes";
 import { messengerApi } from "@/lib/messengerApi";
+import { hapticMessageReceived, hapticMessageSent } from "@/lib/haptics";
 import { normalizePhone } from "@/lib/phone";
 import {
   hasSupabaseConfig,
@@ -427,6 +428,8 @@ function MessengerShell({ session }: { session: Session }) {
   const bootstrapRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageRefreshTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const conversationsRef = useRef<BackendConversation[]>([]);
+  const lastUnreadTotalRef = useRef<number | null>(null);
+  const incomingHapticAtRef = useRef(0);
 
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
   const conversationIds = useMemo(() => conversations.map((conversation) => conversation.id), [conversations]);
@@ -447,10 +450,22 @@ function MessengerShell({ session }: { session: Session }) {
     return () => clearTimeout(timer);
   }, [error]);
 
+  const playIncomingHaptic = useCallback(() => {
+    const now = Date.now();
+    if (now - incomingHapticAtRef.current < 700) return;
+    incomingHapticAtRef.current = now;
+    void hapticMessageReceived();
+  }, []);
+
   const loadBootstrap = useCallback(async () => {
     if (!supabase) return;
     try {
       const data = await messengerApi.bootstrap();
+      const nextUnreadTotal = data.conversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
+      if (lastUnreadTotalRef.current !== null && nextUnreadTotal > lastUnreadTotalRef.current) {
+        playIncomingHaptic();
+      }
+      lastUnreadTotalRef.current = nextUnreadTotal;
       setProfile(data.profile);
       setContacts(data.contacts);
       setConversations(data.conversations);
@@ -461,7 +476,7 @@ function MessengerShell({ session }: { session: Session }) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [playIncomingHaptic]);
 
   const markConversationReadLocally = useCallback((conversationId: string) => {
     const hasUnread = conversationsRef.current.some(
@@ -493,6 +508,13 @@ function MessengerShell({ session }: { session: Session }) {
       setSelectedMessages((current) => {
         const local = current.filter((message) => message.conversationId === conversationId);
         const merged = mergeMessages(data.messages, local);
+        const knownIds = new Set(local.map((message) => message.id));
+        const hadLoadedThread = local.some((message) => !message.localState);
+        const hasFreshIncoming = hadLoadedThread && merged.some((message) => {
+          if (message.senderId === profileId || knownIds.has(message.id)) return false;
+          return Date.now() - Date.parse(message.createdAt) < 60_000;
+        });
+        if (hasFreshIncoming) playIncomingHaptic();
         const thinkingSince = agentThinkingFor[conversationId];
         if (thinkingSince) {
           const since = Date.parse(thinkingSince);
@@ -516,7 +538,7 @@ function MessengerShell({ session }: { session: Session }) {
         setError(nextError instanceof Error ? nextError.message : "Unable to load messages.");
       }
     }
-  }, [agentThinkingFor, markConversationReadLocally, profileId, selectedId]);
+  }, [agentThinkingFor, markConversationReadLocally, playIncomingHaptic, profileId, selectedId]);
 
   const scheduleBootstrapRefresh = useCallback(() => {
     if (bootstrapRefreshTimer.current) clearTimeout(bootstrapRefreshTimer.current);
@@ -661,6 +683,7 @@ function MessengerShell({ session }: { session: Session }) {
           : [...withoutTemp, result.message];
       });
       updateConversationPreview(result.message);
+      void hapticMessageSent();
       setAgentThinkingFor((current) => ({ ...current, [selected.id]: result.message.createdAt }));
       scheduleBootstrapRefresh();
     } catch (nextError) {
@@ -891,7 +914,7 @@ function Sidebar({
             onPress={() => onChange(tab.id)}
             style={[styles.navItem, activeTab === tab.id && styles.navItemActive]}
           >
-            <Ionicons color={activeTab === tab.id ? colors.primaryDark : colors.muted} name={tab.icon} size={22} />
+            <Ionicons color={activeTab === tab.id ? colors.primaryDark : "rgba(255,255,255,0.76)"} name={tab.icon} size={22} />
             <Text style={[styles.navLabel, activeTab === tab.id && styles.navLabelActive]}>{tab.label}</Text>
           </Pressable>
         ))}
@@ -1176,17 +1199,17 @@ function ChatPane({
                   <Text style={styles.senderName}>{sender?.displayName ?? "Member"}</Text>
                 ) : null}
                 <View style={[styles.bubble, mine ? styles.mineBubble : styles.theirBubble]}>
-                  <Text style={styles.messageText}>{message.body}</Text>
+                  <Text style={[styles.messageText, mine && styles.messageTextMine]}>{message.body}</Text>
                   <View style={styles.messageMeta}>
-                    <Text style={styles.metaText}>{formatTime(message.createdAt)}</Text>
+                    <Text style={[styles.metaText, mine && styles.metaTextMine]}>{formatTime(message.createdAt)}</Text>
                     {mine && message.localState === "sending" ? (
-                      <ActivityIndicator color={colors.faint} size="small" />
+                      <ActivityIndicator color={colors.primarySoft} size="small" />
                     ) : null}
                     {mine && message.localState === "failed" ? (
                       <Ionicons color={colors.danger} name="alert-circle" size={15} />
                     ) : null}
                     {mine && !message.localState ? (
-                      <Ionicons color={colors.faint} name="checkmark-done" size={15} />
+                      <Ionicons color={colors.primarySoft} name="checkmark-done" size={15} />
                     ) : null}
                   </View>
                 </View>
@@ -1657,7 +1680,7 @@ const styles = StyleSheet.create({
   logoFrame: {
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#0D2A44",
+    backgroundColor: colors.primaryDark,
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.18)",
     shadowColor: colors.primaryDark,
@@ -1668,7 +1691,7 @@ const styles = StyleSheet.create({
   },
   logoCore: {
     position: "absolute",
-    backgroundColor: "rgba(115,198,255,0.26)",
+    backgroundColor: "rgba(242,244,123,0.28)",
   },
   logoOrbit: {
     position: "absolute",
@@ -1679,7 +1702,7 @@ const styles = StyleSheet.create({
   logoOrbitAlt: {
     position: "absolute",
     borderWidth: 1.4,
-    borderColor: "rgba(115,198,255,0.55)",
+    borderColor: "rgba(242,244,123,0.55)",
     borderLeftColor: "rgba(255,255,255,0.78)",
   },
   brandRow: { flexDirection: "row", alignItems: "center", gap: 12 },
@@ -1697,7 +1720,7 @@ const styles = StyleSheet.create({
     right: -100,
     top: -48,
     borderRadius: 130,
-    backgroundColor: "rgba(123,205,255,0.22)",
+    backgroundColor: "rgba(122,94,214,0.20)",
   },
   loginTitle: { color: colors.ink, fontSize: 32, fontWeight: "900", marginTop: 24 },
   loginCopy: { color: colors.muted, fontSize: 15, lineHeight: 22, marginTop: 8, maxWidth: 420 },
@@ -1708,7 +1731,7 @@ const styles = StyleSheet.create({
     padding: 14,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: "rgba(115,198,255,0.25)",
+    borderColor: "rgba(122,94,214,0.18)",
     backgroundColor: "rgba(255,255,255,0.78)",
   },
   loginInput: {
@@ -1734,11 +1757,11 @@ const styles = StyleSheet.create({
   buttonDisabled: { opacity: 0.55 },
   noticeText: { color: colors.primaryDark, fontSize: 13, fontWeight: "700" },
   hintText: { color: colors.muted, fontSize: 12, lineHeight: 18 },
-  appFrame: { flex: 1, flexDirection: "row", backgroundColor: "#F1F7FC" },
+  appFrame: { flex: 1, flexDirection: "row", backgroundColor: colors.page },
   sidebar: {
     width: Platform.select({ web: 104, default: 82 }),
-    backgroundColor: "#EEF8FF",
-    borderRightColor: colors.line,
+    backgroundColor: colors.primaryDark,
+    borderRightColor: "rgba(255,255,255,0.16)",
     borderRightWidth: 1,
     paddingHorizontal: 12,
     paddingVertical: 18,
@@ -1751,13 +1774,13 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: colors.primary,
+    backgroundColor: "rgba(255,255,255,0.14)",
     ...shadow,
   },
   navStack: { flex: 1, width: "100%", gap: 8 },
   navItem: { minHeight: 62, alignItems: "center", justifyContent: "center", borderRadius: radii.md, gap: 4 },
-  navItemActive: { backgroundColor: colors.surface, borderColor: colors.line, borderWidth: 1 },
-  navLabel: { color: colors.muted, fontSize: 11, fontWeight: "700" },
+  navItemActive: { backgroundColor: colors.accentSoft, borderColor: "rgba(255,255,255,0.42)", borderWidth: 1 },
+  navLabel: { color: "rgba(255,255,255,0.76)", fontSize: 11, fontWeight: "700" },
   navLabelActive: { color: colors.primaryDark },
   composeButton: {
     width: 48,
@@ -1765,7 +1788,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: colors.primaryDark,
+    backgroundColor: colors.primary,
   },
   workspace: { flex: 1, minWidth: 0 },
   header: {
@@ -1777,13 +1800,13 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderBottomColor: colors.line,
     borderBottomWidth: 1,
-    backgroundColor: "rgba(255,255,255,0.84)",
+    backgroundColor: "rgba(255,255,255,0.92)",
   },
   headerMobile: { minHeight: 62, paddingHorizontal: 16 },
   headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   errorBar: { color: colors.danger, backgroundColor: "#FFF3F3", paddingHorizontal: 14, paddingVertical: 8 },
   content: { flex: 1, flexDirection: "row", padding: 18, gap: 18 },
-  contentMobile: { padding: 0, paddingBottom: 72, backgroundColor: "#F1F7FC" },
+  contentMobile: { padding: 0, paddingBottom: 72, backgroundColor: colors.page },
   contentMobileChat: { paddingBottom: 0, flexDirection: "column", gap: 0, width: "100%" },
   listPanel: {
     width: Platform.select({ web: 390, default: 330 }),
@@ -1793,6 +1816,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     backgroundColor: colors.surface,
     overflow: "hidden",
+    ...shadow,
   },
   mobilePanel: { flex: 1, width: "100%", borderRadius: 0, borderLeftWidth: 0, borderRightWidth: 0, borderTopWidth: 0 },
   panelTitle: {
@@ -1801,17 +1825,18 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    backgroundColor: colors.primaryDark,
   },
-  panelHeading: { color: colors.ink, fontSize: 39, fontWeight: "900" },
+  panelHeading: { color: "#FFFFFF", fontSize: 39, fontWeight: "900" },
   iconButton: {
     width: 40,
     height: 40,
     borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#EAF4FD",
+    backgroundColor: colors.primarySoft,
     borderWidth: 1,
-    borderColor: "rgba(64,130,173,0.15)",
+    borderColor: "rgba(101,81,196,0.12)",
   },
   bottomTabs: {
     position: "absolute",
@@ -1838,10 +1863,10 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(102,177,225,0.18)",
+    borderColor: "rgba(122,94,214,0.12)",
     backgroundColor: "rgba(255,255,255,0.84)",
   },
-  chatRowActive: { backgroundColor: "#E6F3FE", borderColor: "rgba(102,177,225,0.45)" },
+  chatRowActive: { backgroundColor: colors.accentSoft, borderColor: "rgba(122,94,214,0.20)" },
   contactRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1886,8 +1911,9 @@ const styles = StyleSheet.create({
     borderRadius: radii.lg,
     borderColor: colors.line,
     borderWidth: 1,
-    backgroundColor: "#F5FAFF",
+    backgroundColor: colors.page,
     overflow: "hidden",
+    ...shadow,
   },
   chatPaneMobile: { width: "100%", maxWidth: "100%", borderRadius: 0, borderWidth: 0 },
   chatHeader: {
@@ -1896,26 +1922,28 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    borderBottomColor: colors.line,
+    borderBottomColor: "rgba(255,255,255,0.18)",
     borderBottomWidth: 1,
-    backgroundColor: "rgba(255,255,255,0.88)",
+    backgroundColor: colors.primaryDark,
     gap: 10,
   },
-  chatHeaderTitle: { color: colors.ink, fontSize: 17, fontWeight: "900" },
-  chatHeaderSub: { color: colors.muted, fontSize: 12 },
-  messageList: { flexGrow: 1, padding: 18, gap: 12, backgroundColor: "#F1F7FC" },
+  chatHeaderTitle: { color: "#FFFFFF", fontSize: 17, fontWeight: "900" },
+  chatHeaderSub: { color: "rgba(255,255,255,0.76)", fontSize: 12 },
+  messageList: { flexGrow: 1, padding: 18, gap: 12, backgroundColor: colors.page },
   messageWrap: { width: "78%", maxWidth: "78%", minWidth: 0, flexShrink: 1 },
   messageMine: { alignSelf: "flex-end" },
   messageTheirs: { alignSelf: "flex-start" },
   senderName: { color: colors.primaryDark, fontSize: 12, fontWeight: "800", marginBottom: 4, marginLeft: 8 },
   bubble: { alignSelf: "flex-start", maxWidth: "100%", padding: 11, borderRadius: 14, gap: 6 },
   mineBubble: { alignSelf: "flex-end", backgroundColor: colors.bubbleMine, borderTopRightRadius: 4 },
-  theirBubble: { backgroundColor: colors.bubbleTheirs, borderTopLeftRadius: 4, borderColor: colors.line, borderWidth: 1 },
+  theirBubble: { backgroundColor: colors.bubbleTheirs, borderTopLeftRadius: 4, borderColor: "rgba(229,224,238,0.72)", borderWidth: 1 },
   thinkingBubble: { flexDirection: "row", alignItems: "center", gap: 8 },
   thinkingText: { color: colors.muted, fontSize: 13, fontWeight: "700" },
   messageText: { flexShrink: 1, color: colors.ink, fontSize: 15, lineHeight: 21 },
+  messageTextMine: { color: "#FFFFFF" },
   messageMeta: { alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 4 },
   metaText: { color: colors.faint, fontSize: 10 },
+  metaTextMine: { color: "rgba(255,255,255,0.72)" },
   composer: {
     paddingHorizontal: 10,
     paddingTop: 10,
@@ -1935,7 +1963,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     color: colors.ink,
-    backgroundColor: colors.page,
+    backgroundColor: "#F6F4FA",
   },
   sendButton: {
     width: 44,
