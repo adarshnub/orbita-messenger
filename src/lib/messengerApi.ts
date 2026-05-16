@@ -1,4 +1,11 @@
-import { BackendConversation, BackendMessage, BackendProfile, BackendStatus, BootstrapPayload } from "@/features/chats/backendTypes";
+import {
+  BackendAttachment,
+  BackendConversation,
+  BackendMessage,
+  BackendProfile,
+  BackendStatus,
+  BootstrapPayload,
+} from "@/features/chats/backendTypes";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 import { supabase } from "./supabase";
@@ -18,6 +25,7 @@ type ApiAction =
   | "list_messages"
   | "mark_conversation_read"
   | "send_message"
+  | "forward_messages"
   | "create_status"
   | "list_statuses";
 
@@ -65,6 +73,42 @@ async function callBackendApi<T>(action: ApiAction, payload: Record<string, unkn
   }
   const data = (await response.json().catch(() => null)) as unknown;
 
+  if (!response.ok) {
+    const message = apiError(data) ?? `Orbita backend request failed: ${response.status}`;
+    throw new Error(message);
+  }
+
+  const error = apiError(data);
+  if (error) {
+    throw new Error(error);
+  }
+
+  return data as T;
+}
+
+async function uploadBackendMedia<T>(form: FormData, token: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetch(`${orbitaApiUrl}/api/messenger/media`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      body: form,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error(`Orbita backend request timed out. Check that the backend is running at ${orbitaApiUrl}.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  const data = (await response.json().catch(() => null)) as unknown;
   if (!response.ok) {
     const message = apiError(data) ?? `Orbita backend request failed: ${response.status}`;
     throw new Error(message);
@@ -172,11 +216,53 @@ export const messengerApi = {
   markConversationRead(conversationId: string) {
     return callApi<{ ok: true }>("mark_conversation_read", { conversationId });
   },
-  sendMessage(input: { conversationId: string; kind: BackendMessage["kind"]; body: string }) {
+  sendMessage(input: {
+    conversationId: string;
+    kind: BackendMessage["kind"];
+    body: string;
+    attachmentId?: string;
+  }) {
     return callApi<{
       message: BackendMessage;
       taskManagerForward?: { forwarded: boolean; reason?: string };
     }>("send_message", input);
+  },
+  forwardMessage(input: { messageId: string; destinationConversationIds: string[] }) {
+    return callApi<{ messages: BackendMessage[] }>("forward_messages", input);
+  },
+  async uploadMedia(input: {
+    file:
+      | {
+          uri: string;
+          name: string;
+          type: string;
+        }
+      | File;
+    kind: BackendAttachment["kind"];
+    durationMs?: number | null;
+  }) {
+    const buildForm = () => {
+      const next = new FormData();
+      next.append("kind", input.kind);
+      if (input.durationMs) next.append("durationMs", String(Math.round(input.durationMs)));
+      if (typeof File !== "undefined" && input.file instanceof File) {
+        next.append("filename", input.file.name);
+        next.append("file", input.file);
+      } else {
+        next.append("filename", input.file.name);
+        next.append("file", input.file as unknown as Blob);
+      }
+      return next;
+    };
+    const token = await getAccessToken();
+    try {
+      return await uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), token);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isExpiredTokenError(message)) throw error;
+      const retryToken = await getAccessToken({ forceRefresh: true });
+      return uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), retryToken);
+    }
   },
   createStatus(input: { text: string; visibility: BackendStatus["visibility"] }) {
     return callApi<{ status: BackendStatus }>("create_status", input);

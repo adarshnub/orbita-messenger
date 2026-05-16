@@ -21,12 +21,28 @@ export type BackendConversation = {
   unreadCount: number;
 };
 
+export type BackendAttachment = {
+  id: string;
+  kind: "image" | "document" | "audio" | "voice";
+  mimeType: string;
+  filename: string;
+  sizeBytes: number;
+  durationMs: number | null;
+  url: string;
+};
+
 export type BackendMessage = {
   id: string;
   conversationId: string;
   senderId: string;
   kind: "text" | "image" | "video" | "document" | "audio" | "voice";
   body: string;
+  attachments: BackendAttachment[];
+  forwardedFrom?: {
+    messageId: string;
+    senderName: string;
+    conversationTitle: string;
+  } | null;
   createdAt: string;
   status: "sent" | "delivered" | "read";
 };

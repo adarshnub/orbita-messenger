@@ -104,21 +104,213 @@ function mapProfile(row: Record<string, unknown>, viewerId = "") {
   };
 }
 
-function messageBody(row: Record<string, unknown>) {
-  const payload = row.encrypted_payload as Record<string, unknown> | null;
-  return typeof payload?.body === "string" ? payload.body : "";
+function messagePayload(row: Record<string, unknown>) {
+  return typeof row.encrypted_payload === "object" && row.encrypted_payload ? row.encrypted_payload as Record<string, unknown> : {};
 }
 
-function mapMessage(row: Record<string, unknown>) {
+function messageBody(row: Record<string, unknown>) {
+  const payload = messagePayload(row);
+  return typeof payload.body === "string" ? payload.body : "";
+}
+
+function parseForwardedFrom(payload: Record<string, unknown>) {
+  const forwarded = payload.forwardedFrom;
+  if (!forwarded || typeof forwarded !== "object") return null;
+  const record = forwarded as Record<string, unknown>;
+  const messageId = typeof record.messageId === "string" ? record.messageId : "";
+  const senderName = typeof record.senderName === "string" ? record.senderName : "";
+  const conversationTitle = typeof record.conversationTitle === "string" ? record.conversationTitle : "";
+  if (!messageId || !senderName || !conversationTitle) return null;
+  return { messageId, senderName, conversationTitle };
+}
+
+function attachmentMetadata(row: Record<string, unknown>) {
+  return typeof row.encrypted_metadata === "object" && row.encrypted_metadata ? row.encrypted_metadata as Record<string, unknown> : {};
+}
+
+function sanitizeFilename(name: string, fallback = "attachment") {
+  const cleaned = String(name || fallback)
+    .replace(/[/\\?%*:|"<>]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || fallback;
+}
+
+function messageKindFromAttachment(kind: unknown, mimeType = "") {
+  const normalizedKind = typeof kind === "string" ? kind.toLowerCase() : "";
+  if (normalizedKind === "voice" || normalizedKind === "audio") return normalizedKind;
+  if (normalizedKind === "image") return "image";
+  if (normalizedKind === "document") return "document";
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("audio/")) return "voice";
+  return "document";
+}
+
+function storageBucketForMessageKind(kind: string) {
+  return kind === "voice" || kind === "audio" ? "voice-notes" : "chat-media";
+}
+
+function mapAttachment(row: Record<string, unknown>, signedUrl: string) {
+  const metadata = attachmentMetadata(row);
+  const kind = messageKindFromAttachment(metadata.kind, String(row.mime_type ?? ""));
+  return {
+    id: row.id,
+    kind,
+    mimeType: row.mime_type,
+    filename:
+      typeof metadata.filename === "string" && metadata.filename.trim()
+        ? metadata.filename.trim()
+        : sanitizeFilename(String(row.object_path ?? "").split("/").pop() || kind, kind),
+    sizeBytes: row.byte_size,
+    durationMs: typeof metadata.durationMs === "number" ? metadata.durationMs : null,
+    url: signedUrl,
+  };
+}
+
+function mapMessage(row: Record<string, unknown>, attachments: Record<string, unknown>[] = []) {
+  const payload = messagePayload(row);
   return {
     id: row.id,
     conversationId: row.conversation_id,
     senderId: row.sender_id,
     kind: row.kind,
     body: messageBody(row),
+    attachments,
+    forwardedFrom: parseForwardedFrom(payload),
     createdAt: row.created_at,
     status: "sent",
   };
+}
+
+async function signedAttachmentUrl(supabase: SupabaseClient, row: Record<string, unknown>, expiresIn = 60 * 60) {
+  const { data, error } = await supabase.storage
+    .from(String(row.bucket))
+    .createSignedUrl(String(row.object_path), expiresIn);
+  if (error) throw error;
+  return data.signedUrl;
+}
+
+async function loadAttachmentRowsForMessageIds(supabase: SupabaseClient, messageIds: string[]) {
+  const ids = [...new Set(messageIds)].filter(Boolean);
+  if (!ids.length) return new Map<string, Record<string, unknown>[]>();
+
+  const { data, error } = await supabase
+    .from("media_attachments")
+    .select("*")
+    .in("message_id", ids)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+
+  const rows = data ?? [];
+  const signedUrls = await Promise.all(rows.map((row) => signedAttachmentUrl(supabase, row)));
+  const byMessageId = new Map<string, Record<string, unknown>[]>();
+  rows.forEach((row, index) => {
+    const messageId = row.message_id as string | null;
+    if (!messageId) return;
+    const current = byMessageId.get(messageId) ?? [];
+    current.push(mapAttachment(row, signedUrls[index]) as unknown as Record<string, unknown>);
+    byMessageId.set(messageId, current);
+  });
+  return byMessageId;
+}
+
+async function getOwnedStagedAttachment(supabase: SupabaseClient, userId: string, attachmentId: string) {
+  const { data, error } = await supabase
+    .from("media_attachments")
+    .select("*")
+    .eq("id", attachmentId)
+    .eq("owner_id", userId)
+    .is("message_id", null)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("Attachment is missing or no longer available.");
+  return data;
+}
+
+async function linkAttachmentToMessage(supabase: SupabaseClient, attachmentRow: Record<string, unknown>, messageId: string) {
+  const metadata = {
+    ...attachmentMetadata(attachmentRow),
+    status: "attached",
+  };
+  const { data, error } = await supabase
+    .from("media_attachments")
+    .update({
+      message_id: messageId,
+      encrypted_metadata: metadata,
+    })
+    .eq("id", String(attachmentRow.id))
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function cloneAttachmentForMessage(
+  supabase: SupabaseClient,
+  attachmentRow: Record<string, unknown>,
+  ownerId: string,
+  messageId: string,
+) {
+  const metadata = {
+    ...attachmentMetadata(attachmentRow),
+    status: "attached",
+  };
+  const { data, error } = await supabase
+    .from("media_attachments")
+    .insert({
+      message_id: messageId,
+      owner_id: ownerId,
+      bucket: attachmentRow.bucket,
+      object_path: attachmentRow.object_path,
+      mime_type: attachmentRow.mime_type,
+      byte_size: attachmentRow.byte_size,
+      encrypted_metadata: metadata,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function uploadMediaAttachment(supabase: SupabaseClient, userId: string, form: FormData) {
+  const file = form.get("file");
+  if (!(file instanceof File)) throw new Error("file is required.");
+
+  const requestedKind = String(form.get("kind") ?? "").trim();
+  const durationMs = Number(form.get("durationMs") ?? 0);
+  const filename = sanitizeFilename(String(form.get("filename") ?? file.name ?? requestedKind ?? "attachment"));
+  const mimeType = file.type || "application/octet-stream";
+  const kind = messageKindFromAttachment(requestedKind || undefined, mimeType);
+  const bucket = storageBucketForMessageKind(kind);
+  const objectPath = `${userId}/${new Date().toISOString().slice(0, 10)}/${crypto.randomUUID()}-${filename}`;
+  const body = await file.arrayBuffer();
+
+  const { error: uploadError } = await supabase.storage.from(bucket).upload(objectPath, body, {
+    contentType: mimeType,
+    upsert: false,
+  });
+  if (uploadError) throw uploadError;
+
+  const { data, error } = await supabase
+    .from("media_attachments")
+    .insert({
+      owner_id: userId,
+      bucket,
+      object_path: objectPath,
+      mime_type: mimeType,
+      byte_size: file.size,
+      encrypted_metadata: {
+        filename,
+        durationMs: Number.isFinite(durationMs) && durationMs > 0 ? Math.round(durationMs) : null,
+        kind,
+        status: "staged",
+      },
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+
+  return { attachment: mapAttachment(data, await signedAttachmentUrl(supabase, data, 12 * 60 * 60)) };
 }
 
 async function insertMessageWithReceipts(
@@ -126,7 +318,7 @@ async function insertMessageWithReceipts(
   conversationId: string,
   senderId: string,
   kind: string,
-  body: string,
+  payload: Record<string, unknown>,
 ) {
   const { data: message, error } = await supabase
     .from("messages")
@@ -134,7 +326,7 @@ async function insertMessageWithReceipts(
       conversation_id: conversationId,
       sender_id: senderId,
       kind,
-      encrypted_payload: { body },
+      encrypted_payload: payload,
     })
     .select()
     .single();
@@ -321,7 +513,9 @@ async function loadMessages(supabase: SupabaseClient, userId: string, conversati
     .limit(100);
 
   if (error) throw error;
-  return (data ?? []).map(mapMessage);
+  const messages = data ?? [];
+  const attachmentsByMessageId = await loadAttachmentRowsForMessageIds(supabase, messages.map((message) => String(message.id)));
+  return messages.map((message) => mapMessage(message, attachmentsByMessageId.get(String(message.id)) ?? []));
 }
 
 async function unreadCountForConversation(supabase: SupabaseClient, userId: string, conversationId: string) {
@@ -410,11 +604,18 @@ async function loadConversations(supabase: SupabaseClient, userId: string) {
 
       if (lastError) throw lastError;
 
+      const lastMessageRow = lastMessages?.[0] ?? null;
+      const attachmentsByMessageId = lastMessageRow
+        ? await loadAttachmentRowsForMessageIds(supabase, [String(lastMessageRow.id)])
+        : new Map<string, Record<string, unknown>[]>();
       const mappedParticipants = (participants ?? []).map((row) => ({
         ...mapProfile(row.profiles, userId),
         role: row.role,
       }));
       const directPeer = mappedParticipants.find((profile) => profile.id !== userId);
+      const lastMessage = lastMessageRow
+        ? mapMessage(lastMessageRow, attachmentsByMessageId.get(String(lastMessageRow.id)) ?? [])
+        : null;
 
       return {
         id: conversation.id,
@@ -428,7 +629,7 @@ async function loadConversations(supabase: SupabaseClient, userId: string) {
         createdAt: conversation.created_at,
         updatedAt: conversation.updated_at,
         participants: mappedParticipants,
-        lastMessage: lastMessages?.[0] ? mapMessage(lastMessages[0]) : null,
+        lastMessage,
         unreadCount: await unreadCountForConversation(supabase, userId, conversation.id),
       };
     }),
@@ -551,6 +752,57 @@ async function createDirectConversation(supabase: SupabaseClient, userId: string
   return created;
 }
 
+async function loadConversationParticipants(supabase: SupabaseClient, conversationId: string) {
+  const { data, error } = await supabase
+    .from("conversation_participants")
+    .select("role, profiles(*)")
+    .eq("conversation_id", conversationId)
+    .order("joined_at", { ascending: true });
+  if (error) throw error;
+  return data ?? [];
+}
+
+function conversationTitleFromRows(
+  conversation: Record<string, unknown>,
+  participantRows: Record<string, unknown>[],
+  viewerId: string,
+) {
+  const participants = participantRows.map((row) => ({
+    ...mapProfile(row.profiles as Record<string, unknown>, viewerId),
+    role: row.role,
+  }));
+  if (conversation.kind === "group") return String(conversation.title ?? "Group");
+  return participants.find((participant) => participant.id !== viewerId)?.displayName ?? "Direct chat";
+}
+
+async function buildForwardedFrom(
+  supabase: SupabaseClient,
+  sourceMessage: Record<string, unknown>,
+  forwardingUserId: string,
+) {
+  const payload = messagePayload(sourceMessage);
+  const existing = parseForwardedFrom(payload);
+  if (existing) return existing;
+
+  const [sourceConversation, participantRows, senderRow] = await Promise.all([
+    supabase.from("conversations").select("*").eq("id", sourceMessage.conversation_id).single(),
+    loadConversationParticipants(supabase, String(sourceMessage.conversation_id)),
+    supabase.from("profiles").select("*").eq("id", sourceMessage.sender_id).single(),
+  ]);
+  if (sourceConversation.error) throw sourceConversation.error;
+  if (senderRow.error) throw senderRow.error;
+
+  return {
+    messageId: String(sourceMessage.id),
+    senderName: profileDisplayName(senderRow.data as Record<string, unknown>, forwardingUserId),
+    conversationTitle: conversationTitleFromRows(
+      sourceConversation.data as Record<string, unknown>,
+      participantRows as Record<string, unknown>[],
+      forwardingUserId,
+    ),
+  };
+}
+
 async function ensureTaskmanagerAgentProfile(
   supabase: SupabaseClient,
   taskmanagerOrgId: string,
@@ -612,8 +864,8 @@ async function forwardTaskmanagerInbound(
   supabase: SupabaseClient,
   conversationId: string,
   senderId: string,
-  messageId: string,
-  body: string,
+  message: Record<string, unknown>,
+  attachments: Record<string, unknown>[] = [],
 ): Promise<{ forwarded: boolean; reason?: string }> {
   const webhookUrl = Deno.env.get("TASK_MANAGER_ORBITA_WEBHOOK_URL");
   const secret = Deno.env.get("TASK_MANAGER_ORBITA_SECRET");
@@ -636,9 +888,12 @@ async function forwardTaskmanagerInbound(
     taskmanagerUserId: link.taskmanager_user_id,
     conversationId,
     orbitaUserId: senderId,
-    messageId,
-    text: body,
-    sentAt: new Date().toISOString(),
+    messageId: message.id,
+    kind: message.kind,
+    text: message.body || undefined,
+    attachment: attachments[0] ?? null,
+    attachments,
+    sentAt: message.createdAt ?? new Date().toISOString(),
   });
 
   const response = await fetch(webhookUrl, {
@@ -739,9 +994,9 @@ async function handleServiceAction(
       conversationId,
       link.agent_profile_id as string,
       "text",
-      body,
+      { body },
     );
-    return { message: mapMessage(message) };
+    return { message: mapMessage(message, []) };
   }
 
   throw new Error(`Unknown service action: ${action}`);
@@ -891,24 +1146,89 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
 
   if (action === "send_message") {
     const conversationId = requiredString(payload, "conversationId");
-    const body = requiredString(payload, "body").slice(0, 5000);
-    const kind = (optionalString(payload, "kind") || "text") as string;
+    const body = optionalString(payload, "body").slice(0, 5000);
+    const attachmentId = optionalString(payload, "attachmentId");
     await getConversation(supabase, user.id, conversationId);
+    const attachmentRow = attachmentId ? await getOwnedStagedAttachment(supabase, user.id, attachmentId) : null;
+    const kind = attachmentRow
+      ? messageKindFromAttachment(attachmentMetadata(attachmentRow).kind, String(attachmentRow.mime_type ?? ""))
+      : (optionalString(payload, "kind") || "text");
+    if (!body && !attachmentRow) throw new Error("Message body or attachment is required.");
 
-    const message = await insertMessageWithReceipts(supabase, conversationId, user.id, kind, body);
+    const message = await insertMessageWithReceipts(supabase, conversationId, user.id, kind, { body });
+    if (attachmentRow) {
+      await linkAttachmentToMessage(supabase, attachmentRow, String(message.id));
+    }
+    const attachments = attachmentRow
+      ? (await loadAttachmentRowsForMessageIds(supabase, [String(message.id)])).get(String(message.id)) ?? []
+      : [];
+    const mappedMessage = mapMessage(message, attachments);
     const taskManagerForward = await forwardTaskmanagerInbound(
       supabase,
       conversationId,
       user.id,
-      message.id as string,
-      body,
+      mappedMessage as unknown as Record<string, unknown>,
+      attachments,
     ).catch((error) => {
       const reason = errorMessage(error);
       console.error(reason, error);
       return { forwarded: false, reason };
     });
 
-    return { message: mapMessage(message), taskManagerForward };
+    return { message: mappedMessage, taskManagerForward };
+  }
+
+  if (action === "forward_messages") {
+    const messageId = requiredString(payload, "messageId");
+    const destinationConversationIds = [...new Set(stringArray(payload, "destinationConversationIds"))];
+    if (!destinationConversationIds.length) throw new Error("Choose at least one destination.");
+
+    const { data: sourceMessage, error: sourceError } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("id", messageId)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (sourceError) throw sourceError;
+    if (!sourceMessage) throw new Error("Message not found.");
+    await getConversation(supabase, user.id, String(sourceMessage.conversation_id));
+
+    const forwardedFrom = await buildForwardedFrom(supabase, sourceMessage, user.id);
+    const { data: sourceAttachmentRows, error: attachmentError } = await supabase
+      .from("media_attachments")
+      .select("*")
+      .eq("message_id", sourceMessage.id)
+      .order("created_at", { ascending: true });
+    if (attachmentError) throw attachmentError;
+
+    const forwardedMessages = [];
+    for (const destinationConversationId of destinationConversationIds) {
+      await getConversation(supabase, user.id, destinationConversationId);
+      const forwardedRow = await insertMessageWithReceipts(
+        supabase,
+        destinationConversationId,
+        user.id,
+        String(sourceMessage.kind),
+        { body: messageBody(sourceMessage), forwardedFrom },
+      );
+
+      for (const sourceAttachmentRow of sourceAttachmentRows ?? []) {
+        await cloneAttachmentForMessage(supabase, sourceAttachmentRow, user.id, String(forwardedRow.id));
+      }
+
+      const attachments = (await loadAttachmentRowsForMessageIds(supabase, [String(forwardedRow.id)])).get(String(forwardedRow.id)) ?? [];
+      const mappedMessage = mapMessage(forwardedRow, attachments);
+      forwardedMessages.push(mappedMessage);
+      void forwardTaskmanagerInbound(
+        supabase,
+        destinationConversationId,
+        user.id,
+        mappedMessage as unknown as Record<string, unknown>,
+        attachments,
+      ).catch((error) => console.error(errorMessage(error), error));
+    }
+
+    return { messages: forwardedMessages };
   }
 
   if (action === "create_status") {
@@ -948,6 +1268,18 @@ serve(async (req) => {
     }
 
     const supabase = createClient(supabaseUrl, serviceRoleKey);
+    const pathname = new URL(req.url).pathname;
+
+    if (pathname.endsWith("/media")) {
+      const authHeader = req.headers.get("Authorization");
+      if (!authHeader) return json({ error: "Missing authorization." }, 401);
+      const jwt = authHeader.replace("Bearer ", "");
+      const { data, error } = await supabase.auth.getUser(jwt);
+      if (error || !data.user) return json({ error: "Invalid session." }, 401);
+      const form = await req.formData();
+      return json(await uploadMediaAttachment(supabase, data.user.id, form));
+    }
+
     const rawBody = await req.text();
     const body = JSON.parse(rawBody) as ApiRequest;
     const serviceActions = new Set(["link_taskmanager_user", "send_agent_message"]);

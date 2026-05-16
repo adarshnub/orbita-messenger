@@ -1,4 +1,16 @@
 import { Ionicons } from "@expo/vector-icons";
+import {
+  createAudioPlayer,
+  RecordingPresets,
+  requestRecordingPermissionsAsync,
+  setAudioModeAsync,
+  useAudioPlayer,
+  useAudioPlayerStatus,
+  useAudioRecorder,
+  useAudioRecorderState,
+} from "expo-audio";
+import * as DocumentPicker from "expo-document-picker";
+import * as ImagePicker from "expo-image-picker";
 import { Session } from "@supabase/supabase-js";
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -7,6 +19,7 @@ import {
   AppState,
   BackHandler,
   Easing,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Linking,
@@ -26,11 +39,19 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import {
+  BackendAttachment,
   BackendConversation,
   BackendMessage,
   BackendProfile,
   BackendStatus,
 } from "@/features/chats/backendTypes";
+import {
+  attachmentFromMessage,
+  formatBytes,
+  formatDurationMs,
+  messagePreviewText,
+  waveformBars,
+} from "@/features/chats/messageUtils";
 import { messengerApi } from "@/lib/messengerApi";
 import { hapticMessageReceived, hapticMessageSent } from "@/lib/haptics";
 import { normalizePhone } from "@/lib/phone";
@@ -46,6 +67,21 @@ import { colors, radii, shadow } from "@/theme/colors";
 
 type Tab = "chats" | "status" | "contacts" | "calls" | "settings";
 type ChatMessage = BackendMessage & { localState?: "sending" | "failed" };
+type ComposerAttachment = {
+  localId: string;
+  kind: BackendAttachment["kind"];
+  uri: string;
+  name: string;
+  mimeType: string;
+  sizeBytes?: number | null;
+  durationMs?: number | null;
+};
+type ForwardTarget = {
+  id: string;
+  type: "conversation" | "contact";
+  title: string;
+  subtitle: string;
+};
 
 const KEYBOARD_COMPOSER_GAP = 18;
 const KEYBOARD_SAFETY_GAP = Platform.OS === "android" ? 34 : 14;
@@ -63,6 +99,12 @@ const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap
 
 const DEV_BYPASS_OTP = "123456";
 const DEV_OTP_ENABLED = __DEV__ || process.env.EXPO_PUBLIC_ENABLE_DEV_OTP === "1";
+const DOCUMENT_TYPES = [
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+];
 
 function initials(name: string) {
   return name
@@ -97,8 +139,10 @@ function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function messageSignature(message: Pick<BackendMessage, "senderId" | "body">) {
-  return `${message.senderId}::${message.body.trim().toLowerCase()}`;
+function messageSignature(message: Pick<BackendMessage, "senderId" | "body" | "kind" | "attachments">) {
+  const attachment = message.attachments?.[0];
+  const attachmentKey = attachment ? `${attachment.kind}:${attachment.filename}:${attachment.sizeBytes}` : "";
+  return `${message.senderId}::${message.kind}::${message.body.trim().toLowerCase()}::${attachmentKey}`;
 }
 
 function isTaskManagerAgentConversation(conversation: BackendConversation) {
@@ -712,6 +756,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [selectedId, setSelectedId] = useState("");
   const [selectedMessages, setSelectedMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [composerAttachment, setComposerAttachment] = useState<ComposerAttachment | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMessagesFor, setLoadingMessagesFor] = useState("");
   const [busy, setBusy] = useState(false);
@@ -722,6 +767,9 @@ function MessengerShell({ session }: { session: Session }) {
   const [membersOpen, setMembersOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
+  const [forwardPickerOpen, setForwardPickerOpen] = useState(false);
   const bootstrapRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageRefreshTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const conversationsRef = useRef<BackendConversation[]>([]);
@@ -978,29 +1026,172 @@ function MessengerShell({ session }: { session: Session }) {
     await loadBootstrap();
   }
 
-  async function sendMessage(kind: BackendMessage["kind"] = "text", body = draft.trim()) {
+  useEffect(() => {
+    setComposerAttachment(null);
+    setAttachmentMenuOpen(false);
+  }, [selectedId]);
+
+  const existingDirectByContactId = useMemo(() => {
+    const directMap = new Map<string, BackendConversation>();
+    conversations.forEach((conversation) => {
+      if (conversation.kind !== "direct") return;
+      const peer = conversation.participants.find((participant) => participant.id !== profileId);
+      if (peer) directMap.set(peer.id, conversation);
+    });
+    return directMap;
+  }, [conversations, profileId]);
+
+  const forwardTargets = useMemo<ForwardTarget[]>(() => {
+    const conversationTargets = conversations
+      .filter((conversation) => conversation.id !== selectedId)
+      .map((conversation) => ({
+        id: conversation.id,
+        type: "conversation" as const,
+        title: conversation.title,
+        subtitle:
+          conversation.kind === "group"
+            ? `${conversation.participants.length} members`
+            : conversation.lastMessage
+              ? messagePreviewText(conversation.lastMessage)
+              : "Direct chat",
+      }));
+
+    const extraContactTargets = contacts
+      .filter((contact) => !existingDirectByContactId.has(contact.id))
+      .map((contact) => ({
+        id: contact.id,
+        type: "contact" as const,
+        title: contact.displayName,
+        subtitle: contact.phone || "Create direct chat",
+      }));
+
+    return [...conversationTargets, ...extraContactTargets];
+  }, [contacts, conversations, existingDirectByContactId, selectedId]);
+
+  async function pickImageAttachment() {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["images"],
+      quality: 0.9,
+      selectionLimit: 1,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    setComposerAttachment({
+      localId: `attach-${Date.now()}`,
+      kind: "image",
+      uri: asset.uri,
+      name: asset.fileName || `photo-${Date.now()}.jpg`,
+      mimeType: asset.mimeType || "image/jpeg",
+      sizeBytes: asset.fileSize ?? null,
+    });
+    setAttachmentMenuOpen(false);
+  }
+
+  async function pickFileAttachment(kind: "audio" | "document") {
+    const result = await DocumentPicker.getDocumentAsync({
+      copyToCacheDirectory: true,
+      multiple: false,
+      type: kind === "audio" ? "audio/*" : DOCUMENT_TYPES,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    setComposerAttachment({
+      localId: `attach-${Date.now()}`,
+      kind,
+      uri: asset.uri,
+      name: asset.name || `${kind}-${Date.now()}`,
+      mimeType: asset.mimeType || (kind === "audio" ? "audio/mpeg" : "application/octet-stream"),
+      sizeBytes: asset.size ?? null,
+    });
+    setAttachmentMenuOpen(false);
+  }
+
+  async function forwardMessage(message: ChatMessage, targets: ForwardTarget[]) {
+    await run(async () => {
+      const destinationConversationIds: string[] = [];
+      for (const target of targets) {
+        if (target.type === "conversation") {
+          destinationConversationIds.push(target.id);
+          continue;
+        }
+        const result = await messengerApi.createDirectConversation(target.id);
+        destinationConversationIds.push(result.conversation.id);
+      }
+      await messengerApi.forwardMessage({
+        messageId: message.id,
+        destinationConversationIds: [...new Set(destinationConversationIds)],
+      });
+      setForwardPickerOpen(false);
+      setForwardingMessage(null);
+      scheduleBootstrapRefresh();
+      if (selectedId) scheduleMessageRefresh(selectedId);
+    });
+  }
+
+  async function sendMessage(kind: BackendMessage["kind"] = "text", body = draft.trim(), attachment = composerAttachment) {
     const text = body.trim();
-    if (!selected || !text || !profile) return;
+    if (!selected || !profile || (!text && !attachment)) return;
+    let resolvedKind = kind;
+    if (attachment) {
+      resolvedKind = attachment.kind;
+    }
 
     const tempId = `local-${Date.now()}`;
     const optimisticMessage: ChatMessage = {
       id: tempId,
       conversationId: selected.id,
       senderId: profile.id,
-      kind,
+      kind: resolvedKind,
       body: text,
+      attachments: attachment
+        ? [
+            {
+              id: attachment.localId,
+              kind: attachment.kind,
+              mimeType: attachment.mimeType,
+              filename: attachment.name,
+              sizeBytes: attachment.sizeBytes ?? 0,
+              durationMs: attachment.durationMs ?? null,
+              url: attachment.uri,
+            },
+          ]
+        : [],
+      forwardedFrom: null,
       createdAt: new Date().toISOString(),
       status: "sent",
       localState: "sending",
     };
 
     setDraft("");
+    setComposerAttachment(null);
     setError("");
     setSelectedMessages((current) => [...current, optimisticMessage]);
     updateConversationPreview(optimisticMessage);
 
     try {
-      const result = await messengerApi.sendMessage({ conversationId: selected.id, kind, body: text });
+      let attachmentId: string | undefined;
+      if (attachment) {
+        const uploadResult = await messengerApi.uploadMedia({
+          kind: attachment.kind,
+          durationMs: attachment.durationMs,
+          file:
+            Platform.OS === "web"
+              ? await (await fetch(attachment.uri)).blob().then((blob) => new File([blob], attachment.name, { type: attachment.mimeType }))
+              : {
+                  uri: attachment.uri,
+                  name: attachment.name,
+                  type: attachment.mimeType,
+                },
+        });
+        attachmentId = uploadResult.attachment.id;
+      }
+
+      const result = await messengerApi.sendMessage({
+        conversationId: selected.id,
+        kind: resolvedKind,
+        body: text,
+        attachmentId,
+      });
       setSelectedMessages((current) => {
         const withoutTemp = current.filter((message) => message.id !== tempId);
         return withoutTemp.some((message) => message.id === result.message.id)
@@ -1014,6 +1205,7 @@ function MessengerShell({ session }: { session: Session }) {
       }
       scheduleBootstrapRefresh();
     } catch (nextError) {
+      if (attachment) setComposerAttachment(attachment);
       setSelectedMessages((current) =>
         current.map((message) => (message.id === tempId ? { ...message, localState: "failed" } : message)),
       );
@@ -1103,6 +1295,7 @@ function MessengerShell({ session }: { session: Session }) {
             ) : null}
             {activeTab === "chats" && selected ? (
               <ChatPane
+                attachment={composerAttachment}
                 agentThinking={Boolean(selected && agentThinkingFor[selected.id])}
                 bottomInset={bottomInset}
                 conversation={selected}
@@ -1112,8 +1305,14 @@ function MessengerShell({ session }: { session: Session }) {
                 messages={selectedMessages}
                 messagesLoading={loadingMessagesFor === selected.id}
                 onAddMembers={() => setMembersOpen(true)}
+                onForwardMessage={(message) => {
+                  setForwardingMessage(message);
+                  setForwardPickerOpen(true);
+                }}
+                onOpenAttachmentMenu={() => setAttachmentMenuOpen(true)}
                 onBack={() => setSelectedId("")}
-                onSend={() => sendMessage()}
+                onRemoveAttachment={() => setComposerAttachment(null)}
+                onSend={(nextKind, nextBody, nextAttachment) => sendMessage(nextKind, nextBody, nextAttachment)}
                 setDraft={setDraft}
               />
             ) : isWide && activeTab === "chats" ? (
@@ -1192,6 +1391,23 @@ function MessengerShell({ session }: { session: Session }) {
         }}
         profile={profile}
         visible={profileOpen}
+      />
+      <AttachmentMenuModal
+        onClose={() => setAttachmentMenuOpen(false)}
+        onPickAudio={() => void pickFileAttachment("audio")}
+        onPickDocument={() => void pickFileAttachment("document")}
+        onPickImage={() => void pickImageAttachment()}
+        visible={attachmentMenuOpen}
+      />
+      <ForwardPickerModal
+        message={forwardingMessage}
+        onClose={() => {
+          setForwardPickerOpen(false);
+          setForwardingMessage(null);
+        }}
+        onSubmit={(targets) => (forwardingMessage ? forwardMessage(forwardingMessage, targets) : Promise.resolve())}
+        targets={forwardTargets}
+        visible={forwardPickerOpen}
       />
     </SafeAreaView>
   );
@@ -1350,7 +1566,7 @@ function Panel({
                 </View>
                 <View style={styles.rowBetween}>
                   <Text numberOfLines={1} style={[styles.chatPreview, conversation.unreadCount > 0 && styles.chatPreviewUnread]}>
-                    {conversation.lastMessage?.body ?? `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`}
+                    {messagePreviewText(conversation.lastMessage) || `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`}
                   </Text>
                   {conversation.unreadCount > 0 ? <UnreadBadge count={conversation.unreadCount} /> : null}
                 </View>
@@ -1385,28 +1601,40 @@ function PanelTitle({
 }
 
 function ChatPane({
+  attachment,
   agentThinking,
   bottomInset,
   conversation,
   currentUserId,
   messages,
   messagesLoading,
+  onForwardMessage,
+  onOpenAttachmentMenu,
   draft,
   setDraft,
+  onRemoveAttachment,
   onSend,
   onBack,
   onAddMembers,
   isWide,
 }: {
+  attachment: ComposerAttachment | null;
   agentThinking: boolean;
   bottomInset: number;
   conversation: BackendConversation;
   currentUserId: string;
   messages: ChatMessage[];
   messagesLoading: boolean;
+  onForwardMessage: (message: ChatMessage) => void;
+  onOpenAttachmentMenu: () => void;
   draft: string;
   setDraft: (value: string) => void;
-  onSend: () => void;
+  onRemoveAttachment: () => void;
+  onSend: (
+    kind?: BackendMessage["kind"],
+    body?: string,
+    attachment?: ComposerAttachment | null,
+  ) => Promise<void> | void;
   onBack: () => void;
   onAddMembers: () => void;
   isWide: boolean;
@@ -1414,6 +1642,12 @@ function ChatPane({
   const { width } = useWindowDimensions();
   const scrollRef = useRef<ScrollView | null>(null);
   const keyboardInset = useKeyboardClearance(!isWide);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(recorder, 160);
+  const previewPlayer = useMemo(() => createAudioPlayer(), []);
+  const previewStatus = useAudioPlayerStatus(previewPlayer);
+  const [voiceComposerOpen, setVoiceComposerOpen] = useState(false);
+  const [voiceAttachment, setVoiceAttachment] = useState<ComposerAttachment | null>(null);
 
   const scrollToLatest = useCallback((animated = true) => {
     requestAnimationFrame(() => {
@@ -1428,6 +1662,75 @@ function ChatPane({
   useEffect(() => {
     if (keyboardInset) scrollToLatest(false);
   }, [keyboardInset, scrollToLatest]);
+
+  useEffect(() => {
+    return () => {
+      previewPlayer.remove();
+    };
+  }, [previewPlayer]);
+
+  useEffect(() => {
+    if (!voiceAttachment?.uri) return;
+    previewPlayer.pause();
+    previewPlayer.replace(voiceAttachment.uri);
+    void previewPlayer.seekTo(0).catch(() => undefined);
+  }, [previewPlayer, voiceAttachment]);
+
+  async function startVoiceRecording() {
+    const permission = await requestRecordingPermissionsAsync();
+    if (!permission.granted) return;
+    await setAudioModeAsync({
+      allowsRecording: true,
+      playsInSilentMode: true,
+      interruptionMode: "duckOthers",
+    });
+    setVoiceAttachment(null);
+    setVoiceComposerOpen(true);
+    await recorder.prepareToRecordAsync();
+    recorder.record();
+  }
+
+  async function stopVoiceRecording() {
+    await recorder.stop();
+    await setAudioModeAsync({
+      allowsRecording: false,
+      playsInSilentMode: true,
+      interruptionMode: "duckOthers",
+    });
+    const uri = recorder.uri ?? recorderState.url;
+    if (!uri) return;
+    setVoiceAttachment({
+      localId: `voice-${Date.now()}`,
+      kind: "voice",
+      uri,
+      name: `voice-note-${Date.now()}.m4a`,
+      mimeType: Platform.OS === "web" ? "audio/webm" : "audio/mp4",
+      durationMs: recorderState.durationMillis || null,
+    });
+  }
+
+  async function discardVoiceAttachment() {
+    if (recorderState.isRecording) {
+      await recorder.stop().catch(() => undefined);
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        interruptionMode: "duckOthers",
+      }).catch(() => undefined);
+    }
+    previewPlayer.pause();
+    setVoiceAttachment(null);
+    setVoiceComposerOpen(false);
+  }
+
+  async function sendVoiceAttachment() {
+    if (!voiceAttachment) return;
+    await onSend("voice", draft, voiceAttachment);
+    await discardVoiceAttachment();
+  }
+
+  const composerCanSend = Boolean(draft.trim() || attachment);
+  const waveformSeed = voiceAttachment?.name || attachment?.name || conversation.id;
 
   const edgeSwipeResponder = useMemo(
     () =>
@@ -1500,8 +1803,17 @@ function ChatPane({
                 {!mine && conversation.kind === "group" ? (
                   <Text style={styles.senderName}>{sender?.displayName ?? "Member"}</Text>
                 ) : null}
-                <View style={[styles.bubble, mine ? styles.mineBubble : styles.theirBubble]}>
-                  <MessageBody mine={mine} text={message.body} />
+                <Pressable onLongPress={() => onForwardMessage(message)} style={[styles.bubble, mine ? styles.mineBubble : styles.theirBubble]}>
+                  {message.forwardedFrom ? (
+                    <View style={styles.forwardedRow}>
+                      <Ionicons color={mine ? "rgba(255,255,255,0.78)" : colors.primaryDark} name="arrow-redo-outline" size={13} />
+                      <Text style={[styles.forwardedText, mine && styles.forwardedTextMine]}>
+                        Forwarded from {message.forwardedFrom.senderName}
+                      </Text>
+                    </View>
+                  ) : null}
+                  {message.attachments[0] ? <MessageAttachmentCard attachment={message.attachments[0]} mine={mine} /> : null}
+                  {message.body ? <MessageBody mine={mine} text={message.body} /> : null}
                   <View style={styles.messageMeta}>
                     <Text style={[styles.metaText, mine && styles.metaTextMine]}>{formatTime(message.createdAt)}</Text>
                     {mine && message.localState === "sending" ? (
@@ -1514,7 +1826,7 @@ function ChatPane({
                       <Ionicons color={colors.primarySoft} name="checkmark-done" size={15} />
                     ) : null}
                   </View>
-                </View>
+                </Pressable>
               </View>
             );
           })
@@ -1531,6 +1843,13 @@ function ChatPane({
         ) : null}
       </ScrollView>
       <View style={styles.composer}>
+        <Pressable accessibilityLabel="Add attachment" onPress={onOpenAttachmentMenu} style={styles.composerAccessoryButton}>
+          <Ionicons color={colors.ink} name="add" size={22} />
+        </Pressable>
+        <View style={styles.composerBody}>
+          {attachment ? (
+            <ComposerAttachmentPreview attachment={attachment} onRemove={onRemoveAttachment} />
+          ) : null}
         <TextInput
           blurOnSubmit={false}
           multiline
@@ -1550,17 +1869,236 @@ function ChatPane({
           }}
           placeholder="Message"
           placeholderTextColor={colors.faint}
-          style={styles.composerInput}
+          style={[styles.composerInput, attachment && styles.composerInputWithAttachment]}
           value={draft}
         />
-        <Pressable
-          accessibilityLabel="Send message"
-          disabled={!draft.trim()}
-          onPress={onSend}
-          style={[styles.sendButton, !draft.trim() && styles.buttonDisabled]}
-        >
-          <Ionicons color="#FFFFFF" name="send" size={20} />
-        </Pressable>
+        </View>
+        {composerCanSend ? (
+          <Pressable
+            accessibilityLabel="Send message"
+            disabled={!composerCanSend}
+            onPress={() => onSend()}
+            style={[styles.sendButton, !composerCanSend && styles.buttonDisabled]}
+          >
+            <Ionicons color="#FFFFFF" name="send" size={20} />
+          </Pressable>
+        ) : (
+          <Pressable accessibilityLabel="Record voice note" onPress={startVoiceRecording} style={styles.sendButton}>
+            <Ionicons color="#FFFFFF" name="mic" size={19} />
+          </Pressable>
+        )}
+      </View>
+      <Modal animationType="slide" onRequestClose={discardVoiceAttachment} transparent visible={voiceComposerOpen}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.voiceComposerCard, keyboardInset ? { marginBottom: keyboardInset } : null]}>
+            <Text style={styles.voiceComposerTitle}>Voice Note</Text>
+            <View style={styles.voiceWaveCard}>
+              <View style={styles.voiceWaveRow}>
+                {waveformBars(waveformSeed).map((bar, index) => (
+                  <View
+                    key={`${waveformSeed}-${index}`}
+                    style={[
+                      styles.voiceWaveBar,
+                      {
+                        height: bar,
+                        backgroundColor:
+                          previewStatus.playing && voiceAttachment
+                            ? index < Math.max(1, Math.round(((previewStatus.currentTime || 0) / Math.max(previewStatus.duration || 1, 1)) * 22))
+                              ? colors.primaryDark
+                              : "#B7AEDF"
+                            : index % 2 === 0
+                              ? colors.primaryDark
+                              : "#C8C1EA",
+                      },
+                    ]}
+                  />
+                ))}
+              </View>
+              <Text style={styles.voiceComposerTime}>
+                {voiceAttachment
+                  ? formatDurationMs(voiceAttachment.durationMs)
+                  : formatDurationMs(recorderState.durationMillis)}
+              </Text>
+            </View>
+            <View style={styles.voiceComposerActions}>
+              <Pressable onPress={discardVoiceAttachment} style={styles.voiceMiniButton}>
+                <Ionicons color={colors.ink} name="close" size={20} />
+              </Pressable>
+              {voiceAttachment ? (
+                <Pressable
+                  onPress={() => {
+                    if (previewStatus.playing) {
+                      previewPlayer.pause();
+                    } else {
+                      if ((previewStatus.currentTime || 0) >= (previewStatus.duration || 0)) {
+                        void previewPlayer.seekTo(0);
+                      }
+                      previewPlayer.play();
+                    }
+                  }}
+                  style={styles.voiceRecordButton}
+                >
+                  <Ionicons color="#FFFFFF" name={previewStatus.playing ? "pause" : "mic"} size={22} />
+                </Pressable>
+              ) : (
+                <Pressable
+                  onPress={recorderState.isRecording ? stopVoiceRecording : startVoiceRecording}
+                  style={styles.voiceRecordButton}
+                >
+                  <Ionicons color="#FFFFFF" name={recorderState.isRecording ? "stop" : "mic"} size={22} />
+                </Pressable>
+              )}
+              <Pressable
+                disabled={!voiceAttachment}
+                onPress={sendVoiceAttachment}
+                style={[styles.voiceMiniButton, !voiceAttachment && styles.buttonDisabled]}
+              >
+                <Ionicons color={colors.ink} name="send-outline" size={20} />
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </View>
+  );
+}
+
+function ComposerAttachmentPreview({
+  attachment,
+  onRemove,
+}: {
+  attachment: ComposerAttachment;
+  onRemove: () => void;
+}) {
+  return (
+    <View style={styles.composerAttachment}>
+      {attachment.kind === "image" ? (
+        <Image source={{ uri: attachment.uri }} style={styles.composerAttachmentImage} />
+      ) : (
+        <View style={styles.composerAttachmentIcon}>
+          <Ionicons
+            color={colors.primaryDark}
+            name={attachment.kind === "document" ? "document-text-outline" : "mic-outline"}
+            size={18}
+          />
+        </View>
+      )}
+      <View style={styles.chatRowBody}>
+        <Text numberOfLines={1} style={styles.composerAttachmentTitle}>{attachment.name}</Text>
+        <Text style={styles.composerAttachmentMeta}>
+          {attachment.kind === "document"
+            ? formatBytes(attachment.sizeBytes)
+            : attachment.durationMs
+              ? formatDurationMs(attachment.durationMs)
+              : attachment.kind === "image"
+                ? "Photo"
+                : "Audio"}
+        </Text>
+      </View>
+      <Pressable onPress={onRemove} style={styles.composerAttachmentClose}>
+        <Ionicons color={colors.ink} name="close" size={16} />
+      </Pressable>
+    </View>
+  );
+}
+
+function MessageAttachmentCard({
+  attachment,
+  mine,
+}: {
+  attachment: BackendAttachment;
+  mine: boolean;
+}) {
+  if (attachment.kind === "image") {
+    return (
+      <Pressable onPress={() => openMessageUrl(attachment.url)} style={styles.imageAttachment}>
+        <Image source={{ uri: attachment.url }} style={styles.imageAttachmentMedia} />
+        <Text numberOfLines={1} style={[styles.attachmentCaption, mine && styles.attachmentCaptionMine]}>
+          {attachment.filename}
+        </Text>
+      </Pressable>
+    );
+  }
+
+  if (attachment.kind === "voice" || attachment.kind === "audio") {
+    return <AudioAttachmentCard attachment={attachment} mine={mine} />;
+  }
+
+  return (
+    <Pressable onPress={() => openMessageUrl(attachment.url)} style={[styles.documentAttachment, mine && styles.documentAttachmentMine]}>
+      <View style={[styles.documentAttachmentIcon, mine && styles.documentAttachmentIconMine]}>
+        <Ionicons color={mine ? "#FFFFFF" : colors.primaryDark} name="document-text-outline" size={20} />
+      </View>
+      <View style={styles.chatRowBody}>
+        <Text numberOfLines={1} style={[styles.documentAttachmentTitle, mine && styles.documentAttachmentTitleMine]}>
+          {attachment.filename}
+        </Text>
+        <Text style={[styles.documentAttachmentMeta, mine && styles.documentAttachmentMetaMine]}>
+          {formatBytes(attachment.sizeBytes)}
+        </Text>
+      </View>
+      <Ionicons color={mine ? "rgba(255,255,255,0.8)" : colors.primaryDark} name="open-outline" size={18} />
+    </Pressable>
+  );
+}
+
+function AudioAttachmentCard({
+  attachment,
+  mine,
+}: {
+  attachment: BackendAttachment;
+  mine: boolean;
+}) {
+  const player = useAudioPlayer(attachment.url);
+  const status = useAudioPlayerStatus(player);
+  const bars = useMemo(() => waveformBars(attachment.filename || attachment.id), [attachment.filename, attachment.id]);
+  const durationLabel = status.duration
+    ? formatDurationMs(status.duration * 1000)
+    : formatDurationMs(attachment.durationMs);
+
+  return (
+    <View style={[styles.audioAttachment, mine && styles.audioAttachmentMine]}>
+      <Pressable
+        onPress={() => {
+          if (status.playing) {
+            player.pause();
+            return;
+          }
+          if ((status.currentTime || 0) >= (status.duration || 0)) {
+            void player.seekTo(0);
+          }
+          player.play();
+        }}
+        style={[styles.audioPlayButton, mine && styles.audioPlayButtonMine]}
+      >
+        <Ionicons color={mine ? colors.primaryDark : "#FFFFFF"} name={status.playing ? "pause" : "play"} size={17} />
+      </Pressable>
+      <View style={styles.chatRowBody}>
+        <View style={styles.audioWaveRow}>
+          {bars.map((bar, index) => {
+            const playedRatio = status.duration ? (status.currentTime || 0) / Math.max(status.duration, 0.01) : 0;
+            const isPlayed = index / bars.length <= playedRatio;
+            return (
+              <View
+                key={`${attachment.id}-${index}`}
+                style={[
+                  styles.audioWaveBar,
+                  {
+                    height: bar,
+                    backgroundColor: mine
+                      ? isPlayed
+                        ? "#FFFFFF"
+                        : "rgba(255,255,255,0.45)"
+                      : isPlayed
+                        ? colors.primaryDark
+                        : "#C7C0E5",
+                  },
+                ]}
+              />
+            );
+          })}
+        </View>
+        <Text style={[styles.audioDuration, mine && styles.audioDurationMine]}>{durationLabel}</Text>
       </View>
     </View>
   );
@@ -1894,6 +2432,123 @@ function ContactPicker({
   );
 }
 
+function AttachmentMenuModal({
+  onClose,
+  onPickAudio,
+  onPickDocument,
+  onPickImage,
+  visible,
+}: {
+  onClose: () => void;
+  onPickAudio: () => void;
+  onPickDocument: () => void;
+  onPickImage: () => void;
+  visible: boolean;
+}) {
+  const actions: Array<{
+    icon: keyof typeof Ionicons.glyphMap;
+    label: string;
+    subtitle: string;
+    onPress: () => void;
+  }> = [
+    { icon: "image-outline", label: "Photo", subtitle: "Pick from your library", onPress: onPickImage },
+    { icon: "headset-outline", label: "Audio", subtitle: "Send an audio file", onPress: onPickAudio },
+    { icon: "document-text-outline", label: "Document", subtitle: "PDF, DOCX, XLSX, PPTX", onPress: onPickDocument },
+  ];
+
+  return (
+    <KeyboardAwareModal onClose={onClose} visible={visible}>
+      <Text style={styles.modalTitle}>Add attachment</Text>
+      <View style={styles.attachmentMenuList}>
+        {actions.map((action) => (
+          <Pressable
+            key={action.label}
+            onPress={action.onPress}
+            style={styles.attachmentMenuRow}
+          >
+            <View style={styles.attachmentMenuIcon}>
+              <Ionicons color={colors.primaryDark} name={action.icon} size={20} />
+            </View>
+            <View style={styles.chatRowBody}>
+              <Text style={styles.chatTitle}>{action.label}</Text>
+              <Text style={styles.chatPreview}>{action.subtitle}</Text>
+            </View>
+          </Pressable>
+        ))}
+      </View>
+      <ModalActions onCancel={onClose} />
+    </KeyboardAwareModal>
+  );
+}
+
+function ForwardPickerModal({
+  message,
+  onClose,
+  onSubmit,
+  targets,
+  visible,
+}: {
+  message: ChatMessage | null;
+  onClose: () => void;
+  onSubmit: (targets: ForwardTarget[]) => Promise<void>;
+  targets: ForwardTarget[];
+  visible: boolean;
+}) {
+  const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!visible) setSelectedTargetIds([]);
+  }, [visible]);
+
+  const selectedTargets = targets.filter((target) => selectedTargetIds.includes(target.id));
+
+  return (
+    <KeyboardAwareModal onClose={onClose} visible={visible}>
+      <Text style={styles.modalTitle}>Forward message</Text>
+      {message ? (
+        <View style={styles.forwardPreviewCard}>
+          <Text numberOfLines={2} style={styles.chatPreview}>
+            {messagePreviewText(message)}
+          </Text>
+        </View>
+      ) : null}
+      <ScrollView style={styles.modalList}>
+        {targets.length ? targets.map((target) => {
+          const selected = selectedTargetIds.includes(target.id);
+          return (
+            <Pressable
+              key={`${target.type}-${target.id}`}
+              onPress={() =>
+                setSelectedTargetIds((current) =>
+                  selected ? current.filter((item) => item !== target.id) : [...current, target.id],
+                )
+              }
+              style={styles.modalRow}
+            >
+              <Avatar name={target.title} />
+              <View style={styles.chatRowBody}>
+                <Text style={styles.chatTitle}>{target.title}</Text>
+                <Text style={styles.chatPreview}>{target.subtitle}</Text>
+              </View>
+              <Ionicons
+                color={selected ? colors.primaryDark : colors.faint}
+                name={selected ? "checkbox" : "square-outline"}
+                size={23}
+              />
+            </Pressable>
+          );
+        }) : <EmptyState compact icon="arrow-redo-outline" title="No destinations available" copy="Add more chats or contacts first." />}
+      </ScrollView>
+      <ModalActions
+        disabled={!selectedTargets.length}
+        onCancel={onClose}
+        onSubmit={() => onSubmit(selectedTargets)}
+        submitLabel="Forward"
+      />
+    </KeyboardAwareModal>
+  );
+}
+
 function StatusModal({
   onClose,
   onCreate,
@@ -1966,7 +2621,7 @@ function ModalActions({
         <Text style={styles.secondaryText}>Cancel</Text>
       </Pressable>
       {onSubmit ? (
-        <Pressable onPress={onSubmit} style={[styles.primaryButton, disabled && styles.buttonDisabled]}>
+        <Pressable disabled={disabled} onPress={disabled ? undefined : onSubmit} style={[styles.primaryButton, disabled && styles.buttonDisabled]}>
           <Text style={styles.primaryText}>{submitLabel ?? "Save"}</Text>
         </Pressable>
       ) : null}
@@ -2262,6 +2917,9 @@ const styles = StyleSheet.create({
   bubble: { alignSelf: "flex-start", maxWidth: "100%", padding: 11, borderRadius: 14, gap: 6 },
   mineBubble: { alignSelf: "flex-end", backgroundColor: colors.bubbleMine, borderTopRightRadius: 4 },
   theirBubble: { backgroundColor: colors.bubbleTheirs, borderTopLeftRadius: 4, borderColor: "rgba(229,224,238,0.72)", borderWidth: 1 },
+  forwardedRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  forwardedText: { color: colors.primaryDark, fontSize: 11, fontWeight: "800" },
+  forwardedTextMine: { color: "rgba(255,255,255,0.82)" },
   thinkingBubble: { flexDirection: "row", alignItems: "center", gap: 8 },
   thinkingText: { color: colors.muted, fontSize: 13, fontWeight: "700" },
   messageText: { flexShrink: 1, color: colors.ink, fontSize: 15, lineHeight: 21 },
@@ -2282,6 +2940,54 @@ const styles = StyleSheet.create({
   messageMeta: { alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 4 },
   metaText: { color: colors.faint, fontSize: 10 },
   metaTextMine: { color: "rgba(255,255,255,0.72)" },
+  imageAttachment: { gap: 8, marginBottom: 2 },
+  imageAttachmentMedia: { width: 184, height: 156, borderRadius: 12, backgroundColor: "#E6E0F8" },
+  attachmentCaption: { color: colors.muted, fontSize: 12, fontWeight: "700" },
+  attachmentCaptionMine: { color: "rgba(255,255,255,0.78)" },
+  documentAttachment: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceBlue,
+  },
+  documentAttachmentMine: { backgroundColor: "rgba(255,255,255,0.14)" },
+  documentAttachmentIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(101,81,196,0.12)",
+  },
+  documentAttachmentIconMine: { backgroundColor: "rgba(255,255,255,0.16)" },
+  documentAttachmentTitle: { color: colors.ink, fontSize: 13, fontWeight: "800" },
+  documentAttachmentTitleMine: { color: "#FFFFFF" },
+  documentAttachmentMeta: { color: colors.muted, fontSize: 11, marginTop: 2 },
+  documentAttachmentMetaMine: { color: "rgba(255,255,255,0.72)" },
+  audioAttachment: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 10,
+    borderRadius: 14,
+    backgroundColor: colors.surfaceBlue,
+  },
+  audioAttachmentMine: { backgroundColor: "rgba(255,255,255,0.14)" },
+  audioPlayButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.primaryDark,
+  },
+  audioPlayButtonMine: { backgroundColor: "#FFFFFF" },
+  audioWaveRow: { flexDirection: "row", alignItems: "center", gap: 3, minHeight: 26 },
+  audioWaveBar: { width: 4, borderRadius: 999 },
+  audioDuration: { color: colors.muted, fontSize: 11, marginTop: 4 },
+  audioDurationMine: { color: "rgba(255,255,255,0.78)" },
   composer: {
     paddingHorizontal: 10,
     paddingTop: 10,
@@ -2293,8 +2999,16 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     backgroundColor: colors.surface,
   },
+  composerAccessoryButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F1EDF9",
+  },
+  composerBody: { flex: 1, gap: 8 },
   composerInput: {
-    flex: 1,
     minHeight: 42,
     maxHeight: 110,
     borderRadius: 21,
@@ -2302,6 +3016,34 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     color: colors.ink,
     backgroundColor: "#F6F4FA",
+  },
+  composerInputWithAttachment: { minHeight: 40 },
+  composerAttachment: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 10,
+    borderRadius: 16,
+    backgroundColor: "#F6F4FA",
+  },
+  composerAttachmentImage: { width: 42, height: 42, borderRadius: 12, backgroundColor: "#E6E0F8" },
+  composerAttachmentIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(101,81,196,0.12)",
+  },
+  composerAttachmentTitle: { color: colors.ink, fontSize: 13, fontWeight: "800" },
+  composerAttachmentMeta: { color: colors.muted, fontSize: 11, marginTop: 3 },
+  composerAttachmentClose: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(23,18,36,0.06)",
   },
   sendButton: {
     width: 44,
@@ -2376,6 +3118,68 @@ const styles = StyleSheet.create({
   statusInput: { minHeight: 130, textAlignVertical: "top", paddingTop: 12 },
   modalList: { maxHeight: 310 },
   modalRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 10 },
+  attachmentMenuList: { gap: 10 },
+  attachmentMenuRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: colors.page,
+  },
+  attachmentMenuIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(101,81,196,0.12)",
+  },
+  forwardPreviewCard: {
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: colors.page,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+  voiceComposerCard: {
+    width: "100%",
+    maxWidth: 380,
+    borderRadius: 28,
+    backgroundColor: colors.surface,
+    paddingHorizontal: 20,
+    paddingVertical: 22,
+    gap: 18,
+  },
+  voiceComposerTitle: { color: colors.ink, fontSize: 22, fontWeight: "900", textAlign: "center" },
+  voiceWaveCard: {
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+    backgroundColor: "#FBFAFF",
+    alignItems: "center",
+    gap: 10,
+  },
+  voiceWaveRow: { flexDirection: "row", alignItems: "center", gap: 5, minHeight: 34 },
+  voiceWaveBar: { width: 5, borderRadius: 999 },
+  voiceComposerTime: { color: colors.muted, fontSize: 13, fontWeight: "700" },
+  voiceComposerActions: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  voiceMiniButton: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F3F0FA",
+  },
+  voiceRecordButton: {
+    width: 62,
+    height: 62,
+    borderRadius: 31,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.primaryDark,
+  },
   modalActions: { flexDirection: "row", justifyContent: "flex-end", gap: 10 },
   secondaryButton: {
     height: 42,

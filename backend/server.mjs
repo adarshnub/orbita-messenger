@@ -57,6 +57,31 @@ createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/api/messenger/media" || pathname === "/api/messenger-api/media") {
+      const authHeader = String(req.headers.authorization ?? "");
+      if (!authHeader) {
+        sendJson(res, 401, { error: "Missing authorization." });
+        return;
+      }
+
+      const jwt = authHeader.replace(/^Bearer\s+/i, "");
+      const { data, error } = await supabase.auth.getUser(jwt);
+      if (error || !data.user) {
+        sendJson(res, 401, { error: "Invalid session." });
+        return;
+      }
+
+      const request = new Request(`http://localhost${req.url ?? "/api/messenger/media"}`, {
+        method: "POST",
+        headers: req.headers,
+        body: req,
+        duplex: "half",
+      });
+      const form = await request.formData();
+      sendJson(res, 200, await uploadMediaAttachment(data.user.id, form));
+      return;
+    }
+
     const rawBody = await readBody(req);
     const body = rawBody ? JSON.parse(rawBody) : {};
     const action = requiredString(body, "action");
@@ -216,18 +241,92 @@ function mapProfile(row, viewerId = "") {
   };
 }
 
-function messageBody(row) {
-  const payload = row.encrypted_payload;
-  return typeof payload?.body === "string" ? payload.body : "";
+function messagePayload(row) {
+  return isRecord(row.encrypted_payload) ? row.encrypted_payload : {};
 }
 
-function mapMessage(row) {
+function messageBody(row) {
+  const payload = messagePayload(row);
+  return typeof payload.body === "string" ? payload.body : "";
+}
+
+function parseForwardedFrom(payload) {
+  if (!isRecord(payload.forwardedFrom)) return null;
+  const forwarded = payload.forwardedFrom;
+  const messageId = typeof forwarded.messageId === "string" ? forwarded.messageId : "";
+  const senderName = typeof forwarded.senderName === "string" ? forwarded.senderName : "";
+  const conversationTitle = typeof forwarded.conversationTitle === "string" ? forwarded.conversationTitle : "";
+  if (!messageId || !senderName || !conversationTitle) return null;
+  return { messageId, senderName, conversationTitle };
+}
+
+function attachmentMetadata(row) {
+  return isRecord(row.encrypted_metadata) ? row.encrypted_metadata : {};
+}
+
+function attachmentLabel(messageKind, attachment) {
+  if (!attachment) return "";
+  if (messageKind === "voice" || messageKind === "audio") return "Voice note";
+  if (messageKind === "image") return "Photo";
+  const filename = typeof attachment.filename === "string" ? attachment.filename.trim() : "";
+  return filename ? `Document: ${filename}` : "Document";
+}
+
+function previewTextForMessage(message) {
+  const body = typeof message.body === "string" ? message.body.trim() : "";
+  if (body) return body;
+  return attachmentLabel(message.kind, message.attachments?.[0] ?? null);
+}
+
+function sanitizeFilename(name, fallback = "attachment") {
+  const cleaned = String(name || fallback)
+    .replace(/[/\\?%*:|"<>]/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || fallback;
+}
+
+function messageKindFromAttachment(kind, mimeType = "") {
+  const normalizedKind = String(kind || "").toLowerCase();
+  if (normalizedKind === "voice" || normalizedKind === "audio") return normalizedKind;
+  if (normalizedKind === "image") return "image";
+  if (normalizedKind === "document") return "document";
+  if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("audio/")) return "voice";
+  return "document";
+}
+
+function storageBucketForMessageKind(kind) {
+  return kind === "voice" || kind === "audio" ? "voice-notes" : "chat-media";
+}
+
+function mapAttachment(row, signedUrl) {
+  const metadata = attachmentMetadata(row);
+  const kind = messageKindFromAttachment(metadata.kind, row.mime_type);
+  return {
+    id: row.id,
+    kind,
+    mimeType: row.mime_type,
+    filename:
+      typeof metadata.filename === "string" && metadata.filename.trim()
+        ? metadata.filename.trim()
+        : sanitizeFilename(row.object_path.split("/").pop() || kind, kind),
+    sizeBytes: row.byte_size,
+    durationMs: typeof metadata.durationMs === "number" ? metadata.durationMs : null,
+    url: signedUrl,
+  };
+}
+
+function mapMessage(row, attachments = []) {
+  const payload = messagePayload(row);
   return {
     id: row.id,
     conversationId: row.conversation_id,
     senderId: row.sender_id,
     kind: row.kind,
     body: messageBody(row),
+    attachments,
+    forwardedFrom: parseForwardedFrom(payload),
     createdAt: row.created_at,
     status: "sent",
   };
@@ -248,14 +347,145 @@ async function createRealtimeEvents(targetUserIds, kind, conversationId, payload
   if (error) throw error;
 }
 
-async function insertMessageWithReceipts(conversationId, senderId, kind, body) {
+async function signedAttachmentUrl(row, expiresIn = 60 * 60) {
+  const { data, error } = await supabase.storage.from(row.bucket).createSignedUrl(row.object_path, expiresIn);
+  if (error) throw error;
+  return data.signedUrl;
+}
+
+async function loadAttachmentRowsForMessageIds(messageIds) {
+  const ids = [...new Set(messageIds)].filter(Boolean);
+  if (!ids.length) return new Map();
+
+  const { data, error } = await supabase
+    .from("media_attachments")
+    .select("*")
+    .in("message_id", ids)
+    .order("created_at", { ascending: true });
+  if (error) throw error;
+
+  const rows = data ?? [];
+  const signedUrls = await Promise.all(rows.map((row) => signedAttachmentUrl(row)));
+  const byMessageId = new Map();
+  rows.forEach((row, index) => {
+    const messageId = row.message_id;
+    if (!messageId) return;
+    const mapped = mapAttachment(row, signedUrls[index]);
+    if (!byMessageId.has(messageId)) byMessageId.set(messageId, []);
+    byMessageId.get(messageId).push(mapped);
+  });
+  return byMessageId;
+}
+
+async function getOwnedStagedAttachment(userId, attachmentId) {
+  const { data, error } = await supabase
+    .from("media_attachments")
+    .select("*")
+    .eq("id", attachmentId)
+    .eq("owner_id", userId)
+    .is("message_id", null)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error("Attachment is missing or no longer available.");
+  return data;
+}
+
+async function linkAttachmentToMessage(attachmentRow, messageId) {
+  const metadata = {
+    ...attachmentMetadata(attachmentRow),
+    status: "attached",
+  };
+  const { data, error } = await supabase
+    .from("media_attachments")
+    .update({
+      message_id: messageId,
+      encrypted_metadata: metadata,
+    })
+    .eq("id", attachmentRow.id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function cloneAttachmentForMessage(attachmentRow, ownerId, messageId) {
+  const metadata = {
+    ...attachmentMetadata(attachmentRow),
+    status: "attached",
+  };
+  const { data, error } = await supabase
+    .from("media_attachments")
+    .insert({
+      message_id: messageId,
+      owner_id: ownerId,
+      bucket: attachmentRow.bucket,
+      object_path: attachmentRow.object_path,
+      mime_type: attachmentRow.mime_type,
+      byte_size: attachmentRow.byte_size,
+      encrypted_metadata: metadata,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+async function uploadMediaAttachment(userId, form) {
+  const file = form.get("file");
+  if (!file || typeof file.arrayBuffer !== "function") {
+    throw new Error("file is required.");
+  }
+
+  const requestedKind = String(form.get("kind") ?? "").trim();
+  const durationMs = Number(form.get("durationMs") ?? 0);
+  const filename = sanitizeFilename(String(form.get("filename") ?? file.name ?? requestedKind ?? "attachment"));
+  const mimeType = typeof file.type === "string" && file.type ? file.type : "application/octet-stream";
+  const kind = messageKindFromAttachment(requestedKind || undefined, mimeType);
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const bucket = storageBucketForMessageKind(kind);
+  const objectPath = `${userId}/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${filename}`;
+
+  const { error: uploadError } = await supabase.storage.from(bucket).upload(objectPath, buffer, {
+    contentType: mimeType,
+    upsert: false,
+  });
+  if (uploadError) throw uploadError;
+
+  const { data, error } = await supabase
+    .from("media_attachments")
+    .insert({
+      owner_id: userId,
+      bucket,
+      object_path: objectPath,
+      mime_type: mimeType,
+      byte_size: buffer.byteLength,
+      encrypted_metadata: {
+        filename,
+        durationMs: Number.isFinite(durationMs) && durationMs > 0 ? Math.round(durationMs) : null,
+        kind,
+        status: "staged",
+      },
+    })
+    .select("*")
+    .single();
+  if (error) {
+    await supabase.storage.from(bucket).remove([objectPath]).catch(() => undefined);
+    throw error;
+  }
+
+  return {
+    attachment: mapAttachment(data, await signedAttachmentUrl(data, 12 * 60 * 60)),
+  };
+}
+
+async function insertMessageWithReceipts(conversationId, senderId, kind, payload) {
   const { data: message, error } = await supabase
     .from("messages")
     .insert({
       conversation_id: conversationId,
       sender_id: senderId,
       kind,
-      encrypted_payload: { body },
+      encrypted_payload: payload,
     })
     .select()
     .single();
@@ -403,7 +633,9 @@ async function loadMessages(userId, conversationId) {
     .order("created_at", { ascending: true })
     .limit(100);
   if (error) throw error;
-  return (data ?? []).map(mapMessage);
+  const messages = data ?? [];
+  const attachmentsByMessageId = await loadAttachmentRowsForMessageIds(messages.map((message) => message.id));
+  return messages.map((message) => mapMessage(message, attachmentsByMessageId.get(message.id) ?? []));
 }
 
 async function unreadCountForConversation(userId, conversationId) {
@@ -482,12 +714,19 @@ async function loadConversations(userId) {
         .order("created_at", { ascending: false })
         .limit(1);
       if (lastError) throw lastError;
+      const lastMessageRow = lastMessages?.[0] ?? null;
+      const attachmentsByMessageId = lastMessageRow
+        ? await loadAttachmentRowsForMessageIds([lastMessageRow.id])
+        : new Map();
 
       const mappedParticipants = (participants ?? []).map((row) => ({
         ...mapProfile(row.profiles, userId),
         role: row.role,
       }));
       const directPeer = mappedParticipants.find((profile) => profile.id !== userId);
+      const lastMessage = lastMessageRow
+        ? mapMessage(lastMessageRow, attachmentsByMessageId.get(lastMessageRow.id) ?? [])
+        : null;
 
       return {
         id: conversation.id,
@@ -501,7 +740,7 @@ async function loadConversations(userId) {
         createdAt: conversation.created_at,
         updatedAt: conversation.updated_at,
         participants: mappedParticipants,
-        lastMessage: lastMessages?.[0] ? mapMessage(lastMessages[0]) : null,
+        lastMessage,
         unreadCount: await unreadCountForConversation(userId, conversation.id),
       };
     }),
@@ -617,6 +856,46 @@ async function createDirectConversation(userId, otherUserId) {
   return created;
 }
 
+async function loadConversationParticipants(conversationId) {
+  const { data, error } = await supabase
+    .from("conversation_participants")
+    .select("role, profiles(*)")
+    .eq("conversation_id", conversationId)
+    .order("joined_at", { ascending: true });
+  if (error) throw error;
+  return data ?? [];
+}
+
+function conversationTitleFromRows(conversation, participantRows, viewerId) {
+  const participants = participantRows.map((row) => ({
+    ...mapProfile(row.profiles, viewerId),
+    role: row.role,
+  }));
+  if (conversation.kind === "group") return conversation.title ?? "Group";
+  return participants.find((participant) => participant.id !== viewerId)?.displayName ?? "Direct chat";
+}
+
+async function buildForwardedFrom(sourceMessage, forwardingUserId) {
+  const payload = messagePayload(sourceMessage);
+  const existing = parseForwardedFrom(payload);
+  if (existing) return existing;
+
+  const [sourceConversation, participantRows, senderRow] = await Promise.all([
+    supabase.from("conversations").select("*").eq("id", sourceMessage.conversation_id).single(),
+    loadConversationParticipants(sourceMessage.conversation_id),
+    supabase.from("profiles").select("*").eq("id", sourceMessage.sender_id).single(),
+  ]);
+
+  if (sourceConversation.error) throw sourceConversation.error;
+  if (senderRow.error) throw senderRow.error;
+
+  return {
+    messageId: sourceMessage.id,
+    senderName: profileDisplayName(senderRow.data, forwardingUserId),
+    conversationTitle: conversationTitleFromRows(sourceConversation.data, participantRows, forwardingUserId),
+  };
+}
+
 async function ensureTaskmanagerAgentProfile(taskmanagerOrgId, displayName) {
   const { data: existingLink, error: linkError } = await supabase
     .from("taskmanager_agent_links")
@@ -668,7 +947,7 @@ async function findAuthUserByEmail(email) {
   return null;
 }
 
-async function forwardTaskmanagerInbound(conversationId, senderId, messageId, body) {
+async function forwardTaskmanagerInbound(conversationId, senderId, message, attachments = []) {
   const webhookUrl = process.env.TASK_MANAGER_ORBITA_WEBHOOK_URL;
   const secret = process.env.TASK_MANAGER_ORBITA_SECRET;
   if (!webhookUrl || !secret) {
@@ -690,9 +969,12 @@ async function forwardTaskmanagerInbound(conversationId, senderId, messageId, bo
     taskmanagerUserId: link.taskmanager_user_id,
     conversationId,
     orbitaUserId: senderId,
-    messageId,
-    text: body,
-    sentAt: new Date().toISOString(),
+    messageId: message.id,
+    kind: message.kind,
+    text: message.body || undefined,
+    attachment: attachments[0] ?? null,
+    attachments,
+    sentAt: message.createdAt ?? new Date().toISOString(),
   });
 
   const response = await fetch(webhookUrl, {
@@ -779,8 +1061,8 @@ async function handleServiceAction(action, payload) {
       .single();
     if (error) throw error;
 
-    const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, "text", body);
-    return { message: mapMessage(message) };
+    const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, "text", { body });
+    return { message: mapMessage(message, []) };
   }
 
   throw new Error(`Unknown service action: ${action}`);
@@ -915,20 +1197,85 @@ async function handleAction(user, action, payload) {
 
   if (action === "send_message") {
     const conversationId = requiredString(payload, "conversationId");
-    const body = requiredString(payload, "body").slice(0, 5000);
-    const kind = optionalString(payload, "kind") || "text";
+    const body = optionalString(payload, "body").slice(0, 5000);
+    const attachmentId = optionalString(payload, "attachmentId");
     await getConversation(user.id, conversationId);
+    const attachmentRow = attachmentId ? await getOwnedStagedAttachment(user.id, attachmentId) : null;
+    const kind = attachmentRow
+      ? messageKindFromAttachment(attachmentMetadata(attachmentRow).kind, attachmentRow.mime_type)
+      : optionalString(payload, "kind") || "text";
+    if (!body && !attachmentRow) throw new Error("Message body or attachment is required.");
 
-    const message = await insertMessageWithReceipts(conversationId, user.id, kind, body);
-    const taskManagerForward = await forwardTaskmanagerInbound(conversationId, user.id, message.id, body).catch(
-      (error) => {
-        const reason = errorMessage(error);
-        console.error(reason, error);
-        return { forwarded: false, reason };
-      },
-    );
+    const message = await insertMessageWithReceipts(conversationId, user.id, kind, { body });
+    if (attachmentRow) {
+      await linkAttachmentToMessage(attachmentRow, message.id);
+    }
+    const attachments = attachmentRow
+      ? await loadAttachmentRowsForMessageIds([message.id]).then((map) => map.get(message.id) ?? [])
+      : [];
+    const mappedMessage = mapMessage(message, attachments);
+    const taskManagerForward = await forwardTaskmanagerInbound(
+      conversationId,
+      user.id,
+      mappedMessage,
+      attachments,
+    ).catch((error) => {
+      const reason = errorMessage(error);
+      console.error(reason, error);
+      return { forwarded: false, reason };
+    });
 
-    return { message: mapMessage(message), taskManagerForward };
+    return { message: mappedMessage, taskManagerForward };
+  }
+
+  if (action === "forward_messages") {
+    const messageId = requiredString(payload, "messageId");
+    const destinationConversationIds = [...new Set(stringArray(payload, "destinationConversationIds"))];
+    if (!destinationConversationIds.length) throw new Error("Choose at least one destination.");
+
+    const { data: sourceMessage, error: sourceError } = await supabase
+      .from("messages")
+      .select("*")
+      .eq("id", messageId)
+      .is("deleted_at", null)
+      .maybeSingle();
+    if (sourceError) throw sourceError;
+    if (!sourceMessage) throw new Error("Message not found.");
+    await getConversation(user.id, sourceMessage.conversation_id);
+
+    const forwardedFrom = await buildForwardedFrom(sourceMessage, user.id);
+    const sourceAttachmentsByMessageId = await loadAttachmentRowsForMessageIds([sourceMessage.id]);
+    const sourceAttachments = sourceAttachmentsByMessageId.get(sourceMessage.id) ?? [];
+    const { data: sourceAttachmentRows, error: attachmentError } = await supabase
+      .from("media_attachments")
+      .select("*")
+      .eq("message_id", sourceMessage.id)
+      .order("created_at", { ascending: true });
+    if (attachmentError) throw attachmentError;
+
+    const forwardedMessages = [];
+    for (const destinationConversationId of destinationConversationIds) {
+      await getConversation(user.id, destinationConversationId);
+      const forwardedRow = await insertMessageWithReceipts(destinationConversationId, user.id, sourceMessage.kind, {
+        body: messageBody(sourceMessage),
+        forwardedFrom,
+      });
+
+      if ((sourceAttachmentRows ?? []).length) {
+        for (const sourceAttachmentRow of sourceAttachmentRows) {
+          await cloneAttachmentForMessage(sourceAttachmentRow, user.id, forwardedRow.id);
+        }
+      }
+
+      const attachments = (await loadAttachmentRowsForMessageIds([forwardedRow.id])).get(forwardedRow.id) ?? [];
+      const mappedMessage = mapMessage(forwardedRow, attachments);
+      forwardedMessages.push(mappedMessage);
+      void forwardTaskmanagerInbound(destinationConversationId, user.id, mappedMessage, attachments).catch((error) => {
+        console.error(errorMessage(error), error);
+      });
+    }
+
+    return { messages: forwardedMessages, sourceAttachments };
   }
 
   if (action === "create_status") {
