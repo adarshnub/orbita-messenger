@@ -11,7 +11,12 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.orbita.messenger"
+      "bundleIdentifier": "com.orbita.messenger",
+      "infoPlist": {
+        "NSContactsUsageDescription": "Orbita uses contacts to help you find and message people you know.",
+        "NSMicrophoneUsageDescription": "Orbita uses the microphone to record and send voice notes.",
+        "NSPhotoLibraryUsageDescription": "Orbita uses your photo library so you can attach photos to chats."
+      }
     },
     "android": {
       "package": "com.orbita.messenger",

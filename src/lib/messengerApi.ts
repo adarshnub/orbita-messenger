@@ -193,8 +193,8 @@ export const messengerApi = {
   searchUsers(query: string) {
     return callApi<{ users: BackendProfile[] }>("search_users", { query });
   },
-  addContactByPhone(phone: string) {
-    return callApi<{ contact: BackendProfile }>("add_contact_by_phone", { phone });
+  addContactByPhone(phone: string, nickname?: string) {
+    return callApi<{ contact: BackendProfile }>("add_contact_by_phone", { phone, nickname });
   },
   createDirectConversation(otherUserId: string) {
     return callApi<{ conversation: BackendConversation }>("create_direct_conversation", {

@@ -230,15 +230,30 @@ function profileDisplayName(row, viewerId = "") {
 }
 
 function mapProfile(row, viewerId = "") {
+  const nickname = typeof row.nickname === "string" ? row.nickname.trim() : "";
+  const displayName = nickname || profileDisplayName(row, viewerId);
   return {
     id: row.id,
-    displayName: profileDisplayName(row, viewerId),
+    displayName,
     phone: row.phone,
     avatarUrl: row.avatar_url,
     about: row.about,
     isOnline: row.is_online,
     lastSeenAt: row.last_seen_at,
   };
+}
+
+async function loadContactNicknames(userId) {
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("contact_user_id, nickname")
+    .eq("owner_id", userId);
+  if (error) throw error;
+  return new Map(
+    (data ?? [])
+      .map((row) => [row.contact_user_id, typeof row.nickname === "string" ? row.nickname.trim() : ""])
+      .filter(([, nickname]) => nickname),
+  );
 }
 
 function messagePayload(row) {
@@ -537,7 +552,7 @@ async function ensureProfile(user) {
 
   const { data: existing, error: selectError } = await supabase
     .from("profiles")
-    .select("id")
+    .select("id, display_name")
     .eq("id", user.id)
     .maybeSingle();
   if (selectError) throw selectError;
@@ -555,9 +570,13 @@ async function ensureProfile(user) {
   }
 
   if (existing) {
+    const profileUpdate = { phone, phone_hash: phoneHash, is_online: true, last_seen_at: now };
+    if (isDefaultDisplayName(existing.display_name) && !isDefaultDisplayName(displayNameFromAuth)) {
+      profileUpdate.display_name = displayNameFromAuth;
+    }
     const { data, error } = await supabase
       .from("profiles")
-      .update({ phone, phone_hash: phoneHash, is_online: true, last_seen_at: now })
+      .update(profileUpdate)
       .eq("id", user.id)
       .select()
       .single();
@@ -616,11 +635,11 @@ async function isAdmin(userId, conversationId) {
 async function loadContacts(userId) {
   const { data, error } = await supabase
     .from("contacts")
-    .select("contact_user_id, profiles!contacts_contact_user_id_fkey(*)")
+    .select("contact_user_id, nickname, profiles!contacts_contact_user_id_fkey(*)")
     .eq("owner_id", userId)
     .order("created_at", { ascending: false });
   if (error) throw error;
-  return (data ?? []).map((row) => mapProfile(row.profiles, userId));
+  return (data ?? []).map((row) => mapProfile({ ...(row.profiles ?? {}), nickname: row.nickname }, userId));
 }
 
 async function loadMessages(userId, conversationId) {
@@ -697,6 +716,7 @@ async function loadConversations(userId) {
     .order("updated_at", { ascending: false });
   if (error) throw error;
 
+  const contactNicknames = await loadContactNicknames(userId);
   const loaded = await Promise.all(
     (conversations ?? []).map(async (conversation) => {
       const { data: participants, error: participantError } = await supabase
@@ -719,10 +739,13 @@ async function loadConversations(userId) {
         ? await loadAttachmentRowsForMessageIds([lastMessageRow.id])
         : new Map();
 
-      const mappedParticipants = (participants ?? []).map((row) => ({
-        ...mapProfile(row.profiles, userId),
-        role: row.role,
-      }));
+      const mappedParticipants = (participants ?? []).map((row) => {
+        const profileRow = row.profiles ?? {};
+        return {
+          ...mapProfile({ ...profileRow, nickname: contactNicknames.get(profileRow.id) }, userId),
+          role: row.role,
+        };
+      });
       const directPeer = mappedParticipants.find((profile) => profile.id !== userId);
       const lastMessage = lastMessageRow
         ? mapMessage(lastMessageRow, attachmentsByMessageId.get(lastMessageRow.id) ?? [])
@@ -1119,6 +1142,8 @@ async function handleAction(user, action, payload) {
 
   if (action === "add_contact_by_phone") {
     const phone = normalizePhone(requiredString(payload, "phone"));
+    const hasNickname = typeof payload.nickname === "string";
+    const nickname = hasNickname ? optionalString(payload, "nickname").slice(0, 80) : "";
     const { data: contact, error } = await supabase
       .from("profiles")
       .select("*")
@@ -1128,11 +1153,13 @@ async function handleAction(user, action, payload) {
     if (error) throw error;
     if (!contact) throw new Error("No Orbita user found for that phone number.");
 
+    const contactRow = { owner_id: user.id, contact_user_id: contact.id };
+    if (hasNickname) contactRow.nickname = nickname || null;
     const { error: insertError } = await supabase
       .from("contacts")
-      .upsert({ owner_id: user.id, contact_user_id: contact.id }, { onConflict: "owner_id,contact_user_id" });
+      .upsert(contactRow, { onConflict: "owner_id,contact_user_id" });
     if (insertError) throw insertError;
-    return { contact: mapProfile(contact, user.id) };
+    return { contact: mapProfile({ ...contact, nickname }, user.id) };
   }
 
   if (action === "create_direct_conversation") {

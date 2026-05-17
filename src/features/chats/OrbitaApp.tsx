@@ -11,8 +11,9 @@ import {
 } from "expo-audio";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
-import { Session } from "@supabase/supabase-js";
-import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { RealtimeChannel, Session } from "@supabase/supabase-js";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -66,7 +67,21 @@ import { subscribeMessengerRealtime } from "@/lib/messengerRealtime";
 import { colors, radii, shadow } from "@/theme/colors";
 
 type Tab = "chats" | "status" | "contacts" | "calls" | "settings";
+type AuthMode = "signin" | "signup";
+type AppThemeMode = "light" | "dark";
 type ChatMessage = BackendMessage & { localState?: "sending" | "failed" };
+type TypingParticipant = {
+  displayName: string;
+  expiresAt: number;
+  userId: string;
+};
+type TypingBroadcastPayload = {
+  conversationId?: string;
+  displayName?: string;
+  event?: "start" | "stop";
+  sentAt?: string;
+  userId?: string;
+};
 type ComposerAttachment = {
   localId: string;
   kind: BackendAttachment["kind"];
@@ -82,6 +97,11 @@ type ForwardTarget = {
   title: string;
   subtitle: string;
 };
+type ChatListContact = BackendProfile & { existingConversationId?: string };
+type UnsavedPeer = {
+  defaultName: string;
+  phone: string;
+};
 
 const KEYBOARD_COMPOSER_GAP = 18;
 const KEYBOARD_SAFETY_GAP = Platform.OS === "android" ? 34 : 14;
@@ -89,6 +109,9 @@ const EDGE_SWIPE_WIDTH = 34;
 const EDGE_SWIPE_TRIGGER = 72;
 const EDGE_SWIPE_VERTICAL_LIMIT = 64;
 const MESSAGE_RECONCILE_WINDOW_MS = 12_000;
+const TYPING_REFRESH_MS = 2_400;
+const TYPING_IDLE_MS = 1_900;
+const TYPING_EXPIRE_MS = 4_800;
 const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: "chats", label: "Chats", icon: "chatbubbles-outline" },
   { id: "status", label: "Status", icon: "aperture-outline" },
@@ -99,12 +122,32 @@ const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap
 
 const DEV_BYPASS_OTP = "123456";
 const DEV_OTP_ENABLED = __DEV__ || process.env.EXPO_PUBLIC_ENABLE_DEV_OTP === "1";
+const OTP_RESEND_SECONDS = 45;
+const THEME_STORAGE_KEY = "orbita.themeMode";
 const DOCUMENT_TYPES = [
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 ];
+
+type AppThemeContextValue = {
+  isDarkTheme: boolean;
+  setThemeMode: (mode: AppThemeMode) => void;
+  themeMode: AppThemeMode;
+  toggleTheme: () => void;
+};
+
+const AppThemeContext = createContext<AppThemeContextValue>({
+  isDarkTheme: false,
+  setThemeMode: () => undefined,
+  themeMode: "light",
+  toggleTheme: () => undefined,
+});
+
+function useAppTheme() {
+  return useContext(AppThemeContext);
+}
 
 function initials(name: string) {
   return name
@@ -147,6 +190,33 @@ function messageSignature(message: Pick<BackendMessage, "senderId" | "body" | "k
 
 function isTaskManagerAgentConversation(conversation: BackendConversation) {
   return conversation.participants.some((participant) => participant.about?.trim().toLowerCase() === "task manager agent");
+}
+
+function shortDisplayName(name: string) {
+  return name.trim().split(/\s+/)[0] || name.trim() || "Someone";
+}
+
+function typingDisplayName(name: string) {
+  const trimmed = name.trim();
+  if (/^\+?[\d\s().-]{6,}$/.test(trimmed)) return trimmed;
+  return shortDisplayName(trimmed);
+}
+
+function typingStatusText(participants: TypingParticipant[]) {
+  if (!participants.length) return "";
+  const names = participants.map((participant) => typingDisplayName(participant.displayName));
+  if (names.length === 1) return `${names[0]} is typing...`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} are typing...`;
+  return `${names[0]}, ${names[1]} and ${names.length - 2} more are typing...`;
+}
+
+function conversationFallbackPreview(conversation: BackendConversation) {
+  if (conversation.kind === "direct") return "1:1 conversation";
+  return `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`;
+}
+
+function peerLabel(profile: BackendProfile) {
+  return profile.phone || profile.displayName || "Orbita user";
 }
 
 function keyboardClearance(height?: number, bottomInset = 0, keyboardTop?: number, windowHeight?: number) {
@@ -210,85 +280,117 @@ function mergeMessages(incoming: BackendMessage[], local: ChatMessage[]) {
 }
 
 function OrbitaLogo({ size = 64 }: { size?: number }) {
-  const spin = useRef(new Animated.Value(0)).current;
-  const counterSpin = useRef(new Animated.Value(0)).current;
+  const scan = useRef(new Animated.Value(0)).current;
   const pulse = useRef(new Animated.Value(1)).current;
+  const glint = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    const spinLoop = Animated.loop(
-      Animated.timing(spin, {
+    const scanLoop = Animated.loop(
+      Animated.timing(scan, {
         toValue: 1,
-        duration: 4200,
-        easing: Easing.linear,
+        duration: 1800,
+        easing: Easing.inOut(Easing.quad),
         useNativeDriver: true,
       }),
     );
     const pulseLoop = Animated.loop(
       Animated.sequence([
-        Animated.timing(pulse, { toValue: 1.07, duration: 900, easing: Easing.out(Easing.quad), useNativeDriver: true }),
-        Animated.timing(pulse, { toValue: 1, duration: 900, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1.05, duration: 980, easing: Easing.out(Easing.quad), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 1, duration: 980, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
       ]),
     );
-
-    spinLoop.start();
-    const counterSpinLoop = Animated.loop(
-      Animated.timing(counterSpin, {
-        toValue: 1,
-        duration: 6100,
-        easing: Easing.linear,
-        useNativeDriver: true,
-      }),
+    const glintLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(glint, { toValue: 1, duration: 1200, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+        Animated.timing(glint, { toValue: 0, duration: 900, easing: Easing.in(Easing.quad), useNativeDriver: true }),
+      ]),
     );
-    counterSpinLoop.start();
+    scanLoop.start();
     pulseLoop.start();
+    glintLoop.start();
     return () => {
-      spinLoop.stop();
-      counterSpinLoop.stop();
+      scanLoop.stop();
       pulseLoop.stop();
+      glintLoop.stop();
     };
-  }, [counterSpin, pulse, spin]);
+  }, [glint, pulse, scan]);
 
-  const spinInterpolate = spin.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
-  const counterSpinInterpolate = counterSpin.interpolate({ inputRange: [0, 1], outputRange: ["360deg", "0deg"] });
+  const scanTranslate = scan.interpolate({ inputRange: [0, 1], outputRange: [-size * 0.42, size * 0.42] });
+  const glintOpacity = glint.interpolate({ inputRange: [0, 0.45, 1], outputRange: [0.25, 1, 0.35] });
 
   return (
-    <Animated.View style={[styles.logoFrame, { width: size, height: size, borderRadius: size / 3, transform: [{ scale: pulse }] }]}>
-      <View style={[styles.logoCore, { width: size - 22, height: size - 22, borderRadius: (size - 22) / 2 }]} />
+    <Animated.View style={[styles.logoFrame, { width: size, height: size, borderRadius: size * 0.28, transform: [{ scale: pulse }] }]}>
+      <View style={[styles.logoCore, { width: size * 0.72, height: size * 0.72, borderRadius: size * 0.2 }]} />
+      <View style={[styles.logoNode, styles.logoNodeTop, { width: size * 0.16, height: size * 0.16, borderRadius: size * 0.08 }]} />
+      <View style={[styles.logoNode, styles.logoNodeLeft, { width: size * 0.13, height: size * 0.13, borderRadius: size * 0.065 }]} />
+      <View style={[styles.logoNode, styles.logoNodeRight, { width: size * 0.12, height: size * 0.12, borderRadius: size * 0.06 }]} />
+      <View style={[styles.logoSignal, { width: size * 0.5, top: size * 0.32 }]} />
+      <View style={[styles.logoSignal, { width: size * 0.38, top: size * 0.48 }]} />
       <Animated.View
         style={[
-          styles.logoOrbit,
+          styles.logoScan,
           {
-            width: size - 12,
-            height: size - 12,
-            borderRadius: (size - 12) / 2,
-            transform: [{ rotate: spinInterpolate }],
+            height: size * 0.78,
+            opacity: glintOpacity,
+            transform: [{ translateX: scanTranslate }, { rotate: "18deg" }],
           },
         ]}
       />
-      <Animated.View
-        style={[
-          styles.logoOrbitAlt,
-          {
-            width: size - 4,
-            height: size - 4,
-            borderRadius: (size - 4) / 2,
-            transform: [{ rotate: counterSpinInterpolate }],
-          },
-        ]}
-      />
-      <Ionicons color="#FFFFFF" name="planet-outline" size={Math.max(24, size * 0.45)} />
+      <Ionicons color="#FFFFFF" name="sparkles" size={Math.max(22, size * 0.38)} />
     </Animated.View>
   );
 }
 
-function OrbitaBrand({ compact }: { compact?: boolean }) {
+function OrbitaBrand({ compact, inverse }: { compact?: boolean; inverse?: boolean }) {
   return (
     <View style={styles.brandRow}>
       <OrbitaLogo size={compact ? 40 : 48} />
       <View>
-        <Text style={[styles.brandTitle, compact && styles.brandTitleCompact]}>Orbita</Text>
-        {!compact ? <Text style={styles.brandTagline}>Messaging, with momentum</Text> : null}
+        <Text style={[styles.brandTitle, compact && styles.brandTitleCompact, inverse && styles.brandTitleInverse]}>Orbita</Text>
+        {!compact ? <Text style={[styles.brandTagline, inverse && styles.brandTaglineInverse]}>AI-native messaging</Text> : null}
       </View>
+    </View>
+  );
+}
+
+function AuthSignalScene() {
+  const float = useRef(new Animated.Value(0)).current;
+  const scan = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const floatLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(float, { toValue: 1, duration: 2400, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(float, { toValue: 0, duration: 2400, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ]),
+    );
+    const scanLoop = Animated.loop(
+      Animated.timing(scan, { toValue: 1, duration: 2600, easing: Easing.linear, useNativeDriver: true }),
+    );
+    floatLoop.start();
+    scanLoop.start();
+    return () => {
+      floatLoop.stop();
+      scanLoop.stop();
+    };
+  }, [float, scan]);
+
+  const drift = float.interpolate({ inputRange: [0, 1], outputRange: [0, -10] });
+  const scanY = scan.interpolate({ inputRange: [0, 1], outputRange: [-18, 160] });
+  const nodePulse = float.interpolate({ inputRange: [0, 1], outputRange: [0.68, 1] });
+
+  return (
+    <View pointerEvents="none" style={styles.authSignalScene}>
+      <Animated.View style={[styles.authSignalCore, { transform: [{ translateY: drift }] }]}>
+        <OrbitaLogo size={82} />
+        <Animated.View style={[styles.authScanLine, { transform: [{ translateY: scanY }] }]} />
+        <Animated.View style={[styles.authNode, styles.authNodeOne, { opacity: nodePulse }]} />
+        <Animated.View style={[styles.authNode, styles.authNodeTwo, { opacity: nodePulse }]} />
+        <Animated.View style={[styles.authNode, styles.authNodeThree, { opacity: nodePulse }]} />
+        <View style={[styles.authTrace, styles.authTraceOne]} />
+        <View style={[styles.authTrace, styles.authTraceTwo]} />
+        <View style={[styles.authTrace, styles.authTraceThree]} />
+      </Animated.View>
     </View>
   );
 }
@@ -371,8 +473,9 @@ function MessageListSkeleton() {
 }
 
 function MessageBody({ mine, text }: { mine: boolean; text: string }) {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <Text style={[styles.messageText, mine && styles.messageTextMine]}>
+    <Text style={[styles.messageText, isDarkTheme && !mine && styles.messageTextDark, mine && styles.messageTextMine]}>
       {renderMessageInline(text, mine, "message")}
     </Text>
   );
@@ -541,9 +644,10 @@ function IconButton({
   label: string;
   onPress?: () => void;
 }) {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <Pressable accessibilityLabel={label} onPress={onPress} style={styles.iconButton}>
-      <Ionicons color={colors.ink} name={icon} size={21} />
+    <Pressable accessibilityLabel={label} onPress={onPress} style={[styles.iconButton, isDarkTheme && styles.iconButtonDark]}>
+      <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name={icon} size={21} />
     </Pressable>
   );
 }
@@ -594,17 +698,43 @@ function FullScreenLoader() {
 }
 
 function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => void }) {
+  const [authMode, setAuthMode] = useState<AuthMode>("signin");
+  const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const [resendSeconds, setResendSeconds] = useState(0);
   const keyboardInset = useKeyboardClearance();
 
-  async function requestOtp() {
+  useEffect(() => {
+    if (!resendSeconds) return undefined;
+    const timer = setTimeout(() => setResendSeconds((current) => Math.max(0, current - 1)), 1000);
+    return () => clearTimeout(timer);
+  }, [resendSeconds]);
+
+  function switchMode(nextMode: AuthMode) {
+    if (loading) return;
+    setAuthMode(nextMode);
+    setOtp("");
+    setOtpSent(false);
+    setNotice("");
+    setResendSeconds(0);
+  }
+
+  function editLoginDetails() {
+    setOtp("");
+    setOtpSent(false);
+    setNotice("");
+    setResendSeconds(0);
+  }
+
+  async function requestOtp(isResend = false) {
     const normalizedEmail = email.trim().toLowerCase();
     const normalizedPhone = normalizePhone(phone);
+    const normalizedName = displayName.trim();
     if (!normalizedEmail || !normalizedEmail.includes("@")) {
       setNotice("Enter a valid email address first.");
       return;
@@ -613,19 +743,28 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
       setNotice("Enter your phone number first.");
       return;
     }
+    if (authMode === "signup" && !normalizedName) {
+      setNotice("Enter your name to create your Orbita profile.");
+      return;
+    }
+    if (isResend && resendSeconds > 0) return;
     if (!hasSupabaseConfig) {
       setNotice("Add Supabase credentials to .env before logging in.");
       return;
     }
 
     setLoading(true);
-    const result = await signInWithEmail(normalizedEmail, normalizedPhone);
+    const result = await signInWithEmail(normalizedEmail, normalizedPhone, {
+      displayName: authMode === "signup" ? normalizedName : undefined,
+      shouldCreateUser: authMode === "signup",
+    });
     setLoading(false);
 
     if (result.error) {
       if (DEV_OTP_ENABLED) {
         setNotice(`${result.error.message} You can use ${DEV_BYPASS_OTP} for local testing.`);
         setOtpSent(true);
+        setResendSeconds(OTP_RESEND_SECONDS);
       } else {
         setNotice(result.error.message);
       }
@@ -634,11 +773,14 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
 
     setEmail(normalizedEmail);
     setPhone(normalizedPhone);
+    setDisplayName(normalizedName);
+    setOtp("");
     setOtpSent(true);
+    setResendSeconds(OTP_RESEND_SECONDS);
     setNotice(
       DEV_OTP_ENABLED
-        ? `OTP sent to your email. Enter the code to continue, or use ${DEV_BYPASS_OTP} for local testing.`
-        : "OTP sent to your email. Enter the code to continue.",
+        ? `${isResend ? "New OTP sent" : "OTP sent"} to your email. Enter the code, or use ${DEV_BYPASS_OTP} for local testing.`
+        : `${isResend ? "New OTP sent" : "OTP sent"} to your email. Enter the code to continue.`,
     );
   }
 
@@ -650,6 +792,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
 
     const normalizedEmail = email.trim().toLowerCase();
     const normalizedPhone = normalizePhone(phone);
+    const normalizedName = displayName.trim();
     const isDevBypass = DEV_OTP_ENABLED && otp.trim() === DEV_BYPASS_OTP;
 
     if (!normalizedPhone) {
@@ -659,8 +802,8 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
 
     setLoading(true);
     const result = isDevBypass
-      ? await signInWithDevOtpBypass(normalizedEmail, normalizedPhone)
-      : await verifyEmailOtp(normalizedEmail, otp.trim(), normalizedPhone);
+      ? await signInWithDevOtpBypass(normalizedEmail, normalizedPhone, authMode === "signup" ? normalizedName : undefined)
+      : await verifyEmailOtp(normalizedEmail, otp.trim(), normalizedPhone, authMode === "signup" ? normalizedName : undefined);
     setLoading(false);
 
     if (result.error) {
@@ -670,6 +813,19 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
 
     onSignedIn(result.data.session);
   }
+
+  const authTitle = otpSent
+    ? "Enter secure code"
+    : authMode === "signup"
+      ? "Create your Orbita"
+      : "Welcome back";
+  const authCopy = otpSent
+    ? `We sent a one-time code to ${email || "your email"}.`
+    : authMode === "signup"
+      ? "Build your AI-ready messaging profile with email OTP and a verified phone number."
+      : "Sign in with your email OTP and phone number to continue your encrypted workspace.";
+  const primaryLabel = otpSent ? "Verify and continue" : authMode === "signup" ? "Create account" : "Send email OTP";
+  const resendLabel = resendSeconds > 0 ? `Resend in ${resendSeconds}s` : "Resend OTP";
 
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={styles.safe}>
@@ -684,62 +840,119 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.loginScreen}>
-        <View style={styles.loginGlow} />
-        <OrbitaBrand />
-        <Text style={styles.loginTitle}>Sign In</Text>
-        <Text style={styles.loginCopy}>
-          Sign in with your email OTP and add your phone number to access messages, groups, status, and settings.
-        </Text>
-        <View style={styles.loginForm}>
-          <TextInput
-            autoCapitalize="none"
-            autoCorrect={false}
-            editable={!otpSent && !loading}
-            keyboardType="email-address"
-            onChangeText={setEmail}
-            placeholder="you@example.com"
-            placeholderTextColor={colors.faint}
-            style={styles.loginInput}
-            value={email}
-          />
-          <TextInput
-            editable={!otpSent && !loading}
-            keyboardType="phone-pad"
-            onChangeText={setPhone}
-            placeholder="+91 phone number"
-            placeholderTextColor={colors.faint}
-            style={styles.loginInput}
-            value={phone}
-          />
-          {otpSent ? (
-            <TextInput
-              keyboardType="number-pad"
-              onChangeText={setOtp}
-              placeholder="OTP code"
-              placeholderTextColor={colors.faint}
-              style={styles.loginInput}
-              value={otp}
-            />
-          ) : null}
-          <Pressable
-            disabled={loading || !hasSupabaseConfig}
-            onPress={otpSent ? verifyOtp : requestOtp}
-            style={[styles.loginButton, (loading || !hasSupabaseConfig) && styles.buttonDisabled]}
-          >
-            {loading ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
+          <View style={styles.loginBackdropGrid} />
+          <View style={styles.loginGlow} />
+          <AuthSignalScene />
+          <View style={styles.loginHero}>
+            <OrbitaBrand inverse />
+            <View style={styles.loginBadge}>
+              <Ionicons color={colors.accent} name="sparkles" size={14} />
+              <Text style={styles.loginBadgeText}>AI signal layer</Text>
+            </View>
+            <Text style={styles.loginTitle}>{authTitle}</Text>
+            <Text style={styles.loginCopy}>{authCopy}</Text>
+          </View>
+          <View style={styles.loginForm}>
+            {!otpSent ? (
+              <View style={styles.authModeSwitch}>
+                <Pressable
+                  onPress={() => switchMode("signin")}
+                  style={[styles.authModeButton, authMode === "signin" && styles.authModeButtonActive]}
+                >
+                  <Text style={[styles.authModeText, authMode === "signin" && styles.authModeTextActive]}>Sign in</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => switchMode("signup")}
+                  style={[styles.authModeButton, authMode === "signup" && styles.authModeButtonActive]}
+                >
+                  <Text style={[styles.authModeText, authMode === "signup" && styles.authModeTextActive]}>Create</Text>
+                </Pressable>
+              </View>
+            ) : null}
+            {authMode === "signup" && !otpSent ? (
+              <View style={styles.inputShell}>
+                <Ionicons color={colors.accent} name="person-outline" size={18} />
+                <TextInput
+                  autoCapitalize="words"
+                  autoCorrect={false}
+                  editable={!loading}
+                  onChangeText={setDisplayName}
+                  placeholder="Your name"
+                  placeholderTextColor="rgba(255,255,255,0.52)"
+                  style={styles.loginInput}
+                  value={displayName}
+                />
+              </View>
+            ) : null}
+            <View style={styles.inputShell}>
+              <Ionicons color={colors.accent} name="mail-outline" size={18} />
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!otpSent && !loading}
+                keyboardType="email-address"
+                onChangeText={setEmail}
+                placeholder="you@example.com"
+                placeholderTextColor="rgba(255,255,255,0.52)"
+                style={styles.loginInput}
+                value={email}
+              />
+            </View>
+            <View style={styles.inputShell}>
+              <Ionicons color={colors.accent} name="call-outline" size={18} />
+              <TextInput
+                editable={!otpSent && !loading}
+                keyboardType="phone-pad"
+                onChangeText={setPhone}
+                placeholder="+91 phone number"
+                placeholderTextColor="rgba(255,255,255,0.52)"
+                style={styles.loginInput}
+                value={phone}
+              />
+            </View>
+            {otpSent ? (
               <>
-                <Ionicons color="#FFFFFF" name="shield-checkmark-outline" size={18} />
-                <Text style={styles.loginButtonText}>{otpSent ? "Verify and continue" : "Send email OTP"}</Text>
+                <View style={styles.inputShell}>
+                  <Ionicons color={colors.accent} name="keypad-outline" size={18} />
+                  <TextInput
+                    autoFocus={Platform.OS !== "web"}
+                    keyboardType="number-pad"
+                    onChangeText={setOtp}
+                    placeholder="OTP code"
+                    placeholderTextColor="rgba(255,255,255,0.52)"
+                    style={[styles.loginInput, styles.otpInput]}
+                    value={otp}
+                  />
+                </View>
+                <View style={styles.otpActionRow}>
+                  <Pressable disabled={loading || resendSeconds > 0} onPress={() => requestOtp(true)} style={styles.textActionButton}>
+                    <Text style={[styles.textAction, (loading || resendSeconds > 0) && styles.textActionDisabled]}>{resendLabel}</Text>
+                  </Pressable>
+                  <Pressable disabled={loading} onPress={editLoginDetails} style={styles.textActionButton}>
+                    <Text style={styles.textAction}>Edit details</Text>
+                  </Pressable>
+                </View>
               </>
-            )}
-          </Pressable>
-          {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
-          {!hasSupabaseConfig ? (
-            <Text style={styles.hintText}>Required: EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.</Text>
-          ) : null}
-        </View>
+            ) : null}
+            <Pressable
+              disabled={loading || !hasSupabaseConfig}
+              onPress={otpSent ? verifyOtp : () => requestOtp(false)}
+              style={[styles.loginButton, (loading || !hasSupabaseConfig) && styles.buttonDisabled]}
+            >
+              {loading ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <>
+                  <Ionicons color="#FFFFFF" name={otpSent ? "shield-checkmark-outline" : "flash-outline"} size={18} />
+                  <Text style={styles.loginButtonText}>{primaryLabel}</Text>
+                </>
+              )}
+            </Pressable>
+            {notice ? <Text style={styles.loginNoticeText}>{notice}</Text> : null}
+            {!hasSupabaseConfig ? (
+              <Text style={styles.loginHintText}>Required: EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.</Text>
+            ) : null}
+          </View>
         </View>
       </ScrollView>
       </KeyboardAvoidingView>
@@ -751,6 +964,7 @@ function MessengerShell({ session }: { session: Session }) {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const isWide = width >= 840;
+  const [themeMode, setThemeModeState] = useState<AppThemeMode>("light");
   const [activeTab, setActiveTab] = useState<Tab>("chats");
   const [profile, setProfile] = useState<BackendProfile | null>(null);
   const [contacts, setContacts] = useState<BackendProfile[]>([]);
@@ -765,6 +979,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [agentThinkingFor, setAgentThinkingFor] = useState<Record<string, string>>({});
+  const [typingByConversation, setTypingByConversation] = useState<Record<string, Record<string, TypingParticipant>>>({});
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [groupOpen, setGroupOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
@@ -773,14 +988,46 @@ function MessengerShell({ session }: { session: Session }) {
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
   const [forwardPickerOpen, setForwardPickerOpen] = useState(false);
+  const [saveContactPeer, setSaveContactPeer] = useState<UnsavedPeer | null>(null);
   const bootstrapRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageRefreshTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const typingChannelRef = useRef<{ channel: RealtimeChannel; conversationId: string } | null>(null);
+  const typingExpiryTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const typingRefreshAtRef = useRef(0);
+  const typingIsActiveRef = useRef(false);
   const conversationsRef = useRef<BackendConversation[]>([]);
+  const contactsRef = useRef<BackendProfile[]>([]);
   const agentThinkingForRef = useRef<Record<string, string>>({});
   const selectedIdRef = useRef("");
   const lastUnreadTotalRef = useRef<number | null>(null);
   const incomingHapticAtRef = useRef(0);
   const bootstrapHasLoadedRef = useRef(false);
+  const isDarkTheme = themeMode === "dark";
+
+  useEffect(() => {
+    AsyncStorage.getItem(THEME_STORAGE_KEY)
+      .then((savedTheme) => {
+        if (savedTheme === "light" || savedTheme === "dark") {
+          setThemeModeState(savedTheme);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const setThemeMode = useCallback((mode: AppThemeMode) => {
+    setThemeModeState(mode);
+    void AsyncStorage.setItem(THEME_STORAGE_KEY, mode).catch(() => undefined);
+  }, []);
+
+  const toggleTheme = useCallback(() => {
+    setThemeMode(themeMode === "dark" ? "light" : "dark");
+  }, [setThemeMode, themeMode]);
+
+  const themeContext = useMemo<AppThemeContextValue>(
+    () => ({ isDarkTheme, setThemeMode, themeMode, toggleTheme }),
+    [isDarkTheme, setThemeMode, themeMode, toggleTheme],
+  );
 
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
   const conversationIds = useMemo(() => conversations.map((conversation) => conversation.id), [conversations]);
@@ -790,10 +1037,21 @@ function MessengerShell({ session }: { session: Session }) {
     () => conversations.reduce((total, conversation) => total + conversation.unreadCount, 0),
     [conversations],
   );
+  const selectedTypingParticipants = useMemo(() => {
+    if (!selected) return [];
+    const now = Date.now();
+    return Object.values(typingByConversation[selected.id] ?? {})
+      .filter((participant) => participant.expiresAt > now)
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [selected, typingByConversation]);
 
   useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
+
+  useEffect(() => {
+    contactsRef.current = contacts;
+  }, [contacts]);
 
   useEffect(() => {
     agentThinkingForRef.current = agentThinkingFor;
@@ -815,6 +1073,115 @@ function MessengerShell({ session }: { session: Session }) {
     incomingHapticAtRef.current = now;
     void hapticMessageReceived();
   }, []);
+
+  const removeTypingParticipant = useCallback((conversationId: string, userId: string) => {
+    const timerKey = `${conversationId}:${userId}`;
+    const timer = typingExpiryTimers.current.get(timerKey);
+    if (timer) {
+      clearTimeout(timer);
+      typingExpiryTimers.current.delete(timerKey);
+    }
+    setTypingByConversation((current) => {
+      const conversationTyping = current[conversationId];
+      if (!conversationTyping?.[userId]) return current;
+      const nextConversationTyping = { ...conversationTyping };
+      delete nextConversationTyping[userId];
+      const next = { ...current };
+      if (Object.keys(nextConversationTyping).length) {
+        next[conversationId] = nextConversationTyping;
+      } else {
+        delete next[conversationId];
+      }
+      return next;
+    });
+  }, []);
+
+  const registerTypingEvent = useCallback((payload: TypingBroadcastPayload) => {
+    const conversationId = typeof payload.conversationId === "string" ? payload.conversationId : "";
+    const userId = typeof payload.userId === "string" ? payload.userId : "";
+    if (!conversationId || !userId || userId === profileId) return;
+
+    if (payload.event === "stop") {
+      removeTypingParticipant(conversationId, userId);
+      return;
+    }
+
+    if (payload.event !== "start") return;
+    const savedContact = contactsRef.current.find((contact) => contact.id === userId);
+    const participant = conversationsRef.current
+      .find((conversation) => conversation.id === conversationId)
+      ?.participants.find((conversationParticipant) => conversationParticipant.id === userId);
+    const fallbackDisplayName = typeof payload.displayName === "string" && payload.displayName.trim()
+      ? payload.displayName.trim()
+      : "Someone";
+    const displayName = savedContact?.displayName || participant?.phone || participant?.displayName || fallbackDisplayName;
+    const expiresAt = Date.now() + TYPING_EXPIRE_MS;
+    setTypingByConversation((current) => ({
+      ...current,
+      [conversationId]: {
+        ...(current[conversationId] ?? {}),
+        [userId]: { displayName, expiresAt, userId },
+      },
+    }));
+
+    const timerKey = `${conversationId}:${userId}`;
+    const existing = typingExpiryTimers.current.get(timerKey);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => removeTypingParticipant(conversationId, userId), TYPING_EXPIRE_MS);
+    typingExpiryTimers.current.set(timerKey, timer);
+  }, [profileId, removeTypingParticipant]);
+
+  const sendTypingEvent = useCallback((event: "start" | "stop", conversationId = selectedId) => {
+    if (!profile || !conversationId) return;
+    const activeConversation = conversationsRef.current.find((conversation) => conversation.id === conversationId);
+    if (!activeConversation || isTaskManagerAgentConversation(activeConversation)) return;
+    const currentChannel = typingChannelRef.current;
+    if (!currentChannel || currentChannel.conversationId !== conversationId) return;
+
+    void currentChannel.channel.send({
+      type: "broadcast",
+      event: "typing",
+      payload: {
+        conversationId,
+        displayName: profile.displayName,
+        event,
+        sentAt: new Date().toISOString(),
+        userId: profile.id,
+      } satisfies TypingBroadcastPayload,
+    });
+  }, [profile, selectedId]);
+
+  const stopTyping = useCallback((conversationId = selectedId) => {
+    if (typingIdleTimer.current) {
+      clearTimeout(typingIdleTimer.current);
+      typingIdleTimer.current = null;
+    }
+    if (typingIsActiveRef.current) {
+      sendTypingEvent("stop", conversationId);
+    }
+    typingIsActiveRef.current = false;
+    typingRefreshAtRef.current = 0;
+  }, [selectedId, sendTypingEvent]);
+
+  const handleDraftChange = useCallback((value: string) => {
+    setDraft(value);
+    if (!selected || !profile || isTaskManagerAgentConversation(selected)) return;
+
+    if (!value.trim()) {
+      stopTyping(selected.id);
+      return;
+    }
+
+    const now = Date.now();
+    if (!typingIsActiveRef.current || now - typingRefreshAtRef.current >= TYPING_REFRESH_MS) {
+      sendTypingEvent("start", selected.id);
+      typingIsActiveRef.current = true;
+      typingRefreshAtRef.current = now;
+    }
+
+    if (typingIdleTimer.current) clearTimeout(typingIdleTimer.current);
+    typingIdleTimer.current = setTimeout(() => stopTyping(selected.id), TYPING_IDLE_MS);
+  }, [profile, selected, sendTypingEvent, stopTyping]);
 
   const loadBootstrap = useCallback(async () => {
     if (!supabase) return;
@@ -936,6 +1303,9 @@ function MessengerShell({ session }: { session: Session }) {
       if (bootstrapRefreshTimer.current) clearTimeout(bootstrapRefreshTimer.current);
       messageRefreshTimers.current.forEach((timer) => clearTimeout(timer));
       messageRefreshTimers.current.clear();
+      typingExpiryTimers.current.forEach((timer) => clearTimeout(timer));
+      typingExpiryTimers.current.clear();
+      if (typingIdleTimer.current) clearTimeout(typingIdleTimer.current);
     };
   }, []);
 
@@ -953,6 +1323,58 @@ function MessengerShell({ session }: { session: Session }) {
     setLoadingMessagesFor(selectedId);
     loadMessages(selectedId);
   }, [loadMessages, selectedId]);
+
+  useEffect(() => {
+    if (!supabase || !selectedId || !profileId) return undefined;
+    const activeConversation = conversationsRef.current.find((conversation) => conversation.id === selectedId);
+    if (!activeConversation || isTaskManagerAgentConversation(activeConversation)) return undefined;
+
+    const client = supabase;
+    const channel = client
+      .channel(`messenger:typing:${selectedId}`, {
+        config: {
+          broadcast: { self: false },
+        },
+      })
+      .on("broadcast", { event: "typing" }, ({ payload }) => {
+        registerTypingEvent(payload as TypingBroadcastPayload);
+      });
+
+    typingChannelRef.current = { channel, conversationId: selectedId };
+    channel.subscribe();
+
+    return () => {
+      if (typingChannelRef.current?.channel === channel) {
+        typingChannelRef.current = null;
+      }
+      if (typingIsActiveRef.current) {
+        void channel.send({
+          type: "broadcast",
+          event: "typing",
+          payload: {
+            conversationId: selectedId,
+            displayName: profile?.displayName ?? "Someone",
+            event: "stop",
+            sentAt: new Date().toISOString(),
+            userId: profileId,
+          } satisfies TypingBroadcastPayload,
+        });
+      }
+      typingIsActiveRef.current = false;
+      typingRefreshAtRef.current = 0;
+      if (typingIdleTimer.current) {
+        clearTimeout(typingIdleTimer.current);
+        typingIdleTimer.current = null;
+      }
+      setTypingByConversation((current) => {
+        if (!current[selectedId]) return current;
+        const next = { ...current };
+        delete next[selectedId];
+        return next;
+      });
+      void client.removeChannel(channel);
+    };
+  }, [profile?.displayName, profileId, registerTypingEvent, selectedId]);
 
   useEffect(() => {
     if (!profileId) return undefined;
@@ -981,13 +1403,16 @@ function MessengerShell({ session }: { session: Session }) {
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state !== "active") return;
+      if (state !== "active") {
+        stopTyping(selectedId);
+        return;
+      }
       scheduleBootstrapRefresh();
       if (selectedId) scheduleMessageRefresh(selectedId);
     });
 
     return () => subscription.remove();
-  }, [scheduleBootstrapRefresh, scheduleMessageRefresh, selectedId]);
+  }, [scheduleBootstrapRefresh, scheduleMessageRefresh, selectedId, stopTyping]);
 
   useEffect(() => {
     if (Platform.OS !== "android") return undefined;
@@ -1043,6 +1468,16 @@ function MessengerShell({ session }: { session: Session }) {
     });
     return directMap;
   }, [conversations, profileId]);
+  const savedContactIds = useMemo(() => new Set(contacts.map((contact) => contact.id)), [contacts]);
+
+  const selectedDirectPeer = useMemo(() => {
+    if (!selected || selected.kind !== "direct") return null;
+    return selected.participants.find((participant) => participant.id !== profileId) ?? null;
+  }, [profileId, selected]);
+  const selectedPeerIsSaved = Boolean(selectedDirectPeer && savedContactIds.has(selectedDirectPeer.id));
+  const selectedUnsavedPeer = selectedDirectPeer && !selectedPeerIsSaved && selectedDirectPeer.phone
+    ? { defaultName: peerLabel(selectedDirectPeer), phone: selectedDirectPeer.phone }
+    : null;
 
   const forwardTargets = useMemo<ForwardTarget[]>(() => {
     const conversationTargets = conversations
@@ -1070,6 +1505,30 @@ function MessengerShell({ session }: { session: Session }) {
 
     return [...conversationTargets, ...extraContactTargets];
   }, [contacts, conversations, existingDirectByContactId, selectedId]);
+
+  const chatListContacts = useMemo<ChatListContact[]>(
+    () =>
+      contacts.map((contact) => ({
+        ...contact,
+        existingConversationId: existingDirectByContactId.get(contact.id)?.id,
+      })),
+    [contacts, existingDirectByContactId],
+  );
+
+  async function openContactConversation(otherUserId: string) {
+    await run(async () => {
+      const existingConversationId = existingDirectByContactId.get(otherUserId)?.id;
+      if (existingConversationId) {
+        setSelectedId(existingConversationId);
+        setActiveTab("chats");
+        return;
+      }
+      const result = await messengerApi.createDirectConversation(otherUserId);
+      await loadBootstrap();
+      setSelectedId(result.conversation.id);
+      setActiveTab("chats");
+    });
+  }
 
   async function pickImageAttachment() {
     const result = await ImagePicker.launchImageLibraryAsync({
@@ -1134,6 +1593,7 @@ function MessengerShell({ session }: { session: Session }) {
   async function sendMessage(kind: BackendMessage["kind"] = "text", body = draft.trim(), attachment = composerAttachment) {
     const text = body.trim();
     if (!selected || !profile || (!text && !attachment)) return;
+    stopTyping(selected.id);
     let resolvedKind = kind;
     if (attachment) {
       resolvedKind = attachment.kind;
@@ -1260,10 +1720,11 @@ function MessengerShell({ session }: { session: Session }) {
   const bottomInset = Math.max(insets.bottom, Platform.OS === "android" ? 8 : 0);
 
   return (
-    <SafeAreaView edges={["top", "left", "right"]} style={styles.safe}>
-      <View style={styles.appFrame}>
+    <AppThemeContext.Provider value={themeContext}>
+    <SafeAreaView edges={["top", "left", "right"]} style={[styles.safe, isDarkTheme && styles.safeDark]}>
+      <View style={[styles.appFrame, isDarkTheme && styles.appFrameDark]}>
         {isWide ? <Sidebar activeTab={activeTab} onChange={changeTab} onNewChat={() => setNewChatOpen(true)} /> : null}
-        <View style={styles.workspace}>
+        <View style={[styles.workspace, isDarkTheme && styles.workspaceDark]}>
           <AppHeader
             isWide={isWide}
             onNewChat={() => setNewChatOpen(true)}
@@ -1274,20 +1735,23 @@ function MessengerShell({ session }: { session: Session }) {
           <View
             style={[
               styles.content,
+              isDarkTheme && styles.contentDark,
               !isWide && [styles.contentMobile, { paddingBottom: showBottomTabs ? 64 + bottomInset : 0 }],
+              !isWide && isDarkTheme && styles.contentMobileDark,
               !isWide && activeTab === "chats" && selected && styles.contentMobileChat,
             ]}
           >
             {showPanel ? (
               <Panel
                 activeTab={activeTab}
-                contacts={contacts}
+                contacts={chatListContacts}
                 conversations={conversations}
                 isWide={isWide}
                 onCreateGroup={() => setGroupOpen(true)}
                 onNewChat={() => setNewChatOpen(true)}
                 onNewStatus={() => setStatusOpen(true)}
                 onOpenProfile={() => setProfileOpen(true)}
+                onOpenContact={openContactConversation}
                 onSelect={(id) => {
                   setSelectedId(id);
                   setActiveTab("chats");
@@ -1317,7 +1781,12 @@ function MessengerShell({ session }: { session: Session }) {
                 onBack={() => setSelectedId("")}
                 onRemoveAttachment={() => setComposerAttachment(null)}
                 onSend={(nextKind, nextBody, nextAttachment) => sendMessage(nextKind, nextBody, nextAttachment)}
-                setDraft={setDraft}
+                onSaveContact={() => {
+                  if (selectedUnsavedPeer) setSaveContactPeer(selectedUnsavedPeer);
+                }}
+                setDraft={handleDraftChange}
+                typingText={typingStatusText(selectedTypingParticipants)}
+                unsavedPeer={selectedUnsavedPeer}
               />
             ) : isWide && activeTab === "chats" ? (
               <DesktopEmpty />
@@ -1334,15 +1803,23 @@ function MessengerShell({ session }: { session: Session }) {
         onClose={() => setNewChatOpen(false)}
         onContactAdded={async () => loadBootstrap()}
         onOpenConversation={async (otherUserId) => {
-          await run(async () => {
-            const result = await messengerApi.createDirectConversation(otherUserId);
-            setNewChatOpen(false);
-            await loadBootstrap();
-            setSelectedId(result.conversation.id);
-            setActiveTab("chats");
-          });
+          setNewChatOpen(false);
+          await openContactConversation(otherUserId);
         }}
         visible={newChatOpen}
+      />
+      <SaveContactModal
+        onClose={() => setSaveContactPeer(null)}
+        onSave={async (nickname) => {
+          if (!saveContactPeer) return;
+          await run(async () => {
+            await messengerApi.addContactByPhone(saveContactPeer.phone, nickname);
+            setSaveContactPeer(null);
+            await loadBootstrap();
+          });
+        }}
+        peer={saveContactPeer}
+        visible={Boolean(saveContactPeer)}
       />
       <GroupModal
         contacts={contacts}
@@ -1414,6 +1891,7 @@ function MessengerShell({ session }: { session: Session }) {
         visible={forwardPickerOpen}
       />
     </SafeAreaView>
+    </AppThemeContext.Provider>
   );
 }
 
@@ -1428,9 +1906,10 @@ function AppHeader({
   onOpenProfile: () => void;
   onSignOut: () => void;
 }) {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <View style={[styles.header, !isWide && styles.headerMobile]}>
-      <OrbitaBrand compact={!isWide} />
+    <View style={[styles.header, isDarkTheme && styles.headerDark, !isWide && styles.headerMobile]}>
+      <OrbitaBrand compact={!isWide} inverse={isDarkTheme} />
       <View style={styles.headerActions}>
         <IconButton icon="create-outline" label="New chat" onPress={onNewChat} />
         <IconButton icon="person-circle-outline" label="Profile" onPress={onOpenProfile} />
@@ -1449,10 +1928,11 @@ function Sidebar({
   onChange: (tab: Tab) => void;
   onNewChat: () => void;
 }) {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <View style={styles.sidebar}>
+    <View style={[styles.sidebar, isDarkTheme && styles.sidebarDark]}>
       <View style={styles.brandMark}>
-        <Ionicons color="#FFFFFF" name="planet-outline" size={24} />
+        <OrbitaLogo size={36} />
       </View>
       <View style={styles.navStack}>
         {tabs.map((tab) => (
@@ -1485,15 +1965,29 @@ function BottomTabs({
   onChange: (tab: Tab) => void;
   unreadTotal: number;
 }) {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <View style={[styles.bottomTabs, { paddingBottom: bottomInset + 8 }]}>
+    <View style={[styles.bottomTabs, isDarkTheme && styles.bottomTabsDark, { paddingBottom: bottomInset + 8 }]}>
       {tabs.map((tab) => (
         <Pressable accessibilityLabel={tab.label} key={tab.id} onPress={() => onChange(tab.id)} style={styles.bottomTab}>
           <View>
-            <Ionicons color={activeTab === tab.id ? colors.primaryDark : colors.muted} name={tab.icon} size={24} />
+            <Ionicons
+              color={activeTab === tab.id ? (isDarkTheme ? colors.accent : colors.primaryDark) : isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted}
+              name={tab.icon}
+              size={24}
+            />
             {tab.id === "chats" && unreadTotal > 0 ? <UnreadBadge count={unreadTotal} compact /> : null}
           </View>
-          <Text style={[styles.bottomTabLabel, activeTab === tab.id && styles.bottomTabLabelActive]}>{tab.label}</Text>
+          <Text
+            style={[
+              styles.bottomTabLabel,
+              isDarkTheme && styles.bottomTabLabelDark,
+              activeTab === tab.id && styles.bottomTabLabelActive,
+              isDarkTheme && activeTab === tab.id && styles.bottomTabLabelActiveDark,
+            ]}
+          >
+            {tab.label}
+          </Text>
         </Pressable>
       ))}
     </View>
@@ -1515,6 +2009,7 @@ function Panel({
   conversations,
   isWide,
   onCreateGroup,
+  onOpenContact,
   onNewChat,
   onNewStatus,
   onOpenProfile,
@@ -1524,10 +2019,11 @@ function Panel({
   statuses,
 }: {
   activeTab: Tab;
-  contacts: BackendProfile[];
+  contacts: ChatListContact[];
   conversations: BackendConversation[];
   isWide: boolean;
   onCreateGroup: () => void;
+  onOpenContact: (contactId: string) => void;
   onNewChat: () => void;
   onNewStatus: () => void;
   onOpenProfile: () => void;
@@ -1536,6 +2032,7 @@ function Panel({
   selectedId?: string;
   statuses: BackendStatus[];
 }) {
+  const { isDarkTheme } = useAppTheme();
   if (activeTab === "status") {
     return <StatusPanel isWide={isWide} onNewStatus={onNewStatus} profile={profile} statuses={statuses} />;
   }
@@ -1550,35 +2047,68 @@ function Panel({
   }
 
   return (
-    <View style={[styles.listPanel, !isWide && styles.mobilePanel]}>
+    <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Chats" actionIcon="create-outline" actionLabel="New chat" onAction={onNewChat} />
-      <ScrollView contentContainerStyle={styles.listContent}>
-        {conversations.length ? (
-          conversations.map((conversation) => (
-            <Pressable
-              key={conversation.id}
-              onPress={() => onSelect(conversation.id)}
-              style={[styles.chatRow, selectedId === conversation.id && styles.chatRowActive]}
-            >
-              <Avatar name={conversation.title} />
-              <View style={styles.chatListRowBody}>
-                <View style={styles.chatListTextColumn}>
-                  <Text numberOfLines={1} style={styles.chatTitle}>{conversation.title}</Text>
-                  <Text numberOfLines={1} style={[styles.chatPreview, conversation.unreadCount > 0 && styles.chatPreviewUnread]}>
-                    {messagePreviewText(conversation.lastMessage) || `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`}
-                  </Text>
+      <ScrollView contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}>
+        {conversations.length || contacts.length ? (
+          <>
+            {conversations.map((conversation) => (
+              <Pressable
+                key={`conversation-${conversation.id}`}
+                onPress={() => onSelect(conversation.id)}
+                style={[
+                  styles.chatRow,
+                  isDarkTheme && styles.chatRowDark,
+                  selectedId === conversation.id && styles.chatRowActive,
+                  isDarkTheme && selectedId === conversation.id && styles.chatRowActiveDark,
+                ]}
+              >
+                <Avatar name={conversation.title} />
+                <View style={styles.chatListRowBody}>
+                  <View style={styles.chatListTextColumn}>
+                    <Text numberOfLines={1} style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{conversation.title}</Text>
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.chatPreview,
+                        isDarkTheme && styles.chatPreviewDark,
+                        conversation.unreadCount > 0 && styles.chatPreviewUnread,
+                        isDarkTheme && conversation.unreadCount > 0 && styles.chatPreviewUnreadDark,
+                      ]}
+                    >
+                      {messagePreviewText(conversation.lastMessage) || conversationFallbackPreview(conversation)}
+                    </Text>
+                  </View>
+                  <View style={styles.chatListMetaColumn}>
+                    <Text numberOfLines={1} style={[styles.chatTime, isDarkTheme && styles.chatTimeDark]}>
+                      {conversation.lastMessage ? formatTime(conversation.lastMessage.createdAt) : ""}
+                    </Text>
+                    {conversation.unreadCount > 0 ? <UnreadBadge count={conversation.unreadCount} /> : null}
+                  </View>
                 </View>
-                <View style={styles.chatListMetaColumn}>
-                  <Text numberOfLines={1} style={styles.chatTime}>
-                    {conversation.lastMessage ? formatTime(conversation.lastMessage.createdAt) : ""}
-                  </Text>
-                  {conversation.unreadCount > 0 ? <UnreadBadge count={conversation.unreadCount} /> : null}
-                </View>
-              </View>
-            </Pressable>
-          ))
+              </Pressable>
+            ))}
+            {contacts
+              .filter((contact) => !contact.existingConversationId)
+              .map((contact) => (
+                <Pressable
+                  key={`contact-${contact.id}`}
+                  onPress={() => onOpenContact(contact.id)}
+                  style={[styles.chatRow, isDarkTheme && styles.chatRowDark]}
+                >
+                  <Avatar name={contact.displayName} />
+                  <View style={styles.chatListRowBody}>
+                    <View style={styles.chatListTextColumn}>
+                      <Text numberOfLines={1} style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{contact.displayName}</Text>
+                      <Text numberOfLines={1} style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Tap to start a 1:1 chat</Text>
+                    </View>
+                    <Ionicons color={colors.primaryDark} name="chatbubble-outline" size={21} />
+                  </View>
+                </Pressable>
+              ))}
+          </>
         ) : (
-          <EmptyState icon="chatbubbles-outline" title="No chats yet" copy="Start a 1:1 chat from Contacts or create a group." />
+          <EmptyState icon="chatbubbles-outline" title="No chats yet" copy="Add a contact or create a group." />
         )}
       </ScrollView>
     </View>
@@ -1596,8 +2126,9 @@ function PanelTitle({
   actionLabel: string;
   onAction: () => void;
 }) {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <View style={styles.panelTitle}>
+    <View style={[styles.panelTitle, isDarkTheme && styles.panelTitleDark]}>
       <Text style={styles.panelHeading}>{title}</Text>
       <IconButton icon={actionIcon} label={actionLabel} onPress={onAction} />
     </View>
@@ -1617,10 +2148,13 @@ function ChatPane({
   draft,
   setDraft,
   onRemoveAttachment,
+  onSaveContact,
   onSend,
   onBack,
   onAddMembers,
   isWide,
+  typingText,
+  unsavedPeer,
 }: {
   attachment: ComposerAttachment | null;
   agentThinking: boolean;
@@ -1634,6 +2168,7 @@ function ChatPane({
   draft: string;
   setDraft: (value: string) => void;
   onRemoveAttachment: () => void;
+  onSaveContact: () => void;
   onSend: (
     kind?: BackendMessage["kind"],
     body?: string,
@@ -1642,7 +2177,10 @@ function ChatPane({
   onBack: () => void;
   onAddMembers: () => void;
   isWide: boolean;
+  typingText: string;
+  unsavedPeer: UnsavedPeer | null;
 }) {
+  const { isDarkTheme } = useAppTheme();
   const { width } = useWindowDimensions();
   const scrollRef = useRef<ScrollView | null>(null);
   const keyboardInset = useKeyboardClearance(!isWide);
@@ -1768,32 +2306,36 @@ function ChatPane({
       {...(!isWide ? edgeSwipeResponder.panHandlers : {})}
       style={[
         styles.chatPane,
+        isDarkTheme && styles.chatPaneDark,
         !isWide && styles.chatPaneMobile,
         !isWide && { paddingBottom: keyboardInset || Math.max(bottomInset, KEYBOARD_COMPOSER_GAP) },
       ]}
     >
-      <View style={styles.chatHeader}>
-        <View style={styles.row}>
+      <View style={[styles.chatHeader, isDarkTheme && styles.chatHeaderDark]}>
+        <View style={[styles.row, styles.chatHeaderMain]}>
           {!isWide ? <IconButton icon="arrow-back" label="Back to chats" onPress={onBack} /> : null}
           <Avatar name={conversation.title} />
           <View style={styles.chatRowBody}>
             <Text numberOfLines={1} style={styles.chatHeaderTitle}>{conversation.title}</Text>
-            <Text style={styles.chatHeaderSub}>
+            <Text style={[styles.chatHeaderSub, Boolean(typingText) && styles.chatHeaderSubTyping]}>
               {agentThinking
                 ? `${conversation.title.split(" ")[0] || "Agent"} is thinking...`
-                : conversation.kind === "group"
-                  ? `${conversation.participants.length} members`
-                  : "1:1 conversation"}
+                : typingText
+                  ? typingText
+                  : conversation.kind === "group"
+                    ? `${conversation.participants.length} members`
+                    : "1:1 conversation"}
             </Text>
           </View>
         </View>
-        <View style={styles.headerActions}>
+        <View style={[styles.headerActions, styles.chatHeaderActions]}>
           {conversation.kind === "group" ? <IconButton icon="person-add-outline" label="Add members" onPress={onAddMembers} /> : null}
+          {unsavedPeer ? <IconButton icon="person-add-outline" label="Save contact" onPress={onSaveContact} /> : null}
           <IconButton icon="call-outline" label="Voice call" />
         </View>
       </View>
       <ScrollView
-        contentContainerStyle={styles.messageList}
+        contentContainerStyle={[styles.messageList, isDarkTheme && styles.messageListDark]}
         keyboardShouldPersistTaps="handled"
         onContentSizeChange={() => scrollToLatest()}
         onLayout={() => scrollToLatest(false)}
@@ -1811,7 +2353,14 @@ function ChatPane({
                 {!mine && conversation.kind === "group" ? (
                   <Text style={styles.senderName}>{sender?.displayName ?? "Member"}</Text>
                 ) : null}
-                <Pressable onLongPress={() => onForwardMessage(message)} style={[styles.bubble, mine ? styles.mineBubble : styles.theirBubble]}>
+                <Pressable
+                  onLongPress={() => onForwardMessage(message)}
+                  style={[
+                    styles.bubble,
+                    mine ? styles.mineBubble : styles.theirBubble,
+                    isDarkTheme && !mine && styles.theirBubbleDark,
+                  ]}
+                >
                   {message.forwardedFrom ? (
                     <View style={styles.forwardedRow}>
                       <Ionicons color={mine ? "rgba(255,255,255,0.78)" : colors.primaryDark} name="arrow-redo-outline" size={13} />
@@ -1843,16 +2392,16 @@ function ChatPane({
         )}
         {agentThinking ? (
           <View style={[styles.messageWrap, styles.messageTheirs]}>
-            <View style={[styles.bubble, styles.theirBubble, styles.thinkingBubble]}>
-              <ActivityIndicator color={colors.primaryDark} size="small" />
-              <Text style={styles.thinkingText}>Thinking...</Text>
+            <View style={[styles.bubble, styles.theirBubble, isDarkTheme && styles.theirBubbleDark, styles.thinkingBubble]}>
+              <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} size="small" />
+              <Text style={[styles.thinkingText, isDarkTheme && styles.thinkingTextDark]}>Thinking...</Text>
             </View>
           </View>
         ) : null}
       </ScrollView>
-      <View style={styles.composer}>
-        <Pressable accessibilityLabel="Add attachment" onPress={onOpenAttachmentMenu} style={styles.composerAccessoryButton}>
-          <Ionicons color={colors.ink} name="add" size={22} />
+      <View style={[styles.composer, isDarkTheme && styles.composerDark]}>
+        <Pressable accessibilityLabel="Add attachment" onPress={onOpenAttachmentMenu} style={[styles.composerAccessoryButton, isDarkTheme && styles.composerAccessoryButtonDark]}>
+          <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name="add" size={22} />
         </Pressable>
         <View style={styles.composerBody}>
           {attachment ? (
@@ -1876,8 +2425,8 @@ function ChatPane({
             if (Platform.OS !== "web") onSend();
           }}
           placeholder="Message"
-          placeholderTextColor={colors.faint}
-          style={[styles.composerInput, attachment && styles.composerInputWithAttachment]}
+          placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
+          style={[styles.composerInput, isDarkTheme && styles.composerInputDark, attachment && styles.composerInputWithAttachment]}
           value={draft}
         />
         </View>
@@ -1978,22 +2527,23 @@ function ComposerAttachmentPreview({
   attachment: ComposerAttachment;
   onRemove: () => void;
 }) {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <View style={styles.composerAttachment}>
+    <View style={[styles.composerAttachment, isDarkTheme && styles.composerAttachmentDark]}>
       {attachment.kind === "image" ? (
         <Image source={{ uri: attachment.uri }} style={styles.composerAttachmentImage} />
       ) : (
-        <View style={styles.composerAttachmentIcon}>
+        <View style={[styles.composerAttachmentIcon, isDarkTheme && styles.composerAttachmentIconDark]}>
           <Ionicons
-            color={colors.primaryDark}
+            color={isDarkTheme ? colors.accent : colors.primaryDark}
             name={attachment.kind === "document" ? "document-text-outline" : "mic-outline"}
             size={18}
           />
         </View>
       )}
       <View style={styles.chatRowBody}>
-        <Text numberOfLines={1} style={styles.composerAttachmentTitle}>{attachment.name}</Text>
-        <Text style={styles.composerAttachmentMeta}>
+        <Text numberOfLines={1} style={[styles.composerAttachmentTitle, isDarkTheme && styles.composerAttachmentTitleDark]}>{attachment.name}</Text>
+        <Text style={[styles.composerAttachmentMeta, isDarkTheme && styles.composerAttachmentMetaDark]}>
           {attachment.kind === "document"
             ? formatBytes(attachment.sizeBytes)
             : attachment.durationMs
@@ -2004,7 +2554,7 @@ function ComposerAttachmentPreview({
         </Text>
       </View>
       <Pressable onPress={onRemove} style={styles.composerAttachmentClose}>
-        <Ionicons color={colors.ink} name="close" size={16} />
+        <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name="close" size={16} />
       </Pressable>
     </View>
   );
@@ -2123,29 +2673,30 @@ function StatusPanel({
   profile: BackendProfile;
   statuses: BackendStatus[];
 }) {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <View style={[styles.listPanel, !isWide && styles.mobilePanel]}>
+    <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Status" actionIcon="add-circle-outline" actionLabel="New status" onAction={onNewStatus} />
-      <ScrollView contentContainerStyle={styles.listContent}>
-        <Pressable onPress={onNewStatus} style={styles.statusComposer}>
+      <ScrollView contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}>
+        <Pressable onPress={onNewStatus} style={[styles.statusComposer, isDarkTheme && styles.statusComposerDark]}>
           <Avatar name={profile.displayName} size={54} />
           <View style={styles.chatRowBody}>
-            <Text style={styles.chatTitle}>My status</Text>
-            <Text style={styles.chatPreview}>Create a text status backed by Supabase.</Text>
+            <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>My status</Text>
+            <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Create a text status backed by Supabase.</Text>
           </View>
-          <Ionicons color={colors.primaryDark} name="add-circle" size={24} />
+          <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="add-circle" size={24} />
         </Pressable>
         {statuses.length ? (
           statuses.map((status) => (
-            <View key={status.id} style={styles.statusCard}>
+            <View key={status.id} style={[styles.statusCard, isDarkTheme && styles.statusCardDark]}>
               <View style={styles.row}>
                 <Avatar name={status.author.displayName} />
                 <View style={styles.chatRowBody}>
-                  <Text style={styles.chatTitle}>{status.author.displayName}</Text>
+                  <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{status.author.displayName}</Text>
                   <Text style={styles.chatPreview}>{formatTime(status.createdAt)} · {status.viewCount} views</Text>
                 </View>
               </View>
-              <Text style={styles.statusText}>{status.text}</Text>
+              <Text style={[styles.statusText, isDarkTheme && styles.statusTextDark]}>{status.text}</Text>
             </View>
           ))
         ) : (
@@ -2167,20 +2718,21 @@ function ContactsPanel({
   onCreateGroup: () => void;
   onNewChat: () => void;
 }) {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <View style={[styles.listPanel, !isWide && styles.mobilePanel]}>
+    <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Contacts" actionIcon="person-add-outline" actionLabel="Add contact" onAction={onNewChat} />
-      <Pressable onPress={onCreateGroup} style={styles.quickAction}>
-        <Ionicons color={colors.primaryDark} name="people-outline" size={22} />
-        <Text style={styles.quickActionText}>New group</Text>
+      <Pressable onPress={onCreateGroup} style={[styles.quickAction, isDarkTheme && styles.quickActionDark]}>
+        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="people-outline" size={22} />
+        <Text style={[styles.quickActionText, isDarkTheme && styles.quickActionTextDark]}>New group</Text>
       </Pressable>
-      <ScrollView contentContainerStyle={styles.listContent}>
+      <ScrollView contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}>
         {contacts.length ? contacts.map((contact) => (
-          <View key={contact.id} style={styles.contactRow}>
+          <View key={contact.id} style={[styles.contactRow, isDarkTheme && styles.contactRowDark]}>
             <Avatar name={contact.displayName} />
             <View style={styles.chatRowBody}>
-              <Text style={styles.chatTitle}>{contact.displayName}</Text>
-              <Text style={styles.chatPreview}>{contact.phone ?? contact.about}</Text>
+              <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{contact.displayName}</Text>
+              <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{contact.phone ?? contact.about}</Text>
             </View>
           </View>
         )) : <EmptyState icon="person-add-outline" title="No contacts" copy="Add contacts by phone number to start 1:1 chats or groups." />}
@@ -2190,8 +2742,9 @@ function ContactsPanel({
 }
 
 function CallsPanel({ isWide }: { isWide: boolean }) {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <View style={[styles.listPanel, !isWide && styles.mobilePanel]}>
+    <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Calls" actionIcon="call-outline" actionLabel="New call" onAction={() => undefined} />
       <EmptyState icon="call-outline" title="Calls are not enabled" copy="The database has call tables, but WebRTC signaling is intentionally separate from messaging." />
     </View>
@@ -2207,27 +2760,40 @@ function SettingsPanel({
   onOpenProfile: () => void;
   profile: BackendProfile;
 }) {
+  const { isDarkTheme, themeMode, toggleTheme } = useAppTheme();
   return (
-    <View style={[styles.listPanel, !isWide && styles.mobilePanel]}>
+    <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Settings" actionIcon="create-outline" actionLabel="Edit profile" onAction={onOpenProfile} />
-      <View style={styles.profileCard}>
+      <View style={[styles.profileCard, isDarkTheme && styles.profileCardDark]}>
         <Avatar name={profile.displayName} size={64} />
         <View style={styles.chatRowBody}>
-          <Text style={styles.profileName}>{profile.displayName}</Text>
-          <Text style={styles.chatPreview}>{profile.phone ?? "No phone on profile"}</Text>
-          <Text style={styles.chatPreview}>{profile.about}</Text>
+          <Text style={[styles.profileName, isDarkTheme && styles.profileNameDark]}>{profile.displayName}</Text>
+          <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{profile.phone ?? "No phone on profile"}</Text>
+          <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{profile.about}</Text>
         </View>
       </View>
+      <Pressable onPress={toggleTheme} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
+        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name={isDarkTheme ? "moon" : "sunny-outline"} size={22} />
+        <View style={styles.chatRowBody}>
+          <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Theme</Text>
+          <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>
+            {themeMode === "dark" ? "Dark AI signal theme" : "Light Orbita theme"}
+          </Text>
+        </View>
+        <View style={[styles.themeSwitch, isDarkTheme && styles.themeSwitchOn]}>
+          <View style={[styles.themeSwitchKnob, isDarkTheme && styles.themeSwitchKnobOn]} />
+        </View>
+      </Pressable>
       {[
         ["key-outline", "Account", "Phone OTP session stored by Supabase Auth"],
         ["lock-closed-outline", "Privacy", "Profile and contact visibility enforced by RLS"],
         ["cloud-upload-outline", "Storage", "Media buckets are configured in Supabase"],
       ].map(([icon, title, copy]) => (
-        <View key={title} style={styles.settingRow}>
-          <Ionicons color={colors.primaryDark} name={icon as keyof typeof Ionicons.glyphMap} size={22} />
+        <View key={title} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
+          <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name={icon as keyof typeof Ionicons.glyphMap} size={22} />
           <View style={styles.chatRowBody}>
-            <Text style={styles.chatTitle}>{title}</Text>
-            <Text style={styles.chatPreview}>{copy}</Text>
+            <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{title}</Text>
+            <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{copy}</Text>
           </View>
         </View>
       ))}
@@ -2254,13 +2820,14 @@ function EmptyState({
   copy: string;
   compact?: boolean;
 }) {
+  const { isDarkTheme } = useAppTheme();
   return (
     <View style={[styles.emptyState, compact && styles.emptyCompact]}>
-      <View style={styles.emptyIcon}>
-        <Ionicons color={colors.primaryDark} name={icon} size={28} />
+      <View style={[styles.emptyIcon, isDarkTheme && styles.emptyIconDark]}>
+        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name={icon} size={28} />
       </View>
-      <Text style={styles.emptyTitle}>{title}</Text>
-      <Text style={styles.emptyCopy}>{copy}</Text>
+      <Text style={[styles.emptyTitle, isDarkTheme && styles.emptyTitleDark]}>{title}</Text>
+      <Text style={[styles.emptyCopy, isDarkTheme && styles.emptyCopyDark]}>{copy}</Text>
     </View>
   );
 }
@@ -2279,12 +2846,14 @@ function NewChatModal({
   visible: boolean;
 }) {
   const [phone, setPhone] = useState("");
+  const [nickname, setNickname] = useState("");
   const [notice, setNotice] = useState("");
 
   async function addContact() {
     try {
-      await messengerApi.addContactByPhone(phone);
+      await messengerApi.addContactByPhone(phone, nickname.trim() || undefined);
       setPhone("");
+      setNickname("");
       setNotice("Contact added.");
       await onContactAdded();
     } catch (error) {
@@ -2295,51 +2864,119 @@ function NewChatModal({
   return (
     <KeyboardAwareModal onClose={onClose} visible={visible}>
           <Text style={styles.modalTitle}>New chat</Text>
-          <View style={styles.inlineForm}>
+          <View style={styles.newContactForm}>
             <TextInput
               keyboardType="phone-pad"
               onChangeText={setPhone}
               placeholder="+91 contact phone"
               placeholderTextColor={colors.faint}
-              style={[styles.modalInput, styles.inlineInput]}
+              style={styles.modalInput}
               value={phone}
             />
-            <Pressable onPress={addContact} style={styles.primaryButton}>
-              <Text style={styles.primaryText}>Add</Text>
+            <TextInput
+              onChangeText={setNickname}
+              placeholder="Contact name"
+              placeholderTextColor={colors.faint}
+              style={styles.modalInput}
+              value={nickname}
+            />
+            <Pressable onPress={addContact} style={[styles.primaryButton, styles.fullWidthButton]}>
+              <Text style={styles.primaryText}>Add contact</Text>
             </Pressable>
           </View>
           {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
-          <ScrollView style={styles.modalList}>
+          <ScrollView contentContainerStyle={styles.newChatContactListContent} style={styles.newChatContactList}>
             {contacts.length ? contacts.map((contact) => (
-              <Pressable key={contact.id} onPress={() => onOpenConversation(contact.id)} style={styles.modalRow}>
+              <Pressable key={contact.id} onPress={() => onOpenConversation(contact.id)} style={styles.newChatContactRow}>
                 <Avatar name={contact.displayName} />
                 <View style={styles.chatRowBody}>
-                  <Text style={styles.chatTitle}>{contact.displayName}</Text>
-                  <Text style={styles.chatPreview}>{contact.phone}</Text>
+                  <Text numberOfLines={1} style={styles.chatTitle}>{contact.displayName}</Text>
+                  <Text numberOfLines={1} style={styles.chatPreview}>{contact.phone}</Text>
                 </View>
                 <Ionicons color={colors.primaryDark} name="chatbubble-outline" size={21} />
               </Pressable>
             )) : <EmptyState compact icon="person-add-outline" title="No contacts" copy="Add a registered phone number first." />}
           </ScrollView>
-          <ModalActions onCancel={onClose} />
+          <View style={styles.newChatActions}>
+            <ModalActions onCancel={onClose} />
+          </View>
+    </KeyboardAwareModal>
+  );
+}
+
+function SaveContactModal({
+  onClose,
+  onSave,
+  peer,
+  visible,
+}: {
+  onClose: () => void;
+  onSave: (nickname: string) => Promise<void>;
+  peer: UnsavedPeer | null;
+  visible: boolean;
+}) {
+  const [nickname, setNickname] = useState("");
+
+  useEffect(() => {
+    if (!peer) {
+      setNickname("");
+      return;
+    }
+    setNickname(/^\+?[\d\s().-]+$/.test(peer.defaultName) ? "" : peer.defaultName);
+  }, [peer]);
+
+  async function submit() {
+    const nextNickname = nickname.trim();
+    if (!nextNickname) return;
+    await onSave(nextNickname);
+    setNickname("");
+  }
+
+  return (
+    <KeyboardAwareModal onClose={onClose} visible={visible}>
+      <Text style={styles.modalTitle}>Save contact</Text>
+      {peer ? (
+        <View style={styles.saveContactPeer}>
+          <View style={styles.attachmentMenuIcon}>
+            <Ionicons color={colors.primaryDark} name="call-outline" size={20} />
+          </View>
+          <View style={styles.chatRowBody}>
+            <Text style={styles.chatTitle}>Phone number</Text>
+            <Text selectable style={styles.chatPreview}>{peer.phone}</Text>
+          </View>
+        </View>
+      ) : null}
+      <TextInput
+        autoFocus={Platform.OS !== "web"}
+        onChangeText={setNickname}
+        placeholder="Contact name"
+        placeholderTextColor={colors.faint}
+        style={styles.modalInput}
+        value={nickname}
+      />
+      <ModalActions disabled={!nickname.trim()} onCancel={onClose} onSubmit={submit} submitLabel="Save" />
     </KeyboardAwareModal>
   );
 }
 
 function KeyboardAwareModal({ children, onClose, visible }: { children: ReactNode; onClose: () => void; visible: boolean }) {
   const keyboardInset = useKeyboardClearance(visible);
+  const { height } = useWindowDimensions();
+  const keyboardOpen = keyboardInset > 0;
+  const maxModalHeight = Math.max(260, height - keyboardInset - 36);
 
   return (
     <Modal animationType="fade" transparent visible={visible} onRequestClose={onClose}>
-      <View style={[styles.modalBackdrop, keyboardInset ? { paddingBottom: keyboardInset } : null]}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          enabled={Platform.OS !== "web"}
-          keyboardVerticalOffset={KEYBOARD_SAFETY_GAP}
-          style={styles.modalKeyboardFrame}
-        >
-          <View style={styles.modalCard}>{children}</View>
-        </KeyboardAvoidingView>
+      <View
+        style={[
+          styles.modalBackdrop,
+          keyboardOpen && styles.modalBackdropKeyboardOpen,
+          keyboardInset ? { paddingBottom: keyboardInset } : null,
+        ]}
+      >
+        <View style={[styles.modalKeyboardFrame, { maxHeight: maxModalHeight }]}>
+          <View style={[styles.modalCard, { maxHeight: maxModalHeight }]}>{children}</View>
+        </View>
       </View>
     </Modal>
   );
@@ -2639,89 +3276,210 @@ function ModalActions({
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.page },
+  safeDark: { backgroundColor: "#101421" },
   loadingScreen: { flex: 1, alignItems: "center", justifyContent: "center", gap: 14 },
   loadingLabel: { color: colors.muted, fontSize: 14, fontWeight: "700" },
   logoFrame: {
+    overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: colors.primaryDark,
+    backgroundColor: "#15172A",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.18)",
-    shadowColor: colors.primaryDark,
-    shadowOpacity: 0.32,
-    shadowRadius: 18,
+    borderColor: "rgba(242,244,123,0.38)",
+    shadowColor: "#33D6FF",
+    shadowOpacity: 0.26,
+    shadowRadius: 20,
     shadowOffset: { width: 0, height: 8 },
     elevation: 8,
   },
   logoCore: {
     position: "absolute",
-    backgroundColor: "rgba(242,244,123,0.28)",
+    backgroundColor: "rgba(122,94,214,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
   },
-  logoOrbit: {
+  logoNode: { position: "absolute", backgroundColor: colors.accent },
+  logoNodeTop: { top: "17%", right: "24%" },
+  logoNodeLeft: { left: "20%", bottom: "24%", backgroundColor: "#55D6FF" },
+  logoNodeRight: { right: "18%", bottom: "20%", backgroundColor: "#FFFFFF" },
+  logoSignal: {
     position: "absolute",
-    borderWidth: 1.8,
-    borderColor: "rgba(255,255,255,0.45)",
-    borderTopColor: "#FFFFFF",
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.42)",
   },
-  logoOrbitAlt: {
+  logoScan: {
     position: "absolute",
-    borderWidth: 1.4,
-    borderColor: "rgba(242,244,123,0.55)",
-    borderLeftColor: "rgba(255,255,255,0.78)",
+    width: 9,
+    borderRadius: 999,
+    backgroundColor: "rgba(242,244,123,0.55)",
   },
   brandRow: { flexDirection: "row", alignItems: "center", gap: 12 },
   brandTitle: { color: colors.ink, fontSize: 25, fontWeight: "900" },
   brandTitleCompact: { fontSize: 21 },
   brandTagline: { color: colors.muted, fontSize: 12, fontWeight: "700", marginTop: 1 },
+  brandTitleInverse: { color: "#FFFFFF" },
+  brandTaglineInverse: { color: "rgba(255,255,255,0.68)" },
   loadingErrorScreen: { flex: 1, alignItems: "center", justifyContent: "center", padding: 24, gap: 14 },
   loginKeyboard: { flex: 1 },
-  loginScroll: { flexGrow: 1, justifyContent: "center" },
-  loginScreen: { flex: 1, justifyContent: "center", padding: 24, backgroundColor: colors.page },
+  loginScroll: { flexGrow: 1 },
+  loginScreen: {
+    flex: 1,
+    justifyContent: "center",
+    padding: 22,
+    backgroundColor: "#101421",
+    overflow: "hidden",
+  },
+  loginBackdropGrid: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.22,
+    backgroundColor: "#161C2D",
+  },
   loginGlow: {
     position: "absolute",
-    width: 260,
-    height: 260,
-    right: -100,
-    top: -48,
-    borderRadius: 130,
-    backgroundColor: "rgba(122,94,214,0.20)",
+    width: 330,
+    height: 330,
+    right: -128,
+    top: -72,
+    borderRadius: 165,
+    backgroundColor: "rgba(85,214,255,0.16)",
   },
-  loginTitle: { color: colors.ink, fontSize: 32, fontWeight: "900", marginTop: 24 },
-  loginCopy: { color: colors.muted, fontSize: 15, lineHeight: 22, marginTop: 8, maxWidth: 420 },
-  loginForm: {
-    marginTop: 24,
-    gap: 12,
-    maxWidth: 440,
-    padding: 14,
-    borderRadius: 18,
+  authSignalScene: {
+    position: "absolute",
+    top: 36,
+    right: 14,
+    width: 190,
+    height: 190,
+    opacity: 0.92,
+  },
+  authSignalCore: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 34,
     borderWidth: 1,
-    borderColor: "rgba(122,94,214,0.18)",
-    backgroundColor: "rgba(255,255,255,0.78)",
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.04)",
+    overflow: "hidden",
+  },
+  authScanLine: {
+    position: "absolute",
+    left: 18,
+    right: 18,
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: "rgba(242,244,123,0.62)",
+  },
+  authNode: {
+    position: "absolute",
+    width: 9,
+    height: 9,
+    borderRadius: 999,
+    backgroundColor: "#55D6FF",
+  },
+  authNodeOne: { left: 26, top: 38 },
+  authNodeTwo: { right: 32, top: 60, backgroundColor: colors.accent },
+  authNodeThree: { left: 44, bottom: 38, backgroundColor: "#FFFFFF" },
+  authTrace: {
+    position: "absolute",
+    height: 1,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.22)",
+  },
+  authTraceOne: { width: 112, top: 44, left: 34, transform: [{ rotate: "10deg" }] },
+  authTraceTwo: { width: 104, top: 82, right: 34, transform: [{ rotate: "-18deg" }] },
+  authTraceThree: { width: 92, bottom: 52, left: 50, transform: [{ rotate: "-8deg" }] },
+  loginHero: {
+    width: "100%",
+    maxWidth: 460,
+    gap: 12,
+  },
+  loginBadge: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginTop: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: radii.pill,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  loginBadgeText: { color: "rgba(255,255,255,0.82)", fontSize: 12, fontWeight: "800" },
+  loginTitle: {
+    color: "#FFFFFF",
+    fontSize: 38,
+    lineHeight: 43,
+    fontWeight: "900",
+    maxWidth: 420,
+  },
+  loginCopy: { color: "rgba(255,255,255,0.70)", fontSize: 15, lineHeight: 22, maxWidth: 420 },
+  loginForm: {
+    marginTop: 22,
+    gap: 12,
+    width: "100%",
+    maxWidth: 460,
+    padding: 16,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  authModeSwitch: {
+    minHeight: 46,
+    flexDirection: "row",
+    padding: 4,
+    gap: 4,
+    borderRadius: 16,
+    backgroundColor: "rgba(0,0,0,0.18)",
+  },
+  authModeButton: { flex: 1, alignItems: "center", justifyContent: "center", borderRadius: 12 },
+  authModeButtonActive: { backgroundColor: "#FFFFFF" },
+  authModeText: { color: "rgba(255,255,255,0.62)", fontSize: 14, fontWeight: "900" },
+  authModeTextActive: { color: colors.ink },
+  inputShell: {
+    height: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    paddingHorizontal: 14,
+    backgroundColor: "rgba(10,14,26,0.64)",
   },
   loginInput: {
-    height: 52,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.line,
-    paddingHorizontal: 14,
-    color: colors.ink,
-    backgroundColor: colors.surface,
+    flex: 1,
+    minWidth: 0,
+    height: "100%",
+    color: "#FFFFFF",
     fontSize: 16,
+    fontWeight: "700",
   },
+  otpInput: { letterSpacing: 4 },
+  otpActionRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
+  textActionButton: { minHeight: 34, justifyContent: "center" },
+  textAction: { color: colors.accent, fontSize: 13, fontWeight: "900" },
+  textActionDisabled: { color: "rgba(255,255,255,0.38)" },
   loginButton: {
     height: 52,
-    borderRadius: radii.md,
+    borderRadius: 16,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
     gap: 8,
-    backgroundColor: colors.primaryDark,
+    backgroundColor: "#6D5CF6",
   },
   loginButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "900" },
   buttonDisabled: { opacity: 0.55 },
+  loginNoticeText: { color: colors.accent, fontSize: 13, fontWeight: "800", lineHeight: 18 },
+  loginHintText: { color: "rgba(255,255,255,0.58)", fontSize: 12, lineHeight: 18 },
   noticeText: { color: colors.primaryDark, fontSize: 13, fontWeight: "700" },
   hintText: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   appFrame: { flex: 1, flexDirection: "row", backgroundColor: colors.page },
+  appFrameDark: { backgroundColor: "#101421" },
   sidebar: {
     width: Platform.select({ web: 104, default: 82 }),
     backgroundColor: colors.primaryDark,
@@ -2732,6 +3490,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 18,
   },
+  sidebarDark: { backgroundColor: "#101421", borderRightColor: "rgba(255,255,255,0.10)" },
   brandMark: {
     width: 48,
     height: 48,
@@ -2755,6 +3514,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
   },
   workspace: { flex: 1, minWidth: 0 },
+  workspaceDark: { backgroundColor: "#101421" },
   header: {
     minHeight: 74,
     paddingHorizontal: 18,
@@ -2766,11 +3526,14 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     backgroundColor: "rgba(255,255,255,0.92)",
   },
+  headerDark: { borderBottomColor: "rgba(255,255,255,0.10)", backgroundColor: "#101421" },
   headerMobile: { minHeight: 62, paddingHorizontal: 16 },
-  headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 },
   errorBar: { color: colors.danger, backgroundColor: "#FFF3F3", paddingHorizontal: 14, paddingVertical: 8 },
   content: { flex: 1, flexDirection: "row", padding: 18, gap: 18 },
+  contentDark: { backgroundColor: "#101421" },
   contentMobile: { padding: 0, paddingBottom: 72, backgroundColor: colors.page },
+  contentMobileDark: { backgroundColor: "#101421" },
   contentMobileChat: { paddingBottom: 0, flexDirection: "column", gap: 0, width: "100%" },
   listPanel: {
     width: Platform.select({ web: 390, default: 330 }),
@@ -2782,6 +3545,12 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     ...shadow,
   },
+  listPanelDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "#151A2A",
+    shadowColor: "#000000",
+    shadowOpacity: 0.25,
+  },
   mobilePanel: { flex: 1, width: "100%", borderRadius: 0, borderLeftWidth: 0, borderRightWidth: 0, borderTopWidth: 0 },
   panelTitle: {
     minHeight: 72,
@@ -2791,6 +3560,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     backgroundColor: colors.primaryDark,
   },
+  panelTitleDark: { backgroundColor: "#171E31", borderBottomColor: "rgba(242,244,123,0.12)", borderBottomWidth: 1 },
   panelHeading: { color: "#FFFFFF", fontSize: 39, fontWeight: "900" },
   iconButton: {
     width: 40,
@@ -2802,6 +3572,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(101,81,196,0.12)",
   },
+  iconButtonDark: { backgroundColor: "rgba(255,255,255,0.10)", borderColor: "rgba(255,255,255,0.12)" },
   bottomTabs: {
     position: "absolute",
     left: 0,
@@ -2816,10 +3587,14 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     backgroundColor: colors.surface,
   },
+  bottomTabsDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#101421" },
   bottomTab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 3 },
   bottomTabLabel: { color: colors.muted, fontSize: 11, fontWeight: "800" },
+  bottomTabLabelDark: { color: "rgba(255,255,255,0.58)" },
   bottomTabLabelActive: { color: colors.primaryDark },
+  bottomTabLabelActiveDark: { color: colors.accent },
   listContent: { padding: 12, gap: 10 },
+  listContentDark: { backgroundColor: "#151A2A" },
   skeletonBlock: { backgroundColor: "#DDD7EB" },
   skeletonLogo: { width: 48, height: 48, borderRadius: 16, backgroundColor: "rgba(255,255,255,0.35)" },
   skeletonBrand: { width: 116, height: 22, borderRadius: 8 },
@@ -2855,7 +3630,9 @@ const styles = StyleSheet.create({
     borderColor: "rgba(122,94,214,0.12)",
     backgroundColor: "rgba(255,255,255,0.84)",
   },
+  chatRowDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
   chatRowActive: { backgroundColor: colors.accentSoft, borderColor: "rgba(122,94,214,0.20)" },
+  chatRowActiveDark: { backgroundColor: "rgba(242,244,123,0.12)", borderColor: "rgba(242,244,123,0.26)" },
   contactRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -2866,6 +3643,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     backgroundColor: colors.surface,
   },
+  contactRowDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
   avatar: { alignItems: "center", justifyContent: "center", backgroundColor: colors.primary },
   avatarText: { color: "#FFFFFF", fontWeight: "900" },
   chatRowBody: { flex: 1, minWidth: 0 },
@@ -2875,9 +3653,13 @@ const styles = StyleSheet.create({
   row: { flexDirection: "row", alignItems: "center", gap: 12 },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
   chatTitle: { color: colors.ink, fontSize: 16, fontWeight: "900", maxWidth: "100%" },
+  chatTitleDark: { color: "#FFFFFF" },
   chatTime: { color: colors.faint, fontSize: 12, fontWeight: "700", textAlign: "right" },
+  chatTimeDark: { color: "rgba(255,255,255,0.48)" },
   chatPreview: { color: colors.muted, fontSize: 12, lineHeight: 18 },
+  chatPreviewDark: { color: "rgba(255,255,255,0.62)" },
   chatPreviewUnread: { color: colors.ink, fontWeight: "800" },
+  chatPreviewUnreadDark: { color: "#FFFFFF" },
   unreadBadge: {
     minWidth: 22,
     height: 22,
@@ -2907,6 +3689,11 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     ...shadow,
   },
+  chatPaneDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "#101421",
+    shadowColor: "#000000",
+  },
   chatPaneMobile: { width: "100%", maxWidth: "100%", borderRadius: 0, borderWidth: 0 },
   chatHeader: {
     minHeight: 74,
@@ -2919,9 +3706,14 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primaryDark,
     gap: 10,
   },
+  chatHeaderDark: { backgroundColor: "#171E31", borderBottomColor: "rgba(242,244,123,0.12)" },
+  chatHeaderMain: { flex: 1, minWidth: 0 },
+  chatHeaderActions: { flexShrink: 0 },
   chatHeaderTitle: { color: "#FFFFFF", fontSize: 17, fontWeight: "900" },
   chatHeaderSub: { color: "rgba(255,255,255,0.76)", fontSize: 12 },
+  chatHeaderSubTyping: { color: "#FFFFFF", fontWeight: "800" },
   messageList: { flexGrow: 1, padding: 18, gap: 12, backgroundColor: colors.page },
+  messageListDark: { backgroundColor: "#101421" },
   messageWrap: { width: "78%", maxWidth: "78%", minWidth: 0, flexShrink: 1 },
   messageWrapAudio: { width: "90%", maxWidth: "90%" },
   messageMine: { alignSelf: "flex-end" },
@@ -2930,12 +3722,15 @@ const styles = StyleSheet.create({
   bubble: { alignSelf: "flex-start", maxWidth: "100%", padding: 11, borderRadius: 14, gap: 6 },
   mineBubble: { alignSelf: "flex-end", backgroundColor: colors.bubbleMine, borderTopRightRadius: 4 },
   theirBubble: { backgroundColor: colors.bubbleTheirs, borderTopLeftRadius: 4, borderColor: "rgba(229,224,238,0.72)", borderWidth: 1 },
+  theirBubbleDark: { backgroundColor: "#1B2235", borderColor: "rgba(255,255,255,0.10)" },
   forwardedRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   forwardedText: { color: colors.primaryDark, fontSize: 11, fontWeight: "800" },
   forwardedTextMine: { color: "rgba(255,255,255,0.82)" },
   thinkingBubble: { flexDirection: "row", alignItems: "center", gap: 8 },
   thinkingText: { color: colors.muted, fontSize: 13, fontWeight: "700" },
+  thinkingTextDark: { color: "rgba(255,255,255,0.62)" },
   messageText: { flexShrink: 1, color: colors.ink, fontSize: 15, lineHeight: 21 },
+  messageTextDark: { color: "#FFFFFF" },
   messageTextMine: { color: "#FFFFFF" },
   messageStrong: { fontWeight: "900" },
   messageEmphasis: { fontStyle: "italic" },
@@ -3014,6 +3809,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     backgroundColor: colors.surface,
   },
+  composerDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#101421" },
   composerAccessoryButton: {
     width: 40,
     height: 40,
@@ -3022,6 +3818,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "#F1EDF9",
   },
+  composerAccessoryButtonDark: { backgroundColor: "rgba(255,255,255,0.10)" },
   composerBody: { flex: 1, gap: 8 },
   composerInput: {
     minHeight: 42,
@@ -3032,6 +3829,7 @@ const styles = StyleSheet.create({
     color: colors.ink,
     backgroundColor: "#F6F4FA",
   },
+  composerInputDark: { color: "#FFFFFF", backgroundColor: "rgba(255,255,255,0.08)" },
   composerInputWithAttachment: { minHeight: 40 },
   composerAttachment: {
     flexDirection: "row",
@@ -3041,6 +3839,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     backgroundColor: "#F6F4FA",
   },
+  composerAttachmentDark: { backgroundColor: "rgba(255,255,255,0.08)" },
   composerAttachmentImage: { width: 42, height: 42, borderRadius: 12, backgroundColor: "#E6E0F8" },
   composerAttachmentIcon: {
     width: 42,
@@ -3050,8 +3849,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: "rgba(101,81,196,0.12)",
   },
+  composerAttachmentIconDark: { backgroundColor: "rgba(242,244,123,0.12)" },
   composerAttachmentTitle: { color: colors.ink, fontSize: 13, fontWeight: "800" },
+  composerAttachmentTitleDark: { color: "#FFFFFF" },
   composerAttachmentMeta: { color: colors.muted, fontSize: 11, marginTop: 3 },
+  composerAttachmentMetaDark: { color: "rgba(255,255,255,0.62)" },
   composerAttachmentClose: {
     width: 28,
     height: 28,
@@ -3076,8 +3878,11 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.surfaceBlue,
   },
+  statusComposerDark: { backgroundColor: "rgba(255,255,255,0.06)" },
   statusCard: { padding: 14, borderRadius: radii.md, borderColor: colors.line, borderWidth: 1, backgroundColor: colors.surface, gap: 12 },
+  statusCardDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
   statusText: { color: colors.ink, fontSize: 16, lineHeight: 23 },
+  statusTextDark: { color: "#FFFFFF" },
   quickAction: {
     marginHorizontal: 14,
     marginBottom: 10,
@@ -3088,9 +3893,13 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.surfaceBlue,
   },
+  quickActionDark: { backgroundColor: "rgba(242,244,123,0.10)" },
   quickActionText: { color: colors.primaryDark, fontWeight: "900" },
+  quickActionTextDark: { color: colors.accent },
   profileCard: { margin: 14, padding: 14, borderRadius: radii.md, flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: colors.surfaceBlue },
+  profileCardDark: { backgroundColor: "rgba(255,255,255,0.06)" },
   profileName: { color: colors.ink, fontSize: 20, fontWeight: "900" },
+  profileNameDark: { color: "#FFFFFF" },
   settingRow: {
     marginHorizontal: 14,
     marginBottom: 10,
@@ -3103,12 +3912,27 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
     backgroundColor: colors.surface,
   },
+  settingRowDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
+  themeSwitch: {
+    width: 46,
+    height: 26,
+    borderRadius: 13,
+    justifyContent: "center",
+    padding: 3,
+    backgroundColor: "#D8D0EB",
+  },
+  themeSwitchOn: { backgroundColor: "rgba(242,244,123,0.28)" },
+  themeSwitchKnob: { width: 20, height: 20, borderRadius: 10, backgroundColor: "#FFFFFF" },
+  themeSwitchKnobOn: { transform: [{ translateX: 20 }], backgroundColor: colors.accent },
   desktopEmpty: { flex: 1, borderRadius: radii.lg, borderColor: colors.line, borderWidth: 1, backgroundColor: colors.surface },
   emptyState: { alignItems: "center", justifyContent: "center", paddingHorizontal: 24, paddingVertical: 42, gap: 8 },
   emptyCompact: { paddingVertical: 18 },
   emptyIcon: { width: 58, height: 58, borderRadius: 29, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceBlue },
+  emptyIconDark: { backgroundColor: "rgba(255,255,255,0.08)" },
   emptyTitle: { color: colors.ink, fontSize: 17, fontWeight: "900", textAlign: "center" },
+  emptyTitleDark: { color: "#FFFFFF" },
   emptyCopy: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: "center" },
+  emptyCopyDark: { color: "rgba(255,255,255,0.62)" },
   busyOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
@@ -3116,8 +3940,18 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(16, 32, 51, 0.24)",
   },
   modalBackdrop: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.overlay, padding: 18 },
-  modalKeyboardFrame: { width: "100%", maxWidth: 430, maxHeight: "100%" },
-  modalCard: { width: "100%", maxWidth: 430, maxHeight: "86%", borderRadius: radii.lg, backgroundColor: colors.surface, padding: 18, gap: 14 },
+  modalBackdropKeyboardOpen: { justifyContent: "flex-start", paddingTop: 18 },
+  modalKeyboardFrame: { width: "100%", maxWidth: 460 },
+  modalCard: {
+    width: "100%",
+    maxWidth: 460,
+    flexShrink: 1,
+    borderRadius: radii.lg,
+    backgroundColor: colors.surface,
+    padding: 18,
+    gap: 14,
+    overflow: "hidden",
+  },
   modalTitle: { color: colors.ink, fontSize: 22, fontWeight: "900" },
   modalInput: {
     minHeight: 46,
@@ -3128,11 +3962,32 @@ const styles = StyleSheet.create({
     color: colors.ink,
     backgroundColor: colors.page,
   },
-  inlineForm: { flexDirection: "row", alignItems: "center", gap: 8 },
-  inlineInput: { flex: 1 },
+  newContactForm: { gap: 10 },
   statusInput: { minHeight: 130, textAlignVertical: "top", paddingTop: 12 },
-  modalList: { maxHeight: 310 },
+  modalList: { maxHeight: 430, minHeight: 120, flexShrink: 1 },
   modalRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 10 },
+  newChatContactList: { maxHeight: 430, minHeight: 120, flexShrink: 1 },
+  newChatContactListContent: { gap: 8, paddingVertical: 2 },
+  newChatContactRow: {
+    width: "100%",
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 10,
+    borderRadius: 14,
+    backgroundColor: colors.page,
+    overflow: "hidden",
+  },
+  newChatActions: { paddingTop: 2 },
+  saveContactPeer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: colors.page,
+  },
   attachmentMenuList: { gap: 10 },
   attachmentMenuRow: {
     flexDirection: "row",
@@ -3213,5 +4068,6 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: colors.primaryDark,
   },
+  fullWidthButton: { width: "100%" },
   primaryText: { color: "#FFFFFF", fontWeight: "900" },
 });
