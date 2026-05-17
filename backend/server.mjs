@@ -630,10 +630,10 @@ async function loadMessages(userId, conversationId) {
     .select("*")
     .eq("conversation_id", conversationId)
     .is("deleted_at", null)
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: false })
     .limit(100);
   if (error) throw error;
-  const messages = data ?? [];
+  const messages = [...(data ?? [])].reverse();
   const attachmentsByMessageId = await loadAttachmentRowsForMessageIds(messages.map((message) => message.id));
   return messages.map((message) => mapMessage(message, attachmentsByMessageId.get(message.id) ?? []));
 }

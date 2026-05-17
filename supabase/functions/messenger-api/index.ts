@@ -509,11 +509,11 @@ async function loadMessages(supabase: SupabaseClient, userId: string, conversati
     .select("*")
     .eq("conversation_id", conversationId)
     .is("deleted_at", null)
-    .order("created_at", { ascending: true })
+    .order("created_at", { ascending: false })
     .limit(100);
 
   if (error) throw error;
-  const messages = data ?? [];
+  const messages = [...(data ?? [])].reverse();
   const attachmentsByMessageId = await loadAttachmentRowsForMessageIds(supabase, messages.map((message) => String(message.id)));
   return messages.map((message) => mapMessage(message, attachmentsByMessageId.get(String(message.id)) ?? []));
 }

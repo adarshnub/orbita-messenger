@@ -141,7 +141,7 @@ function delay(ms: number) {
 
 function messageSignature(message: Pick<BackendMessage, "senderId" | "body" | "kind" | "attachments">) {
   const attachment = message.attachments?.[0];
-  const attachmentKey = attachment ? `${attachment.kind}:${attachment.filename}:${attachment.sizeBytes}` : "";
+  const attachmentKey = attachment ? `${attachment.kind}:${attachment.filename}` : "";
   return `${message.senderId}::${message.kind}::${message.body.trim().toLowerCase()}::${attachmentKey}`;
 }
 
@@ -324,12 +324,15 @@ function ChatRowsSkeleton({ count = 5 }: { count?: number }) {
       {Array.from({ length: count }).map((_, index) => (
         <View key={index} style={styles.chatRow}>
           <SkeletonBlock style={styles.skeletonAvatar} />
-          <View style={styles.chatRowBody}>
-            <View style={styles.rowBetween}>
+          <View style={styles.chatListRowBody}>
+            <View style={styles.chatListTextColumn}>
               <SkeletonBlock style={styles.skeletonTitle} />
-              <SkeletonBlock style={styles.skeletonTime} />
+              <SkeletonBlock style={[styles.skeletonLine, index % 2 === 0 ? styles.skeletonLineLong : styles.skeletonLineMid]} />
             </View>
-            <SkeletonBlock style={[styles.skeletonLine, index % 2 === 0 ? styles.skeletonLineLong : styles.skeletonLineMid]} />
+            <View style={styles.chatListMetaColumn}>
+              <SkeletonBlock style={styles.skeletonTime} />
+              <SkeletonBlock style={styles.skeletonUnreadBadge} />
+            </View>
           </View>
         </View>
       ))}
@@ -1193,10 +1196,10 @@ function MessengerShell({ session }: { session: Session }) {
         attachmentId,
       });
       setSelectedMessages((current) => {
-        const withoutTemp = current.filter((message) => message.id !== tempId);
-        return withoutTemp.some((message) => message.id === result.message.id)
-          ? withoutTemp
-          : [...withoutTemp, result.message];
+        const withoutTemp = current.filter(
+          (message) => message.id !== tempId && message.id !== result.message.id,
+        );
+        return [...withoutTemp, result.message];
       });
       updateConversationPreview(result.message);
       void hapticMessageSent();
@@ -1204,6 +1207,7 @@ function MessengerShell({ session }: { session: Session }) {
         setAgentThinkingFor((current) => ({ ...current, [selected.id]: result.message.createdAt }));
       }
       scheduleBootstrapRefresh();
+      scheduleMessageRefresh(selected.id);
     } catch (nextError) {
       if (attachment) setComposerAttachment(attachment);
       setSelectedMessages((current) =>
@@ -1557,16 +1561,16 @@ function Panel({
               style={[styles.chatRow, selectedId === conversation.id && styles.chatRowActive]}
             >
               <Avatar name={conversation.title} />
-              <View style={styles.chatRowBody}>
-                <View style={styles.rowBetween}>
+              <View style={styles.chatListRowBody}>
+                <View style={styles.chatListTextColumn}>
                   <Text numberOfLines={1} style={styles.chatTitle}>{conversation.title}</Text>
-                  <Text style={styles.chatTime}>
-                    {conversation.lastMessage ? formatTime(conversation.lastMessage.createdAt) : ""}
-                  </Text>
-                </View>
-                <View style={styles.rowBetween}>
                   <Text numberOfLines={1} style={[styles.chatPreview, conversation.unreadCount > 0 && styles.chatPreviewUnread]}>
                     {messagePreviewText(conversation.lastMessage) || `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`}
+                  </Text>
+                </View>
+                <View style={styles.chatListMetaColumn}>
+                  <Text numberOfLines={1} style={styles.chatTime}>
+                    {conversation.lastMessage ? formatTime(conversation.lastMessage.createdAt) : ""}
                   </Text>
                   {conversation.unreadCount > 0 ? <UnreadBadge count={conversation.unreadCount} /> : null}
                 </View>
@@ -1725,8 +1729,11 @@ function ChatPane({
 
   async function sendVoiceAttachment() {
     if (!voiceAttachment) return;
-    await onSend("voice", draft, voiceAttachment);
-    await discardVoiceAttachment();
+    const pendingVoice = voiceAttachment;
+    previewPlayer.pause();
+    setVoiceAttachment(null);
+    setVoiceComposerOpen(false);
+    await onSend("voice", draft, pendingVoice);
   }
 
   const composerCanSend = Boolean(draft.trim() || attachment);
@@ -1798,8 +1805,9 @@ function ChatPane({
           messages.map((message) => {
             const mine = message.senderId === currentUserId;
             const sender = conversation.participants.find((participant) => participant.id === message.senderId);
+            const isAudioKind = message.kind === "voice" || message.kind === "audio";
             return (
-              <View key={message.id} style={[styles.messageWrap, mine ? styles.messageMine : styles.messageTheirs]}>
+              <View key={message.id} style={[styles.messageWrap, isAudioKind && styles.messageWrapAudio, mine ? styles.messageMine : styles.messageTheirs]}>
                 {!mine && conversation.kind === "group" ? (
                   <Text style={styles.senderName}>{sender?.displayName ?? "Member"}</Text>
                 ) : null}
@@ -1938,7 +1946,7 @@ function ChatPane({
                   }}
                   style={styles.voiceRecordButton}
                 >
-                  <Ionicons color="#FFFFFF" name={previewStatus.playing ? "pause" : "mic"} size={22} />
+                  <Ionicons color="#FFFFFF" name={previewStatus.playing ? "pause" : "play"} size={22} />
                 </Pressable>
               ) : (
                 <Pressable
@@ -2824,6 +2832,7 @@ const styles = StyleSheet.create({
   skeletonTitle: { width: 118, height: 16, borderRadius: 7 },
   skeletonTitleWide: { width: 156, height: 20, borderRadius: 8 },
   skeletonTime: { width: 54, height: 12, borderRadius: 6 },
+  skeletonUnreadBadge: { width: 22, height: 22, borderRadius: 11 },
   skeletonLine: { height: 13, borderRadius: 7, marginTop: 9 },
   skeletonLineLong: { width: "82%" },
   skeletonLineMid: { width: "62%" },
@@ -2860,10 +2869,13 @@ const styles = StyleSheet.create({
   avatar: { alignItems: "center", justifyContent: "center", backgroundColor: colors.primary },
   avatarText: { color: "#FFFFFF", fontWeight: "900" },
   chatRowBody: { flex: 1, minWidth: 0 },
+  chatListRowBody: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 10 },
+  chatListTextColumn: { flex: 1, minWidth: 0 },
+  chatListMetaColumn: { width: 58, alignItems: "flex-end", justifyContent: "center", gap: 7, flexShrink: 0 },
   row: { flexDirection: "row", alignItems: "center", gap: 12 },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  chatTitle: { color: colors.ink, fontSize: 16, fontWeight: "900" },
-  chatTime: { color: colors.faint, fontSize: 12, fontWeight: "700" },
+  chatTitle: { color: colors.ink, fontSize: 16, fontWeight: "900", maxWidth: "100%" },
+  chatTime: { color: colors.faint, fontSize: 12, fontWeight: "700", textAlign: "right" },
   chatPreview: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   chatPreviewUnread: { color: colors.ink, fontWeight: "800" },
   unreadBadge: {
@@ -2911,6 +2923,7 @@ const styles = StyleSheet.create({
   chatHeaderSub: { color: "rgba(255,255,255,0.76)", fontSize: 12 },
   messageList: { flexGrow: 1, padding: 18, gap: 12, backgroundColor: colors.page },
   messageWrap: { width: "78%", maxWidth: "78%", minWidth: 0, flexShrink: 1 },
+  messageWrapAudio: { width: "90%", maxWidth: "90%" },
   messageMine: { alignSelf: "flex-end" },
   messageTheirs: { alignSelf: "flex-start" },
   senderName: { color: colors.primaryDark, fontSize: 12, fontWeight: "800", marginBottom: 4, marginLeft: 8 },
@@ -2973,6 +2986,8 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 14,
     backgroundColor: colors.surfaceBlue,
+    minWidth: 240,
+    width: "100%",
   },
   audioAttachmentMine: { backgroundColor: "rgba(255,255,255,0.14)" },
   audioPlayButton: {
@@ -2984,8 +2999,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primaryDark,
   },
   audioPlayButtonMine: { backgroundColor: "#FFFFFF" },
-  audioWaveRow: { flexDirection: "row", alignItems: "center", gap: 3, minHeight: 26 },
-  audioWaveBar: { width: 4, borderRadius: 999 },
+  audioWaveRow: { flexDirection: "row", alignItems: "center", gap: 3, minHeight: 26, flexWrap: "nowrap", overflow: "hidden" },
+  audioWaveBar: { width: 4, borderRadius: 999, flexShrink: 0 },
   audioDuration: { color: colors.muted, fontSize: 11, marginTop: 4 },
   audioDurationMine: { color: "rgba(255,255,255,0.78)" },
   composer: {
