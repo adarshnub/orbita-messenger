@@ -34,42 +34,36 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 
 const TASK_MANAGER_ORBITA_CHANNEL = "orbita";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": process.env.ORBITA_CORS_ORIGIN || "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-orbita-signature",
-  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-};
-
 createServer(async (req, res) => {
   const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
 
   if (req.method === "OPTIONS") {
-    sendJson(res, 200, { ok: true });
+    sendNoContent(res, 204, req);
     return;
   }
 
   try {
     if (req.method === "GET" && pathname === "/health") {
-      sendJson(res, 200, { ok: true, service: "orbita-backend" });
+      sendJson(res, 200, { ok: true, service: "orbita-backend" }, req);
       return;
     }
 
     if (req.method !== "POST") {
-      sendJson(res, 405, { error: "Method not allowed." });
+      sendJson(res, 405, { error: "Method not allowed." }, req);
       return;
     }
 
     if (pathname === "/api/messenger/media" || pathname === "/api/messenger-api/media") {
       const authHeader = String(req.headers.authorization ?? "");
       if (!authHeader) {
-        sendJson(res, 401, { error: "Missing authorization." });
+        sendJson(res, 401, { error: "Missing authorization." }, req);
         return;
       }
 
       const jwt = authHeader.replace(/^Bearer\s+/i, "");
       const { data, error } = await supabase.auth.getUser(jwt);
       if (error || !data.user) {
-        sendJson(res, 401, { error: "Invalid session." });
+        sendJson(res, 401, { error: "Invalid session." }, req);
         return;
       }
 
@@ -80,7 +74,7 @@ createServer(async (req, res) => {
         duplex: "half",
       });
       const form = await request.formData();
-      sendJson(res, 200, await uploadMediaAttachment(data.user.id, form));
+      sendJson(res, 200, await uploadMediaAttachment(data.user.id, form), req);
       return;
     }
 
@@ -96,37 +90,37 @@ createServer(async (req, res) => {
         process.env.TASK_MANAGER_ORBITA_SECRET,
       );
       if (!validSignature) {
-        sendJson(res, 401, { error: "Invalid Orbita integration signature." });
+        sendJson(res, 401, { error: "Invalid Orbita integration signature." }, req);
         return;
       }
 
-      sendJson(res, 200, await handleServiceAction(action, payload));
+      sendJson(res, 200, await handleServiceAction(action, payload), req);
       return;
     }
 
     if (pathname === "/api/messenger" || pathname === "/api/messenger-api") {
       const authHeader = String(req.headers.authorization ?? "");
       if (!authHeader) {
-        sendJson(res, 401, { error: "Missing authorization." });
+        sendJson(res, 401, { error: "Missing authorization." }, req);
         return;
       }
 
       const jwt = authHeader.replace(/^Bearer\s+/i, "");
       const { data, error } = await supabase.auth.getUser(jwt);
       if (error || !data.user) {
-        sendJson(res, 401, { error: "Invalid session." });
+        sendJson(res, 401, { error: "Invalid session." }, req);
         return;
       }
 
-      sendJson(res, 200, await handleAction(data.user, action, payload));
+      sendJson(res, 200, await handleAction(data.user, action, payload), req);
       return;
     }
 
-    sendJson(res, 404, { error: "Route not found." });
+    sendJson(res, 404, { error: "Route not found." }, req);
   } catch (error) {
     const message = errorMessage(error);
     console.error(message, error);
-    sendJson(res, 400, { error: message });
+    sendJson(res, 400, { error: message }, req);
   }
 }).listen(port, host, () => {
   console.log(`Orbita backend listening on http://${host}:${port}`);
@@ -162,9 +156,37 @@ function readBody(req) {
   });
 }
 
-function sendJson(res, status, body) {
+function allowedCorsOrigin(req) {
+  const origin = req.headers.origin;
+  const configured = process.env.ORBITA_CORS_ORIGIN;
+  if (!configured || configured === "*") return "*";
+  const allowed = configured
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return origin && allowed.includes(origin) ? origin : allowed[0] ?? "*";
+}
+
+function corsHeaders(req) {
+  const headers = {
+    "Access-Control-Allow-Origin": allowedCorsOrigin(req),
+    "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-orbita-signature",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+    "Access-Control-Allow-Private-Network": "true",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin, Access-Control-Request-Headers, Access-Control-Request-Method",
+  };
+  return headers;
+}
+
+function sendNoContent(res, status, req) {
+  res.writeHead(status, corsHeaders(req));
+  res.end();
+}
+
+function sendJson(res, status, body, req = null) {
   res.writeHead(status, {
-    ...corsHeaders,
+    ...corsHeaders(req ?? { headers: {} }),
     "Content-Type": "application/json",
   });
   res.end(JSON.stringify(body));

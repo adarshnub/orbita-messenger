@@ -139,14 +139,43 @@ type AppThemeContextValue = {
 };
 
 const AppThemeContext = createContext<AppThemeContextValue>({
-  isDarkTheme: false,
+  isDarkTheme: true,
   setThemeMode: () => undefined,
-  themeMode: "light",
+  themeMode: "dark",
   toggleTheme: () => undefined,
 });
 
 function useAppTheme() {
   return useContext(AppThemeContext);
+}
+
+function usePersistedTheme() {
+  const [themeMode, setThemeModeState] = useState<AppThemeMode>("dark");
+  const isDarkTheme = themeMode === "dark";
+
+  useEffect(() => {
+    AsyncStorage.getItem(THEME_STORAGE_KEY)
+      .then((savedTheme) => {
+        if (savedTheme === "light" || savedTheme === "dark") {
+          setThemeModeState(savedTheme);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
+  const setThemeMode = useCallback((mode: AppThemeMode) => {
+    setThemeModeState(mode);
+    void AsyncStorage.setItem(THEME_STORAGE_KEY, mode).catch(() => undefined);
+  }, []);
+
+  const toggleTheme = useCallback(() => {
+    setThemeMode(themeMode === "dark" ? "light" : "dark");
+  }, [setThemeMode, themeMode]);
+
+  return useMemo<AppThemeContextValue>(
+    () => ({ isDarkTheme, setThemeMode, themeMode, toggleTheme }),
+    [isDarkTheme, setThemeMode, themeMode, toggleTheme],
+  );
 }
 
 function initials(name: string) {
@@ -213,6 +242,36 @@ function typingStatusText(participants: TypingParticipant[]) {
 function conversationFallbackPreview(conversation: BackendConversation) {
   if (conversation.kind === "direct") return "1:1 conversation";
   return `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`;
+}
+
+function conversationsWithContactNames(
+  conversations: BackendConversation[],
+  contacts: BackendProfile[],
+  viewerId: string,
+) {
+  if (!viewerId || !contacts.length) return conversations;
+  const contactById = new Map(contacts.map((contact) => [contact.id, contact]));
+
+  return conversations.map((conversation) => {
+    let changed = false;
+    const participants = conversation.participants.map((participant) => {
+      if (participant.id === viewerId) return participant;
+      const savedName = contactById.get(participant.id)?.displayName.trim();
+      if (!savedName || savedName === participant.displayName) return participant;
+      changed = true;
+      return { ...participant, displayName: savedName };
+    });
+
+    if (conversation.kind !== "direct") {
+      return changed ? { ...conversation, participants } : conversation;
+    }
+
+    const peer = participants.find((participant) => participant.id !== viewerId);
+    const title = peer?.displayName || conversation.title;
+    return changed || title !== conversation.title
+      ? { ...conversation, participants, title }
+      : conversation;
+  });
 }
 
 function peerLabel(profile: BackendProfile) {
@@ -353,7 +412,8 @@ function OrbitaBrand({ compact, inverse }: { compact?: boolean; inverse?: boolea
   );
 }
 
-function AuthSignalScene() {
+function AuthSignalScene({ inline = false }: { inline?: boolean }) {
+  const { isDarkTheme } = useAppTheme();
   const float = useRef(new Animated.Value(0)).current;
   const scan = useRef(new Animated.Value(0)).current;
 
@@ -380,16 +440,16 @@ function AuthSignalScene() {
   const nodePulse = float.interpolate({ inputRange: [0, 1], outputRange: [0.68, 1] });
 
   return (
-    <View pointerEvents="none" style={styles.authSignalScene}>
-      <Animated.View style={[styles.authSignalCore, { transform: [{ translateY: drift }] }]}>
+    <View pointerEvents="none" style={[styles.authSignalScene, inline && styles.authSignalSceneInline]}>
+      <Animated.View style={[styles.authSignalCore, !isDarkTheme && styles.authSignalCoreLight, { transform: [{ translateY: drift }] }]}>
         <OrbitaLogo size={82} />
-        <Animated.View style={[styles.authScanLine, { transform: [{ translateY: scanY }] }]} />
-        <Animated.View style={[styles.authNode, styles.authNodeOne, { opacity: nodePulse }]} />
-        <Animated.View style={[styles.authNode, styles.authNodeTwo, { opacity: nodePulse }]} />
-        <Animated.View style={[styles.authNode, styles.authNodeThree, { opacity: nodePulse }]} />
-        <View style={[styles.authTrace, styles.authTraceOne]} />
-        <View style={[styles.authTrace, styles.authTraceTwo]} />
-        <View style={[styles.authTrace, styles.authTraceThree]} />
+        <Animated.View style={[styles.authScanLine, !isDarkTheme && styles.authScanLineLight, { transform: [{ translateY: scanY }] }]} />
+        <Animated.View style={[styles.authNode, !isDarkTheme && styles.authNodeLight, styles.authNodeOne, { opacity: nodePulse }]} />
+        <Animated.View style={[styles.authNode, styles.authNodeTwo, !isDarkTheme && styles.authNodeTwoLight, { opacity: nodePulse }]} />
+        <Animated.View style={[styles.authNode, styles.authNodeThree, !isDarkTheme && styles.authNodeThreeLight, { opacity: nodePulse }]} />
+        <View style={[styles.authTrace, !isDarkTheme && styles.authTraceLight, styles.authTraceOne]} />
+        <View style={[styles.authTrace, !isDarkTheme && styles.authTraceLight, styles.authTraceTwo]} />
+        <View style={[styles.authTrace, !isDarkTheme && styles.authTraceLight, styles.authTraceThree]} />
       </Animated.View>
     </View>
   );
@@ -404,6 +464,7 @@ function Avatar({ name, size = 46 }: { name: string; size?: number }) {
 }
 
 function SkeletonBlock({ style }: { style?: StyleProp<ViewStyle> }) {
+  const { isDarkTheme } = useAppTheme();
   const opacity = useRef(new Animated.Value(0.42)).current;
 
   useEffect(() => {
@@ -417,14 +478,15 @@ function SkeletonBlock({ style }: { style?: StyleProp<ViewStyle> }) {
     return () => loop.stop();
   }, [opacity]);
 
-  return <Animated.View style={[styles.skeletonBlock, style, { opacity }]} />;
+  return <Animated.View style={[styles.skeletonBlock, isDarkTheme && styles.skeletonBlockDark, style, { opacity }]} />;
 }
 
 function ChatRowsSkeleton({ count = 5 }: { count?: number }) {
+  const { isDarkTheme } = useAppTheme();
   return (
     <>
       {Array.from({ length: count }).map((_, index) => (
-        <View key={index} style={styles.chatRow}>
+        <View key={index} style={[styles.chatRow, isDarkTheme && styles.chatRowDark]}>
           <SkeletonBlock style={styles.skeletonAvatar} />
           <View style={styles.chatListRowBody}>
             <View style={styles.chatListTextColumn}>
@@ -443,28 +505,29 @@ function ChatRowsSkeleton({ count = 5 }: { count?: number }) {
 }
 
 function MessageListSkeleton() {
+  const { isDarkTheme } = useAppTheme();
   return (
     <>
       <View style={[styles.messageWrap, styles.messageTheirs]}>
-        <View style={[styles.skeletonBubble, styles.skeletonBubbleIncoming]}>
+        <View style={[styles.skeletonBubble, styles.skeletonBubbleIncoming, isDarkTheme && styles.skeletonBubbleIncomingDark]}>
           <SkeletonBlock style={styles.skeletonMessageLineWide} />
           <SkeletonBlock style={styles.skeletonMessageLineMid} />
         </View>
       </View>
       <View style={[styles.messageWrap, styles.messageMine]}>
-        <View style={[styles.skeletonBubble, styles.skeletonBubbleOutgoing]}>
+        <View style={[styles.skeletonBubble, styles.skeletonBubbleOutgoing, isDarkTheme && styles.skeletonBubbleOutgoingDark]}>
           <SkeletonBlock style={styles.skeletonMessageLineWide} />
           <SkeletonBlock style={styles.skeletonMessageLineShort} />
         </View>
       </View>
       <View style={[styles.messageWrap, styles.messageTheirs]}>
-        <View style={[styles.skeletonBubble, styles.skeletonBubbleIncoming]}>
+        <View style={[styles.skeletonBubble, styles.skeletonBubbleIncoming, isDarkTheme && styles.skeletonBubbleIncomingDark]}>
           <SkeletonBlock style={styles.skeletonMessageLineMid} />
           <SkeletonBlock style={styles.skeletonMedia} />
         </View>
       </View>
       <View style={[styles.messageWrap, styles.messageMine]}>
-        <View style={[styles.skeletonBubble, styles.skeletonBubbleOutgoing]}>
+        <View style={[styles.skeletonBubble, styles.skeletonBubbleOutgoing, isDarkTheme && styles.skeletonBubbleOutgoingDark]}>
           <SkeletonBlock style={styles.skeletonMessageLineShort} />
         </View>
       </View>
@@ -555,16 +618,17 @@ function renderMessageFormatting(text: string, mine: boolean, keyPrefix: string)
 }
 
 function StatusSkeleton() {
+  const { isDarkTheme } = useAppTheme();
   return (
     <>
-      <View style={styles.statusComposer}>
+      <View style={[styles.statusComposer, isDarkTheme && styles.statusComposerDark]}>
         <SkeletonBlock style={styles.skeletonAvatarLarge} />
         <View style={styles.chatRowBody}>
           <SkeletonBlock style={styles.skeletonTitle} />
           <SkeletonBlock style={styles.skeletonLineMid} />
         </View>
       </View>
-      <View style={styles.statusCard}>
+      <View style={[styles.statusCard, isDarkTheme && styles.statusCardDark]}>
         <View style={styles.row}>
           <SkeletonBlock style={styles.skeletonAvatar} />
           <View style={styles.chatRowBody}>
@@ -579,9 +643,10 @@ function StatusSkeleton() {
 }
 
 function SettingsSkeleton() {
+  const { isDarkTheme } = useAppTheme();
   return (
     <>
-      <View style={styles.profileCard}>
+      <View style={[styles.profileCard, isDarkTheme && styles.profileCardDark]}>
         <SkeletonBlock style={styles.skeletonAvatarXL} />
         <View style={styles.chatRowBody}>
           <SkeletonBlock style={styles.skeletonTitleWide} />
@@ -590,7 +655,7 @@ function SettingsSkeleton() {
         </View>
       </View>
       {Array.from({ length: 3 }).map((_, index) => (
-        <View key={index} style={styles.settingRow}>
+        <View key={index} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
           <SkeletonBlock style={styles.skeletonIcon} />
           <View style={styles.chatRowBody}>
             <SkeletonBlock style={styles.skeletonTitle} />
@@ -603,11 +668,12 @@ function SettingsSkeleton() {
 }
 
 function AppShellSkeleton() {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <SafeAreaView edges={["top", "left", "right"]} style={styles.safe}>
-      <View style={styles.appFrame}>
-        <View style={styles.workspace}>
-          <View style={[styles.header, styles.headerMobile]}>
+    <SafeAreaView edges={["top", "left", "right"]} style={[styles.safe, isDarkTheme && styles.safeDark]}>
+      <View style={[styles.appFrame, isDarkTheme && styles.appFrameDark]}>
+        <View style={[styles.workspace, isDarkTheme && styles.workspaceDark]}>
+          <View style={[styles.header, styles.headerMobile, isDarkTheme && styles.headerDark]}>
             <View style={styles.brandRow}>
               <SkeletonBlock style={styles.skeletonLogo} />
               <SkeletonBlock style={styles.skeletonBrand} />
@@ -618,13 +684,13 @@ function AppShellSkeleton() {
               <SkeletonBlock style={styles.skeletonIconButton} />
             </View>
           </View>
-          <View style={[styles.content, styles.contentMobile]}>
-            <View style={[styles.listPanel, styles.mobilePanel]}>
-              <View style={styles.panelTitle}>
+          <View style={[styles.content, styles.contentMobile, isDarkTheme && styles.contentMobileDark]}>
+            <View style={[styles.listPanel, styles.mobilePanel, isDarkTheme && styles.listPanelDark]}>
+              <View style={[styles.panelTitle, isDarkTheme && styles.panelTitleDark]}>
                 <SkeletonBlock style={styles.skeletonPanelHeading} />
                 <SkeletonBlock style={styles.skeletonIconButton} />
               </View>
-              <ScrollView contentContainerStyle={styles.listContent}>
+              <ScrollView contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}>
                 <ChatRowsSkeleton count={6} />
               </ScrollView>
             </View>
@@ -655,6 +721,7 @@ function IconButton({
 export function OrbitaApp() {
   const [session, setSession] = useState<Session | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
+  const themeContext = usePersistedTheme();
 
   useEffect(() => {
     if (!supabase) {
@@ -675,29 +742,34 @@ export function OrbitaApp() {
     return () => data.subscription.unsubscribe();
   }, []);
 
-  if (checkingSession) {
-    return <FullScreenLoader />;
-  }
-
-  if (!session) {
-    return <LoginScreen onSignedIn={setSession} />;
-  }
-
-  return <MessengerShell session={session} />;
+  return (
+    <AppThemeContext.Provider value={themeContext}>
+      {checkingSession ? (
+        <FullScreenLoader />
+      ) : !session ? (
+        <LoginScreen onSignedIn={setSession} />
+      ) : (
+        <MessengerShell session={session} />
+      )}
+    </AppThemeContext.Provider>
+  );
 }
 
 function FullScreenLoader() {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.loadingScreen}>
+    <SafeAreaView style={[styles.safe, isDarkTheme && styles.safeDark]}>
+      <View style={[styles.loadingScreen, isDarkTheme && styles.loadingScreenDark]}>
         <OrbitaLogo />
-        <Text style={styles.loadingLabel}>Syncing your universe...</Text>
+        <Text style={[styles.loadingLabel, isDarkTheme && styles.loadingLabelDark]}>Syncing your universe...</Text>
       </View>
     </SafeAreaView>
   );
 }
 
 function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => void }) {
+  const { isDarkTheme, toggleTheme } = useAppTheme();
+  const { width } = useWindowDimensions();
   const [authMode, setAuthMode] = useState<AuthMode>("signin");
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
@@ -826,9 +898,12 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
       : "Sign in with your email OTP and phone number to continue your encrypted workspace.";
   const primaryLabel = otpSent ? "Verify and continue" : authMode === "signup" ? "Create account" : "Send email OTP";
   const resendLabel = resendSeconds > 0 ? `Resend in ${resendSeconds}s` : "Resend OTP";
+  const authIconColor = isDarkTheme ? colors.accent : colors.primaryDark;
+  const authPlaceholderColor = isDarkTheme ? "rgba(255,255,255,0.52)" : "rgba(23,18,36,0.42)";
+  const isAuthWide = Platform.OS === "web" && width >= 980;
 
   return (
-    <SafeAreaView edges={["top", "left", "right"]} style={styles.safe}>
+    <SafeAreaView edges={["top", "left", "right"]} style={[styles.safe, isDarkTheme && styles.safeDark]}>
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         enabled={Platform.OS !== "web"}
@@ -839,118 +914,177 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.loginScreen}>
-          <View style={styles.loginBackdropGrid} />
-          <View style={styles.loginGlow} />
-          <AuthSignalScene />
-          <View style={styles.loginHero}>
-            <OrbitaBrand inverse />
-            <View style={styles.loginBadge}>
-              <Ionicons color={colors.accent} name="sparkles" size={14} />
-              <Text style={styles.loginBadgeText}>AI signal layer</Text>
-            </View>
-            <Text style={styles.loginTitle}>{authTitle}</Text>
-            <Text style={styles.loginCopy}>{authCopy}</Text>
-          </View>
-          <View style={styles.loginForm}>
-            {!otpSent ? (
-              <View style={styles.authModeSwitch}>
-                <Pressable
-                  onPress={() => switchMode("signin")}
-                  style={[styles.authModeButton, authMode === "signin" && styles.authModeButtonActive]}
-                >
-                  <Text style={[styles.authModeText, authMode === "signin" && styles.authModeTextActive]}>Sign in</Text>
-                </Pressable>
-                <Pressable
-                  onPress={() => switchMode("signup")}
-                  style={[styles.authModeButton, authMode === "signup" && styles.authModeButtonActive]}
-                >
-                  <Text style={[styles.authModeText, authMode === "signup" && styles.authModeTextActive]}>Create</Text>
-                </Pressable>
+        <View style={[styles.loginScreen, !isDarkTheme && styles.loginScreenLight]}>
+          <View style={[styles.loginBackdropGrid, !isDarkTheme && styles.loginBackdropGridLight]} />
+          <View style={[styles.loginGlow, !isDarkTheme && styles.loginGlowLight]} />
+          {!isAuthWide ? <AuthSignalScene /> : null}
+          <View style={[styles.loginContent, isAuthWide && styles.loginContentWide]}>
+            <View style={[styles.loginAuthColumn, isAuthWide && styles.loginAuthColumnWide]}>
+              <View style={styles.loginHero}>
+                <View style={styles.loginTopRow}>
+                  <OrbitaBrand inverse={isDarkTheme} />
+                  <Pressable
+                    accessibilityLabel={isDarkTheme ? "Switch to light theme" : "Switch to dark theme"}
+                    onPress={toggleTheme}
+                    style={[styles.authThemeButton, !isDarkTheme && styles.authThemeButtonLight]}
+                  >
+                    <Ionicons color={authIconColor} name={isDarkTheme ? "sunny-outline" : "moon-outline"} size={18} />
+                  </Pressable>
+                </View>
+                <View style={[styles.loginBadge, !isDarkTheme && styles.loginBadgeLight]}>
+                  <Ionicons color={authIconColor} name="sparkles" size={14} />
+                  <Text style={[styles.loginBadgeText, !isDarkTheme && styles.loginBadgeTextLight]}>AI signal layer</Text>
+                </View>
+                <Text style={[styles.loginTitle, isAuthWide && styles.loginTitleWide, !isDarkTheme && styles.loginTitleLight]}>{authTitle}</Text>
+                <Text style={[styles.loginCopy, isAuthWide && styles.loginCopyWide, !isDarkTheme && styles.loginCopyLight]}>{authCopy}</Text>
               </View>
-            ) : null}
-            {authMode === "signup" && !otpSent ? (
-              <View style={styles.inputShell}>
-                <Ionicons color={colors.accent} name="person-outline" size={18} />
-                <TextInput
-                  autoCapitalize="words"
-                  autoCorrect={false}
-                  editable={!loading}
-                  onChangeText={setDisplayName}
-                  placeholder="Your name"
-                  placeholderTextColor="rgba(255,255,255,0.52)"
-                  style={styles.loginInput}
-                  value={displayName}
-                />
-              </View>
-            ) : null}
-            <View style={styles.inputShell}>
-              <Ionicons color={colors.accent} name="mail-outline" size={18} />
-              <TextInput
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!otpSent && !loading}
-                keyboardType="email-address"
-                onChangeText={setEmail}
-                placeholder="you@example.com"
-                placeholderTextColor="rgba(255,255,255,0.52)"
-                style={styles.loginInput}
-                value={email}
-              />
-            </View>
-            <View style={styles.inputShell}>
-              <Ionicons color={colors.accent} name="call-outline" size={18} />
-              <TextInput
-                editable={!otpSent && !loading}
-                keyboardType="phone-pad"
-                onChangeText={setPhone}
-                placeholder="+91 phone number"
-                placeholderTextColor="rgba(255,255,255,0.52)"
-                style={styles.loginInput}
-                value={phone}
-              />
-            </View>
-            {otpSent ? (
-              <>
-                <View style={styles.inputShell}>
-                  <Ionicons color={colors.accent} name="keypad-outline" size={18} />
+              <View style={[styles.loginForm, isAuthWide && styles.loginFormWide, !isDarkTheme && styles.loginFormLight]}>
+                {!otpSent ? (
+                  <View style={[styles.authModeSwitch, !isDarkTheme && styles.authModeSwitchLight]}>
+                    <Pressable
+                      onPress={() => switchMode("signin")}
+                      style={[
+                        styles.authModeButton,
+                        authMode === "signin" && styles.authModeButtonActive,
+                        !isDarkTheme && authMode === "signin" && styles.authModeButtonActiveLight,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.authModeText,
+                          !isDarkTheme && styles.authModeTextLight,
+                          authMode === "signin" && styles.authModeTextActive,
+                          !isDarkTheme && authMode === "signin" && styles.authModeTextActiveLight,
+                        ]}
+                      >
+                        Sign in
+                      </Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() => switchMode("signup")}
+                      style={[
+                        styles.authModeButton,
+                        authMode === "signup" && styles.authModeButtonActive,
+                        !isDarkTheme && authMode === "signup" && styles.authModeButtonActiveLight,
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.authModeText,
+                          !isDarkTheme && styles.authModeTextLight,
+                          authMode === "signup" && styles.authModeTextActive,
+                          !isDarkTheme && authMode === "signup" && styles.authModeTextActiveLight,
+                        ]}
+                      >
+                        Create
+                      </Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+                {authMode === "signup" && !otpSent ? (
+                  <View style={[styles.inputShell, !isDarkTheme && styles.inputShellLight]}>
+                    <Ionicons color={authIconColor} name="person-outline" size={18} />
+                    <TextInput
+                      autoCapitalize="words"
+                      autoCorrect={false}
+                      editable={!loading}
+                      onChangeText={setDisplayName}
+                      placeholder="Your name"
+                      placeholderTextColor={authPlaceholderColor}
+                      style={[styles.loginInput, !isDarkTheme && styles.loginInputLight]}
+                      value={displayName}
+                    />
+                  </View>
+                ) : null}
+                <View style={[styles.inputShell, !isDarkTheme && styles.inputShellLight]}>
+                  <Ionicons color={authIconColor} name="mail-outline" size={18} />
                   <TextInput
-                    autoFocus={Platform.OS !== "web"}
-                    keyboardType="number-pad"
-                    onChangeText={setOtp}
-                    placeholder="OTP code"
-                    placeholderTextColor="rgba(255,255,255,0.52)"
-                    style={[styles.loginInput, styles.otpInput]}
-                    value={otp}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!otpSent && !loading}
+                    keyboardType="email-address"
+                    onChangeText={setEmail}
+                    placeholder="you@example.com"
+                    placeholderTextColor={authPlaceholderColor}
+                    style={[styles.loginInput, !isDarkTheme && styles.loginInputLight]}
+                    value={email}
                   />
                 </View>
-                <View style={styles.otpActionRow}>
-                  <Pressable disabled={loading || resendSeconds > 0} onPress={() => requestOtp(true)} style={styles.textActionButton}>
-                    <Text style={[styles.textAction, (loading || resendSeconds > 0) && styles.textActionDisabled]}>{resendLabel}</Text>
-                  </Pressable>
-                  <Pressable disabled={loading} onPress={editLoginDetails} style={styles.textActionButton}>
-                    <Text style={styles.textAction}>Edit details</Text>
-                  </Pressable>
+                <View style={[styles.inputShell, !isDarkTheme && styles.inputShellLight]}>
+                  <Ionicons color={authIconColor} name="call-outline" size={18} />
+                  <TextInput
+                    editable={!otpSent && !loading}
+                    keyboardType="phone-pad"
+                    onChangeText={setPhone}
+                    placeholder="+91 phone number"
+                    placeholderTextColor={authPlaceholderColor}
+                    style={[styles.loginInput, !isDarkTheme && styles.loginInputLight]}
+                    value={phone}
+                  />
                 </View>
-              </>
-            ) : null}
-            <Pressable
-              disabled={loading || !hasSupabaseConfig}
-              onPress={otpSent ? verifyOtp : () => requestOtp(false)}
-              style={[styles.loginButton, (loading || !hasSupabaseConfig) && styles.buttonDisabled]}
-            >
-              {loading ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <>
-                  <Ionicons color="#FFFFFF" name={otpSent ? "shield-checkmark-outline" : "flash-outline"} size={18} />
-                  <Text style={styles.loginButtonText}>{primaryLabel}</Text>
-                </>
-              )}
-            </Pressable>
-            {notice ? <Text style={styles.loginNoticeText}>{notice}</Text> : null}
-            {!hasSupabaseConfig ? (
-              <Text style={styles.loginHintText}>Required: EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.</Text>
+                {otpSent ? (
+                  <>
+                    <View style={[styles.inputShell, !isDarkTheme && styles.inputShellLight]}>
+                      <Ionicons color={authIconColor} name="keypad-outline" size={18} />
+                      <TextInput
+                        autoFocus={Platform.OS !== "web"}
+                        keyboardType="number-pad"
+                        onChangeText={setOtp}
+                        placeholder="OTP code"
+                        placeholderTextColor={authPlaceholderColor}
+                        style={[styles.loginInput, !isDarkTheme && styles.loginInputLight, styles.otpInput]}
+                        value={otp}
+                      />
+                    </View>
+                    <View style={styles.otpActionRow}>
+                      <Pressable disabled={loading || resendSeconds > 0} onPress={() => requestOtp(true)} style={styles.textActionButton}>
+                        <Text
+                          style={[
+                            styles.textAction,
+                            !isDarkTheme && styles.textActionLight,
+                            (loading || resendSeconds > 0) && styles.textActionDisabled,
+                            !isDarkTheme && (loading || resendSeconds > 0) && styles.textActionDisabledLight,
+                          ]}
+                        >
+                          {resendLabel}
+                        </Text>
+                      </Pressable>
+                      <Pressable disabled={loading} onPress={editLoginDetails} style={styles.textActionButton}>
+                        <Text style={[styles.textAction, !isDarkTheme && styles.textActionLight]}>Edit details</Text>
+                      </Pressable>
+                    </View>
+                  </>
+                ) : null}
+                <Pressable
+                  disabled={loading || !hasSupabaseConfig}
+                  onPress={otpSent ? verifyOtp : () => requestOtp(false)}
+                  style={[styles.loginButton, (loading || !hasSupabaseConfig) && styles.buttonDisabled]}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#FFFFFF" />
+                  ) : (
+                    <>
+                      <Ionicons color="#FFFFFF" name={otpSent ? "shield-checkmark-outline" : "flash-outline"} size={18} />
+                      <Text style={styles.loginButtonText}>{primaryLabel}</Text>
+                    </>
+                  )}
+                </Pressable>
+                {notice ? <Text style={[styles.loginNoticeText, !isDarkTheme && styles.loginNoticeTextLight]}>{notice}</Text> : null}
+                {!hasSupabaseConfig ? (
+                  <Text style={[styles.loginHintText, !isDarkTheme && styles.loginHintTextLight]}>
+                    Required: EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.
+                  </Text>
+                ) : null}
+              </View>
+            </View>
+            {isAuthWide ? (
+              <View style={[styles.authVisualPanel, !isDarkTheme && styles.authVisualPanelLight]}>
+                <View style={[styles.authVisualHalo, !isDarkTheme && styles.authVisualHaloLight]} />
+                <AuthSignalScene inline />
+                <View style={[styles.authVisualRail, styles.authVisualRailTop, !isDarkTheme && styles.authVisualRailLight]} />
+                <View style={[styles.authVisualRail, styles.authVisualRailMiddle, !isDarkTheme && styles.authVisualRailLight]} />
+                <View style={[styles.authVisualRail, styles.authVisualRailBottom, !isDarkTheme && styles.authVisualRailLight]} />
+              </View>
             ) : null}
           </View>
         </View>
@@ -963,8 +1097,8 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
 function MessengerShell({ session }: { session: Session }) {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
+  const { isDarkTheme } = useAppTheme();
   const isWide = width >= 840;
-  const [themeMode, setThemeModeState] = useState<AppThemeMode>("light");
   const [activeTab, setActiveTab] = useState<Tab>("chats");
   const [profile, setProfile] = useState<BackendProfile | null>(null);
   const [contacts, setContacts] = useState<BackendProfile[]>([]);
@@ -1003,32 +1137,6 @@ function MessengerShell({ session }: { session: Session }) {
   const lastUnreadTotalRef = useRef<number | null>(null);
   const incomingHapticAtRef = useRef(0);
   const bootstrapHasLoadedRef = useRef(false);
-  const isDarkTheme = themeMode === "dark";
-
-  useEffect(() => {
-    AsyncStorage.getItem(THEME_STORAGE_KEY)
-      .then((savedTheme) => {
-        if (savedTheme === "light" || savedTheme === "dark") {
-          setThemeModeState(savedTheme);
-        }
-      })
-      .catch(() => undefined);
-  }, []);
-
-  const setThemeMode = useCallback((mode: AppThemeMode) => {
-    setThemeModeState(mode);
-    void AsyncStorage.setItem(THEME_STORAGE_KEY, mode).catch(() => undefined);
-  }, []);
-
-  const toggleTheme = useCallback(() => {
-    setThemeMode(themeMode === "dark" ? "light" : "dark");
-  }, [setThemeMode, themeMode]);
-
-  const themeContext = useMemo<AppThemeContextValue>(
-    () => ({ isDarkTheme, setThemeMode, themeMode, toggleTheme }),
-    [isDarkTheme, setThemeMode, themeMode, toggleTheme],
-  );
-
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
   const conversationIds = useMemo(() => conversations.map((conversation) => conversation.id), [conversations]);
   const conversationKey = conversationIds.join("|");
@@ -1114,7 +1222,7 @@ function MessengerShell({ session }: { session: Session }) {
     const fallbackDisplayName = typeof payload.displayName === "string" && payload.displayName.trim()
       ? payload.displayName.trim()
       : "Someone";
-    const displayName = savedContact?.displayName || participant?.phone || participant?.displayName || fallbackDisplayName;
+    const displayName = savedContact?.displayName || participant?.displayName || participant?.phone || fallbackDisplayName;
     const expiresAt = Date.now() + TYPING_EXPIRE_MS;
     setTypingByConversation((current) => ({
       ...current,
@@ -1197,9 +1305,10 @@ function MessengerShell({ session }: { session: Session }) {
         }
         lastUnreadTotalRef.current = nextUnreadTotal;
         bootstrapHasLoadedRef.current = true;
+        const displayConversations = conversationsWithContactNames(data.conversations, data.contacts, data.profile.id);
         setProfile(data.profile);
         setContacts(data.contacts);
-        setConversations(data.conversations);
+        setConversations(displayConversations);
         setStatuses(data.statuses);
         setError("");
         setLoading(false);
@@ -1549,6 +1658,30 @@ function MessengerShell({ session }: { session: Session }) {
     setAttachmentMenuOpen(false);
   }
 
+  async function takePhotoAttachment() {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      setError("Camera permission is needed to take a photo.");
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      allowsEditing: false,
+      mediaTypes: ["images"],
+      quality: 0.9,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    setComposerAttachment({
+      localId: `camera-${Date.now()}`,
+      kind: "image",
+      uri: asset.uri,
+      name: asset.fileName || `camera-${Date.now()}.jpg`,
+      mimeType: asset.mimeType || "image/jpeg",
+      sizeBytes: asset.fileSize ?? null,
+    });
+    setAttachmentMenuOpen(false);
+  }
+
   async function pickFileAttachment(kind: "audio" | "document") {
     const result = await DocumentPicker.getDocumentAsync({
       copyToCacheDirectory: true,
@@ -1720,7 +1853,6 @@ function MessengerShell({ session }: { session: Session }) {
   const bottomInset = Math.max(insets.bottom, Platform.OS === "android" ? 8 : 0);
 
   return (
-    <AppThemeContext.Provider value={themeContext}>
     <SafeAreaView edges={["top", "left", "right"]} style={[styles.safe, isDarkTheme && styles.safeDark]}>
       <View style={[styles.appFrame, isDarkTheme && styles.appFrameDark]}>
         {isWide ? <Sidebar activeTab={activeTab} onChange={changeTab} onNewChat={() => setNewChatOpen(true)} /> : null}
@@ -1778,6 +1910,7 @@ function MessengerShell({ session }: { session: Session }) {
                   setForwardPickerOpen(true);
                 }}
                 onOpenAttachmentMenu={() => setAttachmentMenuOpen(true)}
+                onTakePhoto={() => void takePhotoAttachment()}
                 onBack={() => setSelectedId("")}
                 onRemoveAttachment={() => setComposerAttachment(null)}
                 onSend={(nextKind, nextBody, nextAttachment) => sendMessage(nextKind, nextBody, nextAttachment)}
@@ -1891,7 +2024,6 @@ function MessengerShell({ session }: { session: Session }) {
         visible={forwardPickerOpen}
       />
     </SafeAreaView>
-    </AppThemeContext.Provider>
   );
 }
 
@@ -2145,6 +2277,7 @@ function ChatPane({
   messagesLoading,
   onForwardMessage,
   onOpenAttachmentMenu,
+  onTakePhoto,
   draft,
   setDraft,
   onRemoveAttachment,
@@ -2165,6 +2298,7 @@ function ChatPane({
   messagesLoading: boolean;
   onForwardMessage: (message: ChatMessage) => void;
   onOpenAttachmentMenu: () => void;
+  onTakePhoto: () => void;
   draft: string;
   setDraft: (value: string) => void;
   onRemoveAttachment: () => void;
@@ -2440,9 +2574,18 @@ function ChatPane({
             <Ionicons color="#FFFFFF" name="send" size={20} />
           </Pressable>
         ) : (
-          <Pressable accessibilityLabel="Record voice note" onPress={startVoiceRecording} style={styles.sendButton}>
-            <Ionicons color="#FFFFFF" name="mic" size={19} />
-          </Pressable>
+          <View style={styles.composerQuickActions}>
+            <Pressable
+              accessibilityLabel="Take photo"
+              onPress={onTakePhoto}
+              style={[styles.sendButton, styles.cameraQuickButton, isDarkTheme && styles.cameraQuickButtonDark]}
+            >
+              <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="camera-outline" size={20} />
+            </Pressable>
+            <Pressable accessibilityLabel="Record voice note" onPress={startVoiceRecording} style={styles.sendButton}>
+              <Ionicons color="#FFFFFF" name="mic" size={19} />
+            </Pressable>
+          </View>
         )}
       </View>
       <Modal animationType="slide" onRequestClose={discardVoiceAttachment} transparent visible={voiceComposerOpen}>
@@ -3278,7 +3421,9 @@ const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.page },
   safeDark: { backgroundColor: "#101421" },
   loadingScreen: { flex: 1, alignItems: "center", justifyContent: "center", gap: 14 },
+  loadingScreenDark: { backgroundColor: "#101421" },
   loadingLabel: { color: colors.muted, fontSize: 14, fontWeight: "700" },
+  loadingLabelDark: { color: "rgba(255,255,255,0.70)" },
   logoFrame: {
     overflow: "hidden",
     alignItems: "center",
@@ -3325,16 +3470,20 @@ const styles = StyleSheet.create({
   loginScroll: { flexGrow: 1 },
   loginScreen: {
     flex: 1,
+    alignItems: "center",
     justifyContent: "center",
-    padding: 22,
+    paddingHorizontal: Platform.select({ web: 48, default: 22 }),
+    paddingVertical: Platform.select({ web: 42, default: 22 }),
     backgroundColor: "#101421",
     overflow: "hidden",
   },
+  loginScreenLight: { backgroundColor: "#F4F7FA" },
   loginBackdropGrid: {
     ...StyleSheet.absoluteFillObject,
     opacity: 0.22,
     backgroundColor: "#161C2D",
   },
+  loginBackdropGridLight: { opacity: 1, backgroundColor: "#F4F7FA" },
   loginGlow: {
     position: "absolute",
     width: 330,
@@ -3344,6 +3493,7 @@ const styles = StyleSheet.create({
     borderRadius: 165,
     backgroundColor: "rgba(85,214,255,0.16)",
   },
+  loginGlowLight: { backgroundColor: "rgba(122,94,214,0.14)" },
   authSignalScene: {
     position: "absolute",
     top: 36,
@@ -3351,6 +3501,15 @@ const styles = StyleSheet.create({
     width: 190,
     height: 190,
     opacity: 0.92,
+  },
+  authSignalSceneInline: {
+    position: "relative",
+    top: 0,
+    right: 0,
+    width: 286,
+    height: 286,
+    opacity: 1,
+    zIndex: 2,
   },
   authSignalCore: {
     flex: 1,
@@ -3362,6 +3521,10 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.04)",
     overflow: "hidden",
   },
+  authSignalCoreLight: {
+    borderColor: "rgba(101,81,196,0.14)",
+    backgroundColor: "rgba(255,255,255,0.74)",
+  },
   authScanLine: {
     position: "absolute",
     left: 18,
@@ -3370,6 +3533,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "rgba(242,244,123,0.62)",
   },
+  authScanLineLight: { backgroundColor: "rgba(101,81,196,0.34)" },
   authNode: {
     position: "absolute",
     width: 9,
@@ -3377,15 +3541,19 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "#55D6FF",
   },
+  authNodeLight: { backgroundColor: "#6551C4" },
   authNodeOne: { left: 26, top: 38 },
   authNodeTwo: { right: 32, top: 60, backgroundColor: colors.accent },
+  authNodeTwoLight: { backgroundColor: "#55D6FF" },
   authNodeThree: { left: 44, bottom: 38, backgroundColor: "#FFFFFF" },
+  authNodeThreeLight: { backgroundColor: colors.primaryDark },
   authTrace: {
     position: "absolute",
     height: 1,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.22)",
   },
+  authTraceLight: { backgroundColor: "rgba(101,81,196,0.18)" },
   authTraceOne: { width: 112, top: 44, left: 34, transform: [{ rotate: "10deg" }] },
   authTraceTwo: { width: 104, top: 82, right: 34, transform: [{ rotate: "-18deg" }] },
   authTraceThree: { width: 92, bottom: 52, left: 50, transform: [{ rotate: "-8deg" }] },
@@ -3393,6 +3561,44 @@ const styles = StyleSheet.create({
     width: "100%",
     maxWidth: 460,
     gap: 12,
+  },
+  loginContent: {
+    width: "100%",
+    maxWidth: 460,
+    alignSelf: "center",
+    zIndex: 1,
+  },
+  loginContentWide: {
+    maxWidth: 1120,
+    minHeight: 560,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 72,
+  },
+  loginAuthColumn: {
+    width: "100%",
+    maxWidth: 460,
+  },
+  loginAuthColumnWide: {
+    flex: 1,
+    maxWidth: 500,
+    justifyContent: "center",
+  },
+  loginTopRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 14 },
+  authThemeButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  authThemeButtonLight: {
+    borderColor: "rgba(101,81,196,0.14)",
+    backgroundColor: "rgba(255,255,255,0.78)",
   },
   loginBadge: {
     alignSelf: "flex-start",
@@ -3407,7 +3613,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.12)",
   },
+  loginBadgeLight: {
+    backgroundColor: "rgba(255,255,255,0.82)",
+    borderColor: "rgba(101,81,196,0.16)",
+  },
   loginBadgeText: { color: "rgba(255,255,255,0.82)", fontSize: 12, fontWeight: "800" },
+  loginBadgeTextLight: { color: colors.primaryDark },
   loginTitle: {
     color: "#FFFFFF",
     fontSize: 38,
@@ -3415,7 +3626,11 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     maxWidth: 420,
   },
+  loginTitleWide: { fontSize: 44, lineHeight: 50, maxWidth: 500 },
+  loginTitleLight: { color: colors.ink },
   loginCopy: { color: "rgba(255,255,255,0.70)", fontSize: 15, lineHeight: 22, maxWidth: 420 },
+  loginCopyWide: { maxWidth: 460 },
+  loginCopyLight: { color: colors.muted },
   loginForm: {
     marginTop: 22,
     gap: 12,
@@ -3427,6 +3642,54 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.12)",
     backgroundColor: "rgba(255,255,255,0.08)",
   },
+  loginFormWide: {
+    marginTop: 28,
+    maxWidth: 500,
+    padding: 18,
+  },
+  loginFormLight: {
+    borderColor: "rgba(101,81,196,0.14)",
+    backgroundColor: "rgba(255,255,255,0.88)",
+    shadowColor: "#6551C4",
+    shadowOpacity: 0.10,
+    shadowRadius: 22,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 3,
+  },
+  authVisualPanel: {
+    flex: 1,
+    maxWidth: 470,
+    minHeight: 490,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 34,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.045)",
+    overflow: "hidden",
+  },
+  authVisualPanelLight: {
+    borderColor: "rgba(101,81,196,0.14)",
+    backgroundColor: "rgba(255,255,255,0.62)",
+  },
+  authVisualHalo: {
+    position: "absolute",
+    width: 390,
+    height: 390,
+    borderRadius: 195,
+    backgroundColor: "rgba(85,214,255,0.12)",
+  },
+  authVisualHaloLight: { backgroundColor: "rgba(122,94,214,0.10)" },
+  authVisualRail: {
+    position: "absolute",
+    height: 2,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.20)",
+  },
+  authVisualRailLight: { backgroundColor: "rgba(101,81,196,0.18)" },
+  authVisualRailTop: { width: 260, top: 106, right: 44, transform: [{ rotate: "7deg" }] },
+  authVisualRailMiddle: { width: 330, top: 246, left: 54, transform: [{ rotate: "-4deg" }] },
+  authVisualRailBottom: { width: 230, bottom: 106, right: 74, transform: [{ rotate: "-11deg" }] },
   authModeSwitch: {
     minHeight: 46,
     flexDirection: "row",
@@ -3435,10 +3698,14 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     backgroundColor: "rgba(0,0,0,0.18)",
   },
+  authModeSwitchLight: { backgroundColor: "#E9EDF4" },
   authModeButton: { flex: 1, alignItems: "center", justifyContent: "center", borderRadius: 12 },
   authModeButtonActive: { backgroundColor: "#FFFFFF" },
+  authModeButtonActiveLight: { backgroundColor: colors.primaryDark },
   authModeText: { color: "rgba(255,255,255,0.62)", fontSize: 14, fontWeight: "900" },
+  authModeTextLight: { color: colors.muted },
   authModeTextActive: { color: colors.ink },
+  authModeTextActiveLight: { color: "#FFFFFF" },
   inputShell: {
     height: 52,
     flexDirection: "row",
@@ -3450,6 +3717,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     backgroundColor: "rgba(10,14,26,0.64)",
   },
+  inputShellLight: {
+    borderColor: "rgba(101,81,196,0.14)",
+    backgroundColor: "#F7F8FB",
+  },
   loginInput: {
     flex: 1,
     minWidth: 0,
@@ -3458,11 +3729,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: "700",
   },
+  loginInputLight: { color: colors.ink },
   otpInput: { letterSpacing: 4 },
   otpActionRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
   textActionButton: { minHeight: 34, justifyContent: "center" },
   textAction: { color: colors.accent, fontSize: 13, fontWeight: "900" },
+  textActionLight: { color: colors.primaryDark },
   textActionDisabled: { color: "rgba(255,255,255,0.38)" },
+  textActionDisabledLight: { color: colors.faint },
   loginButton: {
     height: 52,
     borderRadius: 16,
@@ -3475,7 +3749,9 @@ const styles = StyleSheet.create({
   loginButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "900" },
   buttonDisabled: { opacity: 0.55 },
   loginNoticeText: { color: colors.accent, fontSize: 13, fontWeight: "800", lineHeight: 18 },
+  loginNoticeTextLight: { color: colors.primaryDark },
   loginHintText: { color: "rgba(255,255,255,0.58)", fontSize: 12, lineHeight: 18 },
+  loginHintTextLight: { color: colors.muted },
   noticeText: { color: colors.primaryDark, fontSize: 13, fontWeight: "700" },
   hintText: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   appFrame: { flex: 1, flexDirection: "row", backgroundColor: colors.page },
@@ -3596,6 +3872,7 @@ const styles = StyleSheet.create({
   listContent: { padding: 12, gap: 10 },
   listContentDark: { backgroundColor: "#151A2A" },
   skeletonBlock: { backgroundColor: "#DDD7EB" },
+  skeletonBlockDark: { backgroundColor: "rgba(255,255,255,0.16)" },
   skeletonLogo: { width: 48, height: 48, borderRadius: 16, backgroundColor: "rgba(255,255,255,0.35)" },
   skeletonBrand: { width: 116, height: 22, borderRadius: 8 },
   skeletonPanelHeading: { width: 138, height: 38, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.36)" },
@@ -3616,6 +3893,8 @@ const styles = StyleSheet.create({
   skeletonBubble: { gap: 9, padding: 12, borderRadius: 16 },
   skeletonBubbleIncoming: { backgroundColor: "rgba(255,255,255,0.82)", borderTopLeftRadius: 4 },
   skeletonBubbleOutgoing: { alignSelf: "flex-end", backgroundColor: "rgba(101,81,196,0.30)", borderTopRightRadius: 4 },
+  skeletonBubbleIncomingDark: { backgroundColor: "#1B2235", borderColor: "rgba(255,255,255,0.08)", borderWidth: 1 },
+  skeletonBubbleOutgoingDark: { backgroundColor: "rgba(122,94,214,0.44)" },
   skeletonMessageLineWide: { width: 210, maxWidth: "100%", height: 14, borderRadius: 7 },
   skeletonMessageLineMid: { width: 154, maxWidth: "85%", height: 14, borderRadius: 7 },
   skeletonMessageLineShort: { width: 92, maxWidth: "60%", height: 14, borderRadius: 7 },
@@ -3820,6 +4099,7 @@ const styles = StyleSheet.create({
   },
   composerAccessoryButtonDark: { backgroundColor: "rgba(255,255,255,0.10)" },
   composerBody: { flex: 1, gap: 8 },
+  composerQuickActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   composerInput: {
     minHeight: 42,
     maxHeight: 110,
@@ -3869,6 +4149,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.primaryDark,
+  },
+  cameraQuickButton: {
+    backgroundColor: colors.primarySoft,
+    borderWidth: 1,
+    borderColor: "rgba(101,81,196,0.14)",
+  },
+  cameraQuickButtonDark: {
+    backgroundColor: "rgba(242,244,123,0.12)",
+    borderColor: "rgba(242,244,123,0.20)",
   },
   statusComposer: {
     flexDirection: "row",
