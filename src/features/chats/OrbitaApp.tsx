@@ -54,6 +54,16 @@ import {
   waveformBars,
 } from "@/features/chats/messageUtils";
 import { messengerApi } from "@/lib/messengerApi";
+import {
+  applySavedContactNamesToConversations,
+  markCachedMessageFailed,
+  readCachedBootstrap,
+  readCachedMessages,
+  replaceCachedMessage,
+  upsertCachedMessage,
+  writeBootstrapCache,
+  writeConversationMessages,
+} from "@/lib/localChatCache";
 import { hapticMessageReceived, hapticMessageSent } from "@/lib/haptics";
 import { normalizePhone } from "@/lib/phone";
 import {
@@ -239,39 +249,29 @@ function typingStatusText(participants: TypingParticipant[]) {
   return `${names[0]}, ${names[1]} and ${names.length - 2} more are typing...`;
 }
 
+function messageDateKey(iso: string) {
+  return new Date(iso).toDateString();
+}
+
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+function messageDateLabel(iso: string) {
+  const date = new Date(iso);
+  const now = new Date();
+  const dayDelta = Math.round((startOfLocalDay(now) - startOfLocalDay(date)) / 86_400_000);
+  if (dayDelta === 0) return "Today";
+  if (dayDelta === 1) return "Yesterday";
+  if (dayDelta > 1 && dayDelta < 7) {
+    return new Intl.DateTimeFormat(undefined, { weekday: "long" }).format(date);
+  }
+  return new Intl.DateTimeFormat(undefined, { day: "numeric", month: "short", year: "numeric" }).format(date);
+}
+
 function conversationFallbackPreview(conversation: BackendConversation) {
   if (conversation.kind === "direct") return "1:1 conversation";
   return `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`;
-}
-
-function conversationsWithContactNames(
-  conversations: BackendConversation[],
-  contacts: BackendProfile[],
-  viewerId: string,
-) {
-  if (!viewerId || !contacts.length) return conversations;
-  const contactById = new Map(contacts.map((contact) => [contact.id, contact]));
-
-  return conversations.map((conversation) => {
-    let changed = false;
-    const participants = conversation.participants.map((participant) => {
-      if (participant.id === viewerId) return participant;
-      const savedName = contactById.get(participant.id)?.displayName.trim();
-      if (!savedName || savedName === participant.displayName) return participant;
-      changed = true;
-      return { ...participant, displayName: savedName };
-    });
-
-    if (conversation.kind !== "direct") {
-      return changed ? { ...conversation, participants } : conversation;
-    }
-
-    const peer = participants.find((participant) => participant.id !== viewerId);
-    const title = peer?.displayName || conversation.title;
-    return changed || title !== conversation.title
-      ? { ...conversation, participants, title }
-      : conversation;
-  });
 }
 
 function peerLabel(profile: BackendProfile) {
@@ -1110,6 +1110,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [composerAttachment, setComposerAttachment] = useState<ComposerAttachment | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMessagesFor, setLoadingMessagesFor] = useState("");
+  const [loadingOlderFor, setLoadingOlderFor] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [agentThinkingFor, setAgentThinkingFor] = useState<Record<string, string>>({});
@@ -1131,9 +1132,12 @@ function MessengerShell({ session }: { session: Session }) {
   const typingRefreshAtRef = useRef(0);
   const typingIsActiveRef = useRef(false);
   const conversationsRef = useRef<BackendConversation[]>([]);
+  const messagesByConversationRef = useRef<Record<string, ChatMessage[]>>({});
   const contactsRef = useRef<BackendProfile[]>([]);
   const agentThinkingForRef = useRef<Record<string, string>>({});
+  const hasMoreMessagesRef = useRef<Record<string, boolean>>({});
   const selectedIdRef = useRef("");
+  const hasVisibleBootstrapRef = useRef(false);
   const lastUnreadTotalRef = useRef<number | null>(null);
   const incomingHapticAtRef = useRef(0);
   const bootstrapHasLoadedRef = useRef(false);
@@ -1158,6 +1162,16 @@ function MessengerShell({ session }: { session: Session }) {
   }, [conversations]);
 
   useEffect(() => {
+    const activeConversationId = selectedIdRef.current;
+    if (activeConversationId && selectedMessages.length) {
+      messagesByConversationRef.current = {
+        ...messagesByConversationRef.current,
+        [activeConversationId]: selectedMessages,
+      };
+    }
+  }, [selectedMessages]);
+
+  useEffect(() => {
     contactsRef.current = contacts;
   }, [contacts]);
 
@@ -1168,6 +1182,10 @@ function MessengerShell({ session }: { session: Session }) {
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+
+  useEffect(() => {
+    hasVisibleBootstrapRef.current = Boolean(profile);
+  }, [profile]);
 
   useEffect(() => {
     if (!error) return undefined;
@@ -1291,6 +1309,20 @@ function MessengerShell({ session }: { session: Session }) {
     typingIdleTimer.current = setTimeout(() => stopTyping(selected.id), TYPING_IDLE_MS);
   }, [profile, selected, sendTypingEvent, stopTyping]);
 
+  const hydrateBootstrapFromCache = useCallback(async () => {
+    const cached = await readCachedBootstrap(session.user.id);
+    if (!cached || !cached.profile) return;
+
+    const displayConversations = applySavedContactNamesToConversations(cached.conversations, cached.contacts, cached.profile.id);
+    lastUnreadTotalRef.current = displayConversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
+    hasVisibleBootstrapRef.current = true;
+    setProfile(cached.profile);
+    setContacts(cached.contacts);
+    setConversations(displayConversations);
+    setStatuses(cached.statuses);
+    setLoading(false);
+  }, [session.user.id]);
+
   const loadBootstrap = useCallback(async () => {
     if (!supabase) return;
     const maxAttempts = bootstrapHasLoadedRef.current ? 1 : 3;
@@ -1305,13 +1337,17 @@ function MessengerShell({ session }: { session: Session }) {
         }
         lastUnreadTotalRef.current = nextUnreadTotal;
         bootstrapHasLoadedRef.current = true;
-        const displayConversations = conversationsWithContactNames(data.conversations, data.contacts, data.profile.id);
+        const displayConversations = applySavedContactNamesToConversations(data.conversations, data.contacts, data.profile.id);
         setProfile(data.profile);
         setContacts(data.contacts);
         setConversations(displayConversations);
         setStatuses(data.statuses);
         setError("");
         setLoading(false);
+        void writeBootstrapCache(data.profile.id, {
+          ...data,
+          conversations: displayConversations,
+        }).catch(() => undefined);
         return;
       } catch (nextError) {
         lastError = nextError;
@@ -1321,7 +1357,13 @@ function MessengerShell({ session }: { session: Session }) {
       }
     }
 
-    setError(lastError instanceof Error ? lastError.message : "Unable to load backend data.");
+    setError(
+      hasVisibleBootstrapRef.current
+        ? "Showing saved chats. Could not sync."
+        : lastError instanceof Error
+          ? lastError.message
+          : "Unable to load backend data.",
+    );
     setLoading(false);
   }, [playIncomingHaptic]);
 
@@ -1349,12 +1391,26 @@ function MessengerShell({ session }: { session: Session }) {
     );
   }, []);
 
+  const rememberMessages = useCallback((conversationId: string, messages: ChatMessage[]) => {
+    messagesByConversationRef.current = {
+      ...messagesByConversationRef.current,
+      [conversationId]: messages,
+    };
+  }, []);
+
   const loadMessages = useCallback(async (conversationId: string) => {
     try {
-      const data = await messengerApi.listMessages(conversationId);
+      const data = await messengerApi.listMessages({ conversationId });
+      hasMoreMessagesRef.current = {
+        ...hasMoreMessagesRef.current,
+        [conversationId]: data.hasMore,
+      };
+      let cacheMessages: ChatMessage[] = data.messages;
       setSelectedMessages((current) => {
         const local = current.filter((message) => message.conversationId === conversationId);
         const merged = mergeMessages(data.messages, local);
+        cacheMessages = merged;
+        rememberMessages(conversationId, merged);
         const knownIds = new Set(local.map((message) => message.id));
         const hadLoadedThread = local.some((message) => !message.localState);
         const hasFreshIncoming = hadLoadedThread && merged.some((message) => {
@@ -1378,6 +1434,7 @@ function MessengerShell({ session }: { session: Session }) {
         }
         return merged;
       });
+      void writeConversationMessages(session.user.id, conversationId, cacheMessages).catch(() => undefined);
       markConversationReadLocally(conversationId);
       setError("");
     } catch (nextError) {
@@ -1387,7 +1444,45 @@ function MessengerShell({ session }: { session: Session }) {
     } finally {
       setLoadingMessagesFor((current) => (current === conversationId ? "" : current));
     }
-  }, [markConversationReadLocally, playIncomingHaptic, profileId]);
+  }, [markConversationReadLocally, playIncomingHaptic, profileId, rememberMessages, session.user.id]);
+
+  const loadOlderMessages = useCallback(async (conversationId: string) => {
+    if (loadingOlderFor === conversationId) return;
+    const currentMessages = messagesByConversationRef.current[conversationId] ?? [];
+    const oldest = currentMessages.find((message) => !message.localState);
+    if (!oldest || hasMoreMessagesRef.current[conversationId] === false) return;
+
+    setLoadingOlderFor(conversationId);
+    try {
+      const data = await messengerApi.listMessages({
+        beforeCreatedAt: oldest.createdAt,
+        conversationId,
+      });
+      hasMoreMessagesRef.current = {
+        ...hasMoreMessagesRef.current,
+        [conversationId]: data.hasMore,
+      };
+      let cacheMessages: ChatMessage[] = currentMessages;
+      setSelectedMessages((current) => {
+        const currentForConversation = current.filter((message) => message.conversationId === conversationId);
+        const byId = new Map<string, ChatMessage>();
+        [...data.messages, ...currentForConversation].forEach((message) => {
+          byId.set(message.id, message);
+        });
+        const merged = [...byId.values()].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+        cacheMessages = merged;
+        rememberMessages(conversationId, merged);
+        return merged;
+      });
+      void writeConversationMessages(session.user.id, conversationId, cacheMessages).catch(() => undefined);
+    } catch (nextError) {
+      if (selectedIdRef.current === conversationId) {
+        setError(nextError instanceof Error ? nextError.message : "Unable to load older messages.");
+      }
+    } finally {
+      setLoadingOlderFor((current) => (current === conversationId ? "" : current));
+    }
+  }, [loadingOlderFor, rememberMessages, session.user.id]);
 
   const scheduleBootstrapRefresh = useCallback(() => {
     if (bootstrapRefreshTimer.current) clearTimeout(bootstrapRefreshTimer.current);
@@ -1419,19 +1514,47 @@ function MessengerShell({ session }: { session: Session }) {
   }, []);
 
   useEffect(() => {
+    void hydrateBootstrapFromCache();
+  }, [hydrateBootstrapFromCache]);
+
+  useEffect(() => {
     loadBootstrap();
   }, [loadBootstrap]);
 
   useEffect(() => {
+    let cancelled = false;
     if (!selectedId) {
-      setSelectedMessages([]);
       setLoadingMessagesFor("");
       return;
     }
-    setSelectedMessages([]);
-    setLoadingMessagesFor(selectedId);
-    loadMessages(selectedId);
-  }, [loadMessages, selectedId]);
+    const inMemoryMessages = messagesByConversationRef.current[selectedId] ?? [];
+    if (inMemoryMessages.length) {
+      setSelectedMessages(inMemoryMessages);
+      setLoadingMessagesFor("");
+    } else {
+      setSelectedMessages([]);
+      setLoadingMessagesFor(selectedId);
+    }
+    void readCachedMessages(session.user.id, selectedId)
+      .then((cachedMessages) => {
+        if (cancelled) return;
+        if (cachedMessages.length) {
+          messagesByConversationRef.current = {
+            ...messagesByConversationRef.current,
+            [selectedId]: cachedMessages,
+          };
+          setSelectedMessages(cachedMessages);
+          setLoadingMessagesFor("");
+          return;
+        }
+      })
+      .finally(() => {
+        if (!cancelled) loadMessages(selectedId);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [loadMessages, selectedId, session.user.id]);
 
   useEffect(() => {
     if (!supabase || !selectedId || !profileId) return undefined;
@@ -1761,7 +1884,15 @@ function MessengerShell({ session }: { session: Session }) {
     setDraft("");
     setComposerAttachment(null);
     setError("");
-    setSelectedMessages((current) => [...current, optimisticMessage]);
+    setSelectedMessages((current) => {
+      const next = [...current, optimisticMessage];
+      messagesByConversationRef.current = {
+        ...messagesByConversationRef.current,
+        [selected.id]: next,
+      };
+      return next;
+    });
+    void upsertCachedMessage(profile.id, optimisticMessage).catch(() => undefined);
     updateConversationPreview(optimisticMessage);
 
     try {
@@ -1792,8 +1923,14 @@ function MessengerShell({ session }: { session: Session }) {
         const withoutTemp = current.filter(
           (message) => message.id !== tempId && message.id !== result.message.id,
         );
-        return [...withoutTemp, result.message];
+        const next = [...withoutTemp, result.message];
+        messagesByConversationRef.current = {
+          ...messagesByConversationRef.current,
+          [selected.id]: next,
+        };
+        return next;
       });
+      void replaceCachedMessage(profile.id, selected.id, tempId, result.message).catch(() => undefined);
       updateConversationPreview(result.message);
       void hapticMessageSent();
       if (isTaskManagerAgentConversation(selected)) {
@@ -1803,9 +1940,17 @@ function MessengerShell({ session }: { session: Session }) {
       scheduleMessageRefresh(selected.id);
     } catch (nextError) {
       if (attachment) setComposerAttachment(attachment);
-      setSelectedMessages((current) =>
-        current.map((message) => (message.id === tempId ? { ...message, localState: "failed" } : message)),
-      );
+      void markCachedMessageFailed(profile.id, optimisticMessage).catch(() => undefined);
+      setSelectedMessages((current) => {
+        const next = current.map((message) =>
+          message.id === tempId ? { ...message, localState: "failed" as const } : message,
+        );
+        messagesByConversationRef.current = {
+          ...messagesByConversationRef.current,
+          [selected.id]: next,
+        };
+        return next;
+      });
       setAgentThinkingFor((current) => {
         const next = { ...current };
         delete next[selected.id];
@@ -1902,6 +2047,7 @@ function MessengerShell({ session }: { session: Session }) {
                 currentUserId={profile.id}
                 draft={draft}
                 isWide={isWide}
+                loadingOlder={loadingOlderFor === selected.id}
                 messages={selectedMessages}
                 messagesLoading={loadingMessagesFor === selected.id}
                 onAddMembers={() => setMembersOpen(true)}
@@ -1909,6 +2055,7 @@ function MessengerShell({ session }: { session: Session }) {
                   setForwardingMessage(message);
                   setForwardPickerOpen(true);
                 }}
+                onLoadOlder={() => loadOlderMessages(selected.id)}
                 onOpenAttachmentMenu={() => setAttachmentMenuOpen(true)}
                 onTakePhoto={() => void takePhotoAttachment()}
                 onBack={() => setSelectedId("")}
@@ -2286,6 +2433,8 @@ function ChatPane({
   onBack,
   onAddMembers,
   isWide,
+  loadingOlder,
+  onLoadOlder,
   typingText,
   unsavedPeer,
 }: {
@@ -2311,6 +2460,8 @@ function ChatPane({
   onBack: () => void;
   onAddMembers: () => void;
   isWide: boolean;
+  loadingOlder: boolean;
+  onLoadOlder: () => void;
   typingText: string;
   unsavedPeer: UnsavedPeer | null;
 }) {
@@ -2324,6 +2475,13 @@ function ChatPane({
   const previewStatus = useAudioPlayerStatus(previewPlayer);
   const [voiceComposerOpen, setVoiceComposerOpen] = useState(false);
   const [voiceAttachment, setVoiceAttachment] = useState<ComposerAttachment | null>(null);
+  const canTriggerOlderRef = useRef(false);
+  const contentHeightRef = useRef(0);
+  const lastOlderTriggerAtRef = useRef(0);
+  const preserveOffsetOnNextSizeChangeRef = useRef(false);
+  const previousLastMessageIdRef = useRef("");
+  const scrollOffsetYRef = useRef(0);
+  const waitingForOlderLoadRef = useRef(false);
 
   const scrollToLatest = useCallback((animated = true) => {
     requestAnimationFrame(() => {
@@ -2331,9 +2489,72 @@ function ChatPane({
     });
   }, []);
 
+  const handleContentSizeChange = useCallback((_width: number, height: number) => {
+    const previousHeight = contentHeightRef.current;
+    if (preserveOffsetOnNextSizeChangeRef.current && previousHeight) {
+      const heightDelta = height - previousHeight;
+      if (heightDelta !== 0) {
+        requestAnimationFrame(() => {
+          const nextOffset = Math.max(0, scrollOffsetYRef.current + heightDelta);
+          scrollRef.current?.scrollTo({ y: nextOffset, animated: false });
+          scrollOffsetYRef.current = nextOffset;
+        });
+      }
+      if (!loadingOlder) {
+        preserveOffsetOnNextSizeChangeRef.current = false;
+      }
+    }
+    contentHeightRef.current = height;
+  }, [loadingOlder]);
+
+  const handleMessageScroll = useCallback((event: { nativeEvent: { contentOffset: { y: number } } }) => {
+    const offsetY = event.nativeEvent.contentOffset.y;
+    scrollOffsetYRef.current = offsetY;
+    if (offsetY > 80) {
+      canTriggerOlderRef.current = true;
+      return;
+    }
+    if (!canTriggerOlderRef.current || loadingOlder || messagesLoading) return;
+    const now = Date.now();
+    if (now - lastOlderTriggerAtRef.current < 900) return;
+    lastOlderTriggerAtRef.current = now;
+    waitingForOlderLoadRef.current = true;
+    onLoadOlder();
+  }, [loadingOlder, messagesLoading, onLoadOlder]);
+
+  const lastMessageId = messages[messages.length - 1]?.id ?? "";
+
   useEffect(() => {
+    contentHeightRef.current = 0;
+    previousLastMessageIdRef.current = "";
     scrollToLatest(false);
-  }, [conversation.id, messages.length, scrollToLatest]);
+  }, [conversation.id, scrollToLatest]);
+
+  useEffect(() => {
+    const previousLastMessageId = previousLastMessageIdRef.current;
+    previousLastMessageIdRef.current = lastMessageId;
+    if (!lastMessageId || previousLastMessageId === lastMessageId || loadingOlder) return;
+    scrollToLatest();
+  }, [lastMessageId, loadingOlder, scrollToLatest]);
+
+  useEffect(() => {
+    if (loadingOlder && waitingForOlderLoadRef.current) {
+      preserveOffsetOnNextSizeChangeRef.current = true;
+    }
+    if (!loadingOlder) {
+      waitingForOlderLoadRef.current = false;
+      requestAnimationFrame(() => {
+        if (!waitingForOlderLoadRef.current) preserveOffsetOnNextSizeChangeRef.current = false;
+      });
+    }
+  }, [loadingOlder]);
+
+  useEffect(() => {
+    canTriggerOlderRef.current = false;
+    lastOlderTriggerAtRef.current = 0;
+    preserveOffsetOnNextSizeChangeRef.current = false;
+    waitingForOlderLoadRef.current = false;
+  }, [conversation.id]);
 
   useEffect(() => {
     if (keyboardInset) scrollToLatest(false);
@@ -2471,56 +2692,74 @@ function ChatPane({
       <ScrollView
         contentContainerStyle={[styles.messageList, isDarkTheme && styles.messageListDark]}
         keyboardShouldPersistTaps="handled"
-        onContentSizeChange={() => scrollToLatest()}
+        onContentSizeChange={handleContentSizeChange}
         onLayout={() => scrollToLatest(false)}
+        onScroll={handleMessageScroll}
+        scrollEventThrottle={80}
         ref={scrollRef}
       >
         {messagesLoading ? (
           <MessageListSkeleton />
         ) : messages.length ? (
-          messages.map((message) => {
-            const mine = message.senderId === currentUserId;
-            const sender = conversation.participants.find((participant) => participant.id === message.senderId);
-            const isAudioKind = message.kind === "voice" || message.kind === "audio";
-            return (
-              <View key={message.id} style={[styles.messageWrap, isAudioKind && styles.messageWrapAudio, mine ? styles.messageMine : styles.messageTheirs]}>
-                {!mine && conversation.kind === "group" ? (
-                  <Text style={styles.senderName}>{sender?.displayName ?? "Member"}</Text>
-                ) : null}
-                <Pressable
-                  onLongPress={() => onForwardMessage(message)}
-                  style={[
-                    styles.bubble,
-                    mine ? styles.mineBubble : styles.theirBubble,
-                    isDarkTheme && !mine && styles.theirBubbleDark,
-                  ]}
-                >
-                  {message.forwardedFrom ? (
-                    <View style={styles.forwardedRow}>
-                      <Ionicons color={mine ? "rgba(255,255,255,0.78)" : colors.primaryDark} name="arrow-redo-outline" size={13} />
-                      <Text style={[styles.forwardedText, mine && styles.forwardedTextMine]}>
-                        Forwarded from {message.forwardedFrom.senderName}
-                      </Text>
+          <>
+            {loadingOlder ? (
+              <View style={[styles.olderMessagesLoader, isDarkTheme && styles.olderMessagesLoaderDark]}>
+                <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} size="small" />
+              </View>
+            ) : null}
+            {messages.map((message, index) => {
+              const mine = message.senderId === currentUserId;
+              const sender = conversation.participants.find((participant) => participant.id === message.senderId);
+              const isAudioKind = message.kind === "voice" || message.kind === "audio";
+              const previous = messages[index - 1];
+              const showDate = !previous || messageDateKey(previous.createdAt) !== messageDateKey(message.createdAt);
+              return (
+                <View key={message.id} style={styles.messageWithDate}>
+                  {showDate ? (
+                    <View style={[styles.datePill, isDarkTheme && styles.datePillDark]}>
+                      <Text style={[styles.datePillText, isDarkTheme && styles.datePillTextDark]}>{messageDateLabel(message.createdAt)}</Text>
                     </View>
                   ) : null}
-                  {message.attachments[0] ? <MessageAttachmentCard attachment={message.attachments[0]} mine={mine} /> : null}
-                  {message.body ? <MessageBody mine={mine} text={message.body} /> : null}
-                  <View style={styles.messageMeta}>
-                    <Text style={[styles.metaText, mine && styles.metaTextMine]}>{formatTime(message.createdAt)}</Text>
-                    {mine && message.localState === "sending" ? (
-                      <ActivityIndicator color={colors.primarySoft} size="small" />
+                  <View style={[styles.messageWrap, isAudioKind && styles.messageWrapAudio, mine ? styles.messageMine : styles.messageTheirs]}>
+                    {!mine && conversation.kind === "group" ? (
+                      <Text style={styles.senderName}>{sender?.displayName ?? "Member"}</Text>
                     ) : null}
-                    {mine && message.localState === "failed" ? (
-                      <Ionicons color={colors.danger} name="alert-circle" size={15} />
-                    ) : null}
-                    {mine && !message.localState ? (
-                      <Ionicons color={colors.primarySoft} name="checkmark-done" size={15} />
-                    ) : null}
+                    <Pressable
+                      onLongPress={() => onForwardMessage(message)}
+                      style={[
+                        styles.bubble,
+                        mine ? styles.mineBubble : styles.theirBubble,
+                        isDarkTheme && !mine && styles.theirBubbleDark,
+                      ]}
+                    >
+                      {message.forwardedFrom ? (
+                        <View style={styles.forwardedRow}>
+                          <Ionicons color={mine ? "rgba(255,255,255,0.78)" : colors.primaryDark} name="arrow-redo-outline" size={13} />
+                          <Text style={[styles.forwardedText, mine && styles.forwardedTextMine]}>
+                            Forwarded from {message.forwardedFrom.senderName}
+                          </Text>
+                        </View>
+                      ) : null}
+                      {message.attachments[0] ? <MessageAttachmentCard attachment={message.attachments[0]} mine={mine} /> : null}
+                      {message.body ? <MessageBody mine={mine} text={message.body} /> : null}
+                      <View style={styles.messageMeta}>
+                        <Text style={[styles.metaText, mine && styles.metaTextMine]}>{formatTime(message.createdAt)}</Text>
+                        {mine && message.localState === "sending" ? (
+                          <ActivityIndicator color={colors.primarySoft} size="small" />
+                        ) : null}
+                        {mine && message.localState === "failed" ? (
+                          <Ionicons color={colors.danger} name="alert-circle" size={15} />
+                        ) : null}
+                        {mine && !message.localState ? (
+                          <Ionicons color={colors.primarySoft} name="checkmark-done" size={15} />
+                        ) : null}
+                      </View>
+                    </Pressable>
                   </View>
-                </Pressable>
-              </View>
-            );
-          })
+                </View>
+              );
+            })}
+          </>
         ) : (
           <EmptyState icon="lock-closed-outline" title="No messages" copy="Send the first message in this conversation." compact />
         )}
@@ -3993,6 +4232,30 @@ const styles = StyleSheet.create({
   chatHeaderSubTyping: { color: "#FFFFFF", fontWeight: "800" },
   messageList: { flexGrow: 1, padding: 18, gap: 12, backgroundColor: colors.page },
   messageListDark: { backgroundColor: "#101421" },
+  olderMessagesLoader: {
+    alignSelf: "center",
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.line,
+  },
+  olderMessagesLoaderDark: { backgroundColor: "#1B2235", borderColor: "rgba(255,255,255,0.10)" },
+  messageWithDate: { gap: 12 },
+  datePill: {
+    alignSelf: "center",
+    minHeight: 28,
+    justifyContent: "center",
+    paddingHorizontal: 13,
+    borderRadius: radii.pill,
+    backgroundColor: "rgba(23,18,36,0.10)",
+  },
+  datePillDark: { backgroundColor: "rgba(255,255,255,0.12)" },
+  datePillText: { color: colors.muted, fontSize: 12, fontWeight: "900" },
+  datePillTextDark: { color: "rgba(255,255,255,0.70)" },
   messageWrap: { width: "78%", maxWidth: "78%", minWidth: 0, flexShrink: 1 },
   messageWrapAudio: { width: "90%", maxWidth: "90%" },
   messageMine: { alignSelf: "flex-end" },

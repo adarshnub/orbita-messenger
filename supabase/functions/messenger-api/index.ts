@@ -526,20 +526,34 @@ async function loadContacts(supabase: SupabaseClient, userId: string) {
   });
 }
 
-async function loadMessages(supabase: SupabaseClient, userId: string, conversationId: string) {
+async function loadMessages(
+  supabase: SupabaseClient,
+  userId: string,
+  conversationId: string,
+  options: { beforeCreatedAt?: string; limit?: number } = {},
+) {
   await getConversation(supabase, userId, conversationId);
-  const { data, error } = await supabase
+  const limit = Math.min(Math.max(Number(options.limit) || 100, 1), 100);
+  let query = supabase
     .from("messages")
     .select("*")
     .eq("conversation_id", conversationId)
     .is("deleted_at", null)
-    .order("created_at", { ascending: false })
-    .limit(100);
+    .order("created_at", { ascending: false });
+  if (options.beforeCreatedAt) {
+    query = query.lt("created_at", options.beforeCreatedAt);
+  }
+  const { data, error } = await query.limit(limit + 1);
 
   if (error) throw error;
-  const messages = [...(data ?? [])].reverse();
+  const rows = data ?? [];
+  const hasMore = rows.length > limit;
+  const messages = rows.slice(0, limit).reverse();
   const attachmentsByMessageId = await loadAttachmentRowsForMessageIds(supabase, messages.map((message) => String(message.id)));
-  return messages.map((message) => mapMessage(message, attachmentsByMessageId.get(String(message.id)) ?? []));
+  return {
+    hasMore,
+    messages: messages.map((message) => mapMessage(message, attachmentsByMessageId.get(String(message.id)) ?? [])),
+  };
 }
 
 async function unreadCountForConversation(supabase: SupabaseClient, userId: string, conversationId: string) {
@@ -1180,7 +1194,10 @@ async function handleAction(supabase: SupabaseClient, user: User, action: string
   }
 
   if (action === "list_messages") {
-    return { messages: await loadMessages(supabase, user.id, requiredString(payload, "conversationId")) };
+    return await loadMessages(supabase, user.id, requiredString(payload, "conversationId"), {
+      beforeCreatedAt: optionalString(payload, "beforeCreatedAt"),
+      limit: typeof payload.limit === "number" ? payload.limit : undefined,
+    });
   }
 
   if (action === "mark_conversation_read") {

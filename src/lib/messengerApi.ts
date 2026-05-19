@@ -210,8 +210,9 @@ export const messengerApi = {
       memberIds,
     });
   },
-  listMessages(conversationId: string) {
-    return callApi<{ messages: BackendMessage[] }>("list_messages", { conversationId });
+  listMessages(input: string | { beforeCreatedAt?: string; conversationId: string; limit?: number }) {
+    const payload = typeof input === "string" ? { conversationId: input } : input;
+    return callApi<{ hasMore: boolean; messages: BackendMessage[] }>("list_messages", payload);
   },
   markConversationRead(conversationId: string) {
     return callApi<{ ok: true }>("mark_conversation_read", { conversationId });

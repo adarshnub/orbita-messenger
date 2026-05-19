@@ -666,19 +666,28 @@ async function loadContacts(userId) {
   return (data ?? []).map((row) => mapProfile({ ...(row.profiles ?? {}), nickname: row.nickname }, userId));
 }
 
-async function loadMessages(userId, conversationId) {
+async function loadMessages(userId, conversationId, options = {}) {
   await getConversation(userId, conversationId);
-  const { data, error } = await supabase
+  const limit = Math.min(Math.max(Number(options.limit) || 100, 1), 100);
+  let query = supabase
     .from("messages")
     .select("*")
     .eq("conversation_id", conversationId)
     .is("deleted_at", null)
-    .order("created_at", { ascending: false })
-    .limit(100);
+    .order("created_at", { ascending: false });
+  if (typeof options.beforeCreatedAt === "string" && options.beforeCreatedAt) {
+    query = query.lt("created_at", options.beforeCreatedAt);
+  }
+  const { data, error } = await query.limit(limit + 1);
   if (error) throw error;
-  const messages = [...(data ?? [])].reverse();
+  const rows = data ?? [];
+  const hasMore = rows.length > limit;
+  const messages = rows.slice(0, limit).reverse();
   const attachmentsByMessageId = await loadAttachmentRowsForMessageIds(messages.map((message) => message.id));
-  return messages.map((message) => mapMessage(message, attachmentsByMessageId.get(message.id) ?? []));
+  return {
+    hasMore,
+    messages: messages.map((message) => mapMessage(message, attachmentsByMessageId.get(message.id) ?? [])),
+  };
 }
 
 async function unreadCountForConversation(userId, conversationId) {
@@ -1253,7 +1262,10 @@ async function handleAction(user, action, payload) {
   }
 
   if (action === "list_messages") {
-    return { messages: await loadMessages(user.id, requiredString(payload, "conversationId")) };
+    return await loadMessages(user.id, requiredString(payload, "conversationId"), {
+      beforeCreatedAt: optionalString(payload, "beforeCreatedAt"),
+      limit: typeof payload.limit === "number" ? payload.limit : undefined,
+    });
   }
 
   if (action === "mark_conversation_read") {
