@@ -32,6 +32,8 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
   },
 });
 
+const TASK_MANAGER_ORBITA_CHANNEL = "orbita";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": process.env.ORBITA_CORS_ORIGIN || "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-orbita-signature",
@@ -990,6 +992,9 @@ async function forwardTaskmanagerInbound(conversationId, senderId, message, atta
   const raw = JSON.stringify({
     taskmanagerOrgId: link.taskmanager_org_id,
     taskmanagerUserId: link.taskmanager_user_id,
+    channel: TASK_MANAGER_ORBITA_CHANNEL,
+    connection: TASK_MANAGER_ORBITA_CHANNEL,
+    userConnection: TASK_MANAGER_ORBITA_CHANNEL,
     conversationId,
     orbitaUserId: senderId,
     messageId: message.id,
@@ -1041,7 +1046,13 @@ async function handleServiceAction(action, payload) {
       .maybeSingle();
     if (existingError) throw existingError;
     if (existing?.enabled) {
-      return { orbitaProfileId: existing.orbita_user_id, conversationId: existing.conversation_id };
+      return {
+        orbitaProfileId: existing.orbita_user_id,
+        conversationId: existing.conversation_id,
+        channel: TASK_MANAGER_ORBITA_CHANNEL,
+        connection: TASK_MANAGER_ORBITA_CHANNEL,
+        userConnection: TASK_MANAGER_ORBITA_CHANNEL,
+      };
     }
 
     const agentProfileId = await ensureTaskmanagerAgentProfile(taskmanagerOrgId, agentDisplayName);
@@ -1065,7 +1076,13 @@ async function handleServiceAction(action, payload) {
       .single();
     if (linkError) throw linkError;
 
-    return { orbitaProfileId: link.orbita_user_id, conversationId: link.conversation_id };
+    return {
+      orbitaProfileId: link.orbita_user_id,
+      conversationId: link.conversation_id,
+      channel: TASK_MANAGER_ORBITA_CHANNEL,
+      connection: TASK_MANAGER_ORBITA_CHANNEL,
+      userConnection: TASK_MANAGER_ORBITA_CHANNEL,
+    };
   }
 
   if (action === "send_agent_message") {

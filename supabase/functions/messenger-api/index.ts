@@ -6,6 +6,8 @@ type ApiRequest = {
   payload?: Record<string, unknown>;
 };
 
+const TASK_MANAGER_ORBITA_CHANNEL = "orbita";
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-orbita-signature",
@@ -912,6 +914,9 @@ async function forwardTaskmanagerInbound(
   const raw = JSON.stringify({
     taskmanagerOrgId: link.taskmanager_org_id,
     taskmanagerUserId: link.taskmanager_user_id,
+    channel: TASK_MANAGER_ORBITA_CHANNEL,
+    connection: TASK_MANAGER_ORBITA_CHANNEL,
+    userConnection: TASK_MANAGER_ORBITA_CHANNEL,
     conversationId,
     orbitaUserId: senderId,
     messageId: message.id,
@@ -969,6 +974,9 @@ async function handleServiceAction(
       return {
         orbitaProfileId: existing.orbita_user_id,
         conversationId: existing.conversation_id,
+        channel: TASK_MANAGER_ORBITA_CHANNEL,
+        connection: TASK_MANAGER_ORBITA_CHANNEL,
+        userConnection: TASK_MANAGER_ORBITA_CHANNEL,
       };
     }
 
@@ -996,6 +1004,9 @@ async function handleServiceAction(
     return {
       orbitaProfileId: link.orbita_user_id,
       conversationId: link.conversation_id,
+      channel: TASK_MANAGER_ORBITA_CHANNEL,
+      connection: TASK_MANAGER_ORBITA_CHANNEL,
+      userConnection: TASK_MANAGER_ORBITA_CHANNEL,
     };
   }
 
