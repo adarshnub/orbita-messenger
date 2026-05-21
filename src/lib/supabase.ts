@@ -23,8 +23,7 @@ export const supabase = hasSupabaseConfig
     })
   : null;
 
-export async function signInWithEmail(
-  email: string,
+export async function signInWithPhone(
   phone: string,
   options: { displayName?: string; shouldCreateUser?: boolean } = {},
 ) {
@@ -33,35 +32,33 @@ export async function signInWithEmail(
   }
 
   return supabase.auth.signInWithOtp({
-    email,
+    phone,
     options: {
       shouldCreateUser: options.shouldCreateUser ?? true,
       data: {
         display_name: options.displayName,
-        phone,
       },
     },
   });
 }
 
-export async function verifyEmailOtp(email: string, token: string, phone?: string, displayName?: string) {
+export async function verifyPhoneOtp(phone: string, token: string, displayName?: string) {
   if (!supabase) {
     return { error: new Error("Supabase is not configured. Add .env credentials first.") };
   }
 
-  const result = await supabase.auth.verifyOtp({ email, token, type: "email" });
-  if (!result.error && (phone || displayName)) {
+  const result = await supabase.auth.verifyOtp({ phone, token, type: "sms" });
+  if (!result.error && displayName) {
     await supabase.auth.updateUser({
       data: {
         display_name: displayName,
-        phone,
       },
     });
   }
   return result;
 }
 
-export async function signInWithDevOtpBypass(email: string, phone: string, displayName?: string) {
+export async function signInWithDevOtpBypass(phone: string, displayName?: string) {
   if (!supabase) {
     return { error: new Error("Supabase is not configured. Add .env credentials first.") };
   }
@@ -70,7 +67,6 @@ export async function signInWithDevOtpBypass(email: string, phone: string, displ
     options: {
       data: {
         display_name: displayName,
-        email,
         phone,
       },
     },

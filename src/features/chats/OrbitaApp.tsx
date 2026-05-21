@@ -69,9 +69,9 @@ import { normalizePhone } from "@/lib/phone";
 import {
   hasSupabaseConfig,
   signInWithDevOtpBypass,
-  signInWithEmail,
+  signInWithPhone,
   supabase,
-  verifyEmailOtp,
+  verifyPhoneOtp,
 } from "@/lib/supabase";
 import { subscribeMessengerRealtime } from "@/lib/messengerRealtime";
 import { colors, radii, shadow } from "@/theme/colors";
@@ -772,7 +772,6 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
   const { width } = useWindowDimensions();
   const [authMode, setAuthMode] = useState<AuthMode>("signin");
   const [displayName, setDisplayName] = useState("");
-  const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
@@ -804,13 +803,8 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
   }
 
   async function requestOtp(isResend = false) {
-    const normalizedEmail = email.trim().toLowerCase();
     const normalizedPhone = normalizePhone(phone);
     const normalizedName = displayName.trim();
-    if (!normalizedEmail || !normalizedEmail.includes("@")) {
-      setNotice("Enter a valid email address first.");
-      return;
-    }
     if (!normalizedPhone) {
       setNotice("Enter your phone number first.");
       return;
@@ -826,7 +820,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
     }
 
     setLoading(true);
-    const result = await signInWithEmail(normalizedEmail, normalizedPhone, {
+    const result = await signInWithPhone(normalizedPhone, {
       displayName: authMode === "signup" ? normalizedName : undefined,
       shouldCreateUser: authMode === "signup",
     });
@@ -843,7 +837,6 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
       return;
     }
 
-    setEmail(normalizedEmail);
     setPhone(normalizedPhone);
     setDisplayName(normalizedName);
     setOtp("");
@@ -851,8 +844,8 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
     setResendSeconds(OTP_RESEND_SECONDS);
     setNotice(
       DEV_OTP_ENABLED
-        ? `${isResend ? "New OTP sent" : "OTP sent"} to your email. Enter the code, or use ${DEV_BYPASS_OTP} for local testing.`
-        : `${isResend ? "New OTP sent" : "OTP sent"} to your email. Enter the code to continue.`,
+        ? `${isResend ? "New OTP sent" : "OTP sent"} to your phone. Enter the code, or use ${DEV_BYPASS_OTP} for local testing.`
+        : `${isResend ? "New OTP sent" : "OTP sent"} to your phone. Enter the code to continue.`,
     );
   }
 
@@ -862,7 +855,6 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
       return;
     }
 
-    const normalizedEmail = email.trim().toLowerCase();
     const normalizedPhone = normalizePhone(phone);
     const normalizedName = displayName.trim();
     const isDevBypass = DEV_OTP_ENABLED && otp.trim() === DEV_BYPASS_OTP;
@@ -874,8 +866,8 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
 
     setLoading(true);
     const result = isDevBypass
-      ? await signInWithDevOtpBypass(normalizedEmail, normalizedPhone, authMode === "signup" ? normalizedName : undefined)
-      : await verifyEmailOtp(normalizedEmail, otp.trim(), normalizedPhone, authMode === "signup" ? normalizedName : undefined);
+      ? await signInWithDevOtpBypass(normalizedPhone, authMode === "signup" ? normalizedName : undefined)
+      : await verifyPhoneOtp(normalizedPhone, otp.trim(), authMode === "signup" ? normalizedName : undefined);
     setLoading(false);
 
     if (result.error) {
@@ -892,11 +884,11 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
       ? "Create your Orbita"
       : "Welcome back";
   const authCopy = otpSent
-    ? `We sent a one-time code to ${email || "your email"}.`
+    ? `We sent a one-time code to ${phone || "your phone"}.`
     : authMode === "signup"
-      ? "Build your AI-ready messaging profile with email OTP and a verified phone number."
-      : "Sign in with your email OTP and phone number to continue your encrypted workspace.";
-  const primaryLabel = otpSent ? "Verify and continue" : authMode === "signup" ? "Create account" : "Send email OTP";
+      ? "Build your AI-ready messaging profile with a verified phone number."
+      : "Sign in with your phone OTP to continue your encrypted workspace.";
+  const primaryLabel = otpSent ? "Verify and continue" : authMode === "signup" ? "Create account" : "Send phone OTP";
   const resendLabel = resendSeconds > 0 ? `Resend in ${resendSeconds}s` : "Resend OTP";
   const authIconColor = isDarkTheme ? colors.accent : colors.primaryDark;
   const authPlaceholderColor = isDarkTheme ? "rgba(255,255,255,0.52)" : "rgba(23,18,36,0.42)";
@@ -996,20 +988,6 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                     />
                   </View>
                 ) : null}
-                <View style={[styles.inputShell, !isDarkTheme && styles.inputShellLight]}>
-                  <Ionicons color={authIconColor} name="mail-outline" size={18} />
-                  <TextInput
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    editable={!otpSent && !loading}
-                    keyboardType="email-address"
-                    onChangeText={setEmail}
-                    placeholder="you@example.com"
-                    placeholderTextColor={authPlaceholderColor}
-                    style={[styles.loginInput, !isDarkTheme && styles.loginInputLight]}
-                    value={email}
-                  />
-                </View>
                 <View style={[styles.inputShell, !isDarkTheme && styles.inputShellLight]}>
                   <Ionicons color={authIconColor} name="call-outline" size={18} />
                   <TextInput
