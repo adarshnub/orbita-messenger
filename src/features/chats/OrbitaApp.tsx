@@ -1141,7 +1141,11 @@ function MessengerShell({ session }: { session: Session }) {
 
   useEffect(() => {
     const activeConversationId = selectedIdRef.current;
-    if (activeConversationId && selectedMessages.length) {
+    if (
+      activeConversationId &&
+      selectedMessages.length &&
+      selectedMessages.every((message) => message.conversationId === activeConversationId)
+    ) {
       messagesByConversationRef.current = {
         ...messagesByConversationRef.current,
         [activeConversationId]: selectedMessages,
@@ -1383,36 +1387,36 @@ function MessengerShell({ session }: { session: Session }) {
         ...hasMoreMessagesRef.current,
         [conversationId]: data.hasMore,
       };
-      let cacheMessages: ChatMessage[] = data.messages;
-      setSelectedMessages((current) => {
-        const local = current.filter((message) => message.conversationId === conversationId);
-        const merged = mergeMessages(data.messages, local);
-        cacheMessages = merged;
-        rememberMessages(conversationId, merged);
-        const knownIds = new Set(local.map((message) => message.id));
-        const hadLoadedThread = local.some((message) => !message.localState);
-        const hasFreshIncoming = hadLoadedThread && merged.some((message) => {
-          if (message.senderId === profileId || knownIds.has(message.id)) return false;
-          return Date.now() - Date.parse(message.createdAt) < 60_000;
-        });
-        if (hasFreshIncoming) playIncomingHaptic();
-        const thinkingSince = agentThinkingForRef.current[conversationId];
-        if (thinkingSince) {
-          const since = Date.parse(thinkingSince);
-          const gotAgentReply = merged.some(
-            (message) => message.senderId !== profileId && Date.parse(message.createdAt) >= since,
-          );
-          if (gotAgentReply) {
-            setAgentThinkingFor((currentThinking) => {
-              const next = { ...currentThinking };
-              delete next[conversationId];
-              return next;
-            });
-          }
-        }
-        return merged;
+      const local = (messagesByConversationRef.current[conversationId] ?? []).filter(
+        (message) => message.conversationId === conversationId,
+      );
+      const merged = mergeMessages(data.messages, local);
+      rememberMessages(conversationId, merged);
+      if (selectedIdRef.current === conversationId) {
+        setSelectedMessages(merged);
+      }
+      const knownIds = new Set(local.map((message) => message.id));
+      const hadLoadedThread = local.some((message) => !message.localState);
+      const hasFreshIncoming = hadLoadedThread && merged.some((message) => {
+        if (message.senderId === profileId || knownIds.has(message.id)) return false;
+        return Date.now() - Date.parse(message.createdAt) < 60_000;
       });
-      void writeConversationMessages(session.user.id, conversationId, cacheMessages).catch(() => undefined);
+      if (hasFreshIncoming) playIncomingHaptic();
+      const thinkingSince = agentThinkingForRef.current[conversationId];
+      if (thinkingSince) {
+        const since = Date.parse(thinkingSince);
+        const gotAgentReply = merged.some(
+          (message) => message.senderId !== profileId && Date.parse(message.createdAt) >= since,
+        );
+        if (gotAgentReply) {
+          setAgentThinkingFor((currentThinking) => {
+            const next = { ...currentThinking };
+            delete next[conversationId];
+            return next;
+          });
+        }
+      }
+      void writeConversationMessages(session.user.id, conversationId, merged).catch(() => undefined);
       markConversationReadLocally(conversationId);
       setError("");
     } catch (nextError) {
@@ -1440,19 +1444,19 @@ function MessengerShell({ session }: { session: Session }) {
         ...hasMoreMessagesRef.current,
         [conversationId]: data.hasMore,
       };
-      let cacheMessages: ChatMessage[] = currentMessages;
-      setSelectedMessages((current) => {
-        const currentForConversation = current.filter((message) => message.conversationId === conversationId);
-        const byId = new Map<string, ChatMessage>();
-        [...data.messages, ...currentForConversation].forEach((message) => {
-          byId.set(message.id, message);
-        });
-        const merged = [...byId.values()].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-        cacheMessages = merged;
-        rememberMessages(conversationId, merged);
-        return merged;
+      const currentForConversation = (messagesByConversationRef.current[conversationId] ?? currentMessages).filter(
+        (message) => message.conversationId === conversationId,
+      );
+      const byId = new Map<string, ChatMessage>();
+      [...data.messages, ...currentForConversation].forEach((message) => {
+        byId.set(message.id, message);
       });
-      void writeConversationMessages(session.user.id, conversationId, cacheMessages).catch(() => undefined);
+      const merged = [...byId.values()].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+      rememberMessages(conversationId, merged);
+      if (selectedIdRef.current === conversationId) {
+        setSelectedMessages(merged);
+      }
+      void writeConversationMessages(session.user.id, conversationId, merged).catch(() => undefined);
     } catch (nextError) {
       if (selectedIdRef.current === conversationId) {
         setError(nextError instanceof Error ? nextError.message : "Unable to load older messages.");
@@ -1503,6 +1507,7 @@ function MessengerShell({ session }: { session: Session }) {
     let cancelled = false;
     if (!selectedId) {
       setLoadingMessagesFor("");
+      setSelectedMessages([]);
       return;
     }
     const inMemoryMessages = messagesByConversationRef.current[selectedId] ?? [];
@@ -1630,6 +1635,8 @@ function MessengerShell({ session }: { session: Session }) {
     const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
       if (selectedId) {
         setSelectedId("");
+        setSelectedMessages([]);
+        setLoadingMessagesFor("");
         setActiveTab("chats");
         return true;
       }
@@ -1668,6 +1675,21 @@ function MessengerShell({ session }: { session: Session }) {
     setComposerAttachment(null);
     setAttachmentMenuOpen(false);
   }, [selectedId]);
+
+  const selectConversation = useCallback((conversationId: string) => {
+    if (!conversationId) {
+      setSelectedId("");
+      setSelectedMessages([]);
+      setLoadingMessagesFor("");
+      return;
+    }
+
+    const inMemoryMessages = messagesByConversationRef.current[conversationId] ?? [];
+    setSelectedMessages(inMemoryMessages);
+    setLoadingMessagesFor(inMemoryMessages.length ? "" : conversationId);
+    setSelectedId(conversationId);
+    setActiveTab("chats");
+  }, []);
 
   const existingDirectByContactId = useMemo(() => {
     const directMap = new Map<string, BackendConversation>();
@@ -1729,14 +1751,12 @@ function MessengerShell({ session }: { session: Session }) {
     await run(async () => {
       const existingConversationId = existingDirectByContactId.get(otherUserId)?.id;
       if (existingConversationId) {
-        setSelectedId(existingConversationId);
-        setActiveTab("chats");
+        selectConversation(existingConversationId);
         return;
       }
       const result = await messengerApi.createDirectConversation(otherUserId);
       await loadBootstrap();
-      setSelectedId(result.conversation.id);
-      setActiveTab("chats");
+      selectConversation(result.conversation.id);
     });
   }
 
@@ -1940,7 +1960,7 @@ function MessengerShell({ session }: { session: Session }) {
 
   function changeTab(tab: Tab) {
     setActiveTab(tab);
-    if (tab !== "chats") setSelectedId("");
+    if (tab !== "chats") selectConversation("");
   }
 
   if (loading) {
@@ -2007,10 +2027,7 @@ function MessengerShell({ session }: { session: Session }) {
                 onNewStatus={() => setStatusOpen(true)}
                 onOpenProfile={() => setProfileOpen(true)}
                 onOpenContact={openContactConversation}
-                onSelect={(id) => {
-                  setSelectedId(id);
-                  setActiveTab("chats");
-                }}
+                onSelect={selectConversation}
                 profile={profile}
                 selectedId={selected?.id}
                 statuses={statuses}
@@ -2026,7 +2043,7 @@ function MessengerShell({ session }: { session: Session }) {
                 draft={draft}
                 isWide={isWide}
                 loadingOlder={loadingOlderFor === selected.id}
-                messages={selectedMessages}
+                messages={selectedMessages.filter((message) => message.conversationId === selected.id)}
                 messagesLoading={loadingMessagesFor === selected.id}
                 onAddMembers={() => setMembersOpen(true)}
                 onForwardMessage={(message) => {
@@ -2036,7 +2053,7 @@ function MessengerShell({ session }: { session: Session }) {
                 onLoadOlder={() => loadOlderMessages(selected.id)}
                 onOpenAttachmentMenu={() => setAttachmentMenuOpen(true)}
                 onTakePhoto={() => void takePhotoAttachment()}
-                onBack={() => setSelectedId("")}
+                onBack={() => selectConversation("")}
                 onRemoveAttachment={() => setComposerAttachment(null)}
                 onSend={(nextKind, nextBody, nextAttachment) => sendMessage(nextKind, nextBody, nextAttachment)}
                 onSaveContact={() => {
@@ -2087,8 +2104,7 @@ function MessengerShell({ session }: { session: Session }) {
             const result = await messengerApi.createGroup(title, memberIds);
             setGroupOpen(false);
             await loadBootstrap();
-            setSelectedId(result.conversation.id);
-            setActiveTab("chats");
+            selectConversation(result.conversation.id);
           });
         }}
         visible={groupOpen}
