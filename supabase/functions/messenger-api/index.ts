@@ -997,6 +997,42 @@ async function handleServiceAction(
     const agentProfileId = await ensureTaskmanagerAgentProfile(supabase, taskmanagerOrgId, agentDisplayName);
     const conversation = await createDirectConversation(supabase, agentProfileId, orbitaProfile.id as string);
 
+    const { data: conversationLink, error: conversationLinkError } = await supabase
+      .from("taskmanager_agent_links")
+      .select("*")
+      .eq("conversation_id", conversation.id)
+      .maybeSingle();
+    if (conversationLinkError) throw conversationLinkError;
+    if (conversationLink) {
+      const belongsToSameOrbitaUser =
+        conversationLink.taskmanager_org_id === taskmanagerOrgId &&
+        conversationLink.orbita_user_id === orbitaProfile.id &&
+        conversationLink.agent_profile_id === agentProfileId;
+      if (!belongsToSameOrbitaUser) {
+        throw new Error("This Orbita conversation is already linked to another Task Manager employee.");
+      }
+
+      const { data: reassignedLink, error: reassignError } = await supabase
+        .from("taskmanager_agent_links")
+        .update({
+          taskmanager_user_id: taskmanagerUserId,
+          enabled: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", conversationLink.id)
+        .select()
+        .single();
+      if (reassignError) throw reassignError;
+
+      return {
+        orbitaProfileId: reassignedLink.orbita_user_id,
+        conversationId: reassignedLink.conversation_id,
+        channel: TASK_MANAGER_ORBITA_CHANNEL,
+        connection: TASK_MANAGER_ORBITA_CHANNEL,
+        userConnection: TASK_MANAGER_ORBITA_CHANNEL,
+      };
+    }
+
     const { data: link, error: linkError } = await supabase
       .from("taskmanager_agent_links")
       .upsert(

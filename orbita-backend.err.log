@@ -1,0 +1,4 @@
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1070:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:97:26)

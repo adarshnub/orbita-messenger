@@ -1,0 +1,5 @@
+
+> orbita-messenger@0.1.0 backend
+> node backend/server.mjs
+
+Orbita backend listening on http://0.0.0.0:8787
