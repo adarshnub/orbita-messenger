@@ -34,6 +34,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 
 const TASK_MANAGER_ORBITA_CHANNEL = "orbita";
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
+const PUSH_DEBUG = process.env.ORBITA_PUSH_DEBUG === "1";
 
 createServer(async (req, res) => {
   const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -381,6 +382,26 @@ function pushPreviewForMessage(kind, body) {
   return "New message";
 }
 
+function notificationCopyForConversation(conversation, senderName, preview) {
+  if (conversation.kind === "group") {
+    const groupTitle =
+      typeof conversation.title === "string" && conversation.title.trim()
+        ? conversation.title.trim()
+        : "Group";
+    return {
+      title: "Orbita",
+      subtitle: groupTitle,
+      body: `${senderName}: ${preview}`,
+    };
+  }
+
+  return {
+    title: "Orbita",
+    subtitle: senderName,
+    body: preview,
+  };
+}
+
 function isExpoPushToken(value) {
   return typeof value === "string" && /^(Exponent|Expo)PushToken\[[^\]]+\]$/.test(value.trim());
 }
@@ -402,7 +423,10 @@ async function sendPushNotificationsForMessage({
   senderId,
 }) {
   const recipients = [...new Set(recipientUserIds)].filter(Boolean);
-  if (!recipients.length) return;
+  if (!recipients.length) {
+    if (PUSH_DEBUG) console.log("[push] no recipients", { conversationId, messageId, senderId });
+    return;
+  }
 
   const [senderRes, conversationRes, recipientRes] = await Promise.all([
     supabase.from("profiles").select("id, display_name").eq("id", senderId).single(),
@@ -415,15 +439,15 @@ async function sendPushNotificationsForMessage({
 
   const senderName = profileDisplayName(senderRes.data, "");
   const conversation = conversationRes.data;
-  const title =
-    conversation.kind === "group"
-      ? (typeof conversation.title === "string" && conversation.title.trim()) || senderName
-      : senderName;
   const notificationBody = pushPreviewForMessage(kind, body);
+  const copy = notificationCopyForConversation(conversation, senderName, notificationBody);
   const tokens = [...new Set((recipientRes.data ?? [])
     .map((row) => (typeof row.expo_push_token === "string" ? row.expo_push_token.trim() : ""))
     .filter(isExpoPushToken))];
-  if (!tokens.length) return;
+  if (!tokens.length) {
+    if (PUSH_DEBUG) console.log("[push] recipients have no expo tokens", { conversationId, messageId, recipients });
+    return;
+  }
 
   const accessToken = process.env.EXPO_PUSH_ACCESS_TOKEN?.trim();
   const headers = {
@@ -435,13 +459,24 @@ async function sendPushNotificationsForMessage({
 
   const messages = tokens.map((to) => ({
     to,
-    title,
-    body: notificationBody,
+    title: copy.title,
+    subtitle: copy.subtitle,
+    body: copy.body,
     data: { conversationId, messageId, senderId },
     sound: "default",
     channelId: "messages",
     priority: "high",
   }));
+  if (PUSH_DEBUG) {
+    console.log("[push] sending", {
+      conversationId,
+      messageId,
+      recipients: recipients.length,
+      tokens: tokens.length,
+      title: copy.title,
+      subtitle: copy.subtitle,
+    });
+  }
 
   for (const batch of chunkArray(messages, 100)) {
     const response = await fetch(EXPO_PUSH_ENDPOINT, {
@@ -458,6 +493,8 @@ async function sendPushNotificationsForMessage({
     const erroredTickets = resultData.filter((item) => item?.status === "error");
     if (erroredTickets.length) {
       console.error(`Expo push ticket errors: ${JSON.stringify(erroredTickets)}`);
+    } else if (PUSH_DEBUG) {
+      console.log("[push] ticket ok", resultData.map((item) => item?.id).filter(Boolean));
     }
   }
 }
@@ -664,6 +701,21 @@ async function insertMessageWithReceipts(conversationId, senderId, kind, payload
   }
 
   return message;
+}
+
+async function ensureConversationParticipants(conversationId, participants) {
+  const rows = participants
+    .filter((participant) => participant?.user_id)
+    .map((participant) => ({
+      conversation_id: conversationId,
+      user_id: participant.user_id,
+      role: participant.role || "member",
+    }));
+  if (!rows.length) return;
+  const { error } = await supabase
+    .from("conversation_participants")
+    .upsert(rows, { onConflict: "conversation_id,user_id", ignoreDuplicates: false });
+  if (error) throw error;
 }
 
 async function ensureProfile(user) {
@@ -1275,6 +1327,14 @@ async function handleServiceAction(action, payload) {
       .eq("enabled", true)
       .single();
     if (error) throw error;
+
+    // Some older links may point to conversations missing one side due to
+    // partial setup from previous flows. Heal membership before inserting
+    // so delivery and push recipient resolution stay valid.
+    await ensureConversationParticipants(conversationId, [
+      { user_id: link.agent_profile_id, role: "owner" },
+      { user_id: link.orbita_user_id, role: "member" },
+    ]);
 
     const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, "text", { body });
     return { message: mapMessage(message, []) };
