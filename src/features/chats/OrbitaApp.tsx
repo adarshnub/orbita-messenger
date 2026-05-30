@@ -2592,6 +2592,7 @@ function ChatPane({
   const lastOlderTriggerAtRef = useRef(0);
   const preserveOffsetOnNextSizeChangeRef = useRef(false);
   const previousLastMessageIdRef = useRef("");
+  const previousMessageCountRef = useRef(0);
   const scrollOffsetYRef = useRef(0);
   const waitingForOlderLoadRef = useRef(false);
   const isAgentConversation = isTaskManagerAgentConversation(conversation);
@@ -2651,6 +2652,20 @@ function ChatPane({
   }, [lastMessageId, loadingOlder, scrollToLatest]);
 
   useEffect(() => {
+    const previousCount = previousMessageCountRef.current;
+    const nextCount = messages.length;
+    previousMessageCountRef.current = nextCount;
+    if (!nextCount || loadingOlder || messagesLoading) return;
+
+    // When chat opens from preview-only memory/cache, a full history batch may
+    // arrive shortly after. Keep the viewport anchored to latest once.
+    const hydratedFromPreview = previousCount <= 1 && nextCount > previousCount + 1;
+    if (hydratedFromPreview) {
+      scrollToLatest(false);
+    }
+  }, [loadingOlder, messages.length, messagesLoading, scrollToLatest]);
+
+  useEffect(() => {
     if (loadingOlder && waitingForOlderLoadRef.current) {
       preserveOffsetOnNextSizeChangeRef.current = true;
     }
@@ -2667,6 +2682,7 @@ function ChatPane({
     lastOlderTriggerAtRef.current = 0;
     preserveOffsetOnNextSizeChangeRef.current = false;
     waitingForOlderLoadRef.current = false;
+    previousMessageCountRef.current = 0;
     setQuickPromptOpen(false);
   }, [conversation.id]);
 
