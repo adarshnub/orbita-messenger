@@ -449,9 +449,15 @@ async function sendPushNotificationsForMessage({
       headers,
       body: JSON.stringify(batch),
     });
+    const payload = await response.json().catch(() => null);
     if (!response.ok) {
-      const responseText = await response.text().catch(() => "");
-      console.error(`Expo push send failed: ${response.status} ${responseText}`);
+      console.error(`Expo push send failed: ${response.status} ${JSON.stringify(payload)}`);
+      continue;
+    }
+    const resultData = Array.isArray(payload?.data) ? payload.data : [];
+    const erroredTickets = resultData.filter((item) => item?.status === "error");
+    if (erroredTickets.length) {
+      console.error(`Expo push ticket errors: ${JSON.stringify(erroredTickets)}`);
     }
   }
 }
