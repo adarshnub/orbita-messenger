@@ -408,6 +408,22 @@ function taskSummaryText(value, maxLength = 90) {
   return `${text.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
+function normalizeDisplayName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractRequesterNameFromRelayText(value) {
+  const text = compactMessageText(value);
+  if (!text) return "";
+  const directMatch = text.match(/(?:^|[!?.]\s*)([a-z][a-z\s'.-]{1,60})\s+asked me to let you know\b/i);
+  if (directMatch?.[1]) return directMatch[1].trim();
+  const fallbackMatch = text.match(/\b([a-z][a-z\s'.-]{1,60})\s+asked me to\b/i);
+  return fallbackMatch?.[1]?.trim() ?? "";
+}
+
 function parseTaskAckInfo(payload) {
   if (!isRecord(payload)) return null;
   const system = payload.system;
@@ -801,19 +817,12 @@ async function maybeSendTaskAcknowledgementMessage(conversationId, acknowledgerI
   let acknowledgementTargetId = taskMessage.sender_id;
 
   if (senderAbout === "task manager agent") {
-    if (!taskRequestInfo?.requesterConversationId && !taskRequestInfo?.requesterTaskmanagerUserId) {
-      if (PUSH_DEBUG) {
-        console.log("[ack] skip: missing task_request metadata", {
-          conversationId,
-          taskMessageId: taskMessage.id,
-          acknowledgerId,
-        });
-      }
-      return null;
-    }
+    const missingTaskRequestMetadata =
+      !taskRequestInfo?.requesterConversationId && !taskRequestInfo?.requesterTaskmanagerUserId;
+    const inferredRequesterName = extractRequesterNameFromRelayText(messageBody(taskMessage));
 
     let requesterLink = null;
-    if (taskRequestInfo.requesterConversationId) {
+    if (taskRequestInfo?.requesterConversationId) {
       const { data, error } = await supabase
         .from("taskmanager_agent_links")
         .select("*")
@@ -824,7 +833,7 @@ async function maybeSendTaskAcknowledgementMessage(conversationId, acknowledgerI
       requesterLink = data;
     }
 
-    if (!requesterLink && taskRequestInfo.requesterTaskmanagerUserId && taskRequestInfo.taskmanagerOrgId) {
+    if (!requesterLink && taskRequestInfo?.requesterTaskmanagerUserId && taskRequestInfo?.taskmanagerOrgId) {
       const { data, error } = await supabase
         .from("taskmanager_agent_links")
         .select("*")
@@ -836,7 +845,81 @@ async function maybeSendTaskAcknowledgementMessage(conversationId, acknowledgerI
       requesterLink = data;
     }
 
+    let candidateLinks = null;
+    let requesterNameByOrbitaId = new Map();
+    const loadRequesterCandidates = async () => {
+      if (candidateLinks) return;
+      const { data: linksData, error: linksError } = await supabase
+        .from("taskmanager_agent_links")
+        .select("*")
+        .eq("enabled", true)
+        .eq("agent_profile_id", taskMessage.sender_id);
+      if (linksError) throw linksError;
+      candidateLinks = linksData ?? [];
+
+      const requesterOrbitaIds = [...new Set(candidateLinks.map((row) => row.orbita_user_id).filter(Boolean))];
+      if (!requesterOrbitaIds.length) return;
+      const { data: requesterProfiles, error: requesterProfilesError } = await supabase
+        .from("profiles")
+        .select("id, display_name")
+        .in("id", requesterOrbitaIds);
+      if (requesterProfilesError) throw requesterProfilesError;
+      requesterNameByOrbitaId = new Map(
+        (requesterProfiles ?? []).map((profile) => [profile.id, normalizeDisplayName(profile.display_name)]),
+      );
+    };
+
+    const findRequesterLinkByName = (name) => {
+      const wanted = normalizeDisplayName(name);
+      if (!wanted || !candidateLinks?.length) return null;
+      return (
+        candidateLinks.find((row) => requesterNameByOrbitaId.get(row.orbita_user_id) === wanted) ??
+        candidateLinks.find((row) => {
+          const displayName = requesterNameByOrbitaId.get(row.orbita_user_id) ?? "";
+          return displayName.startsWith(wanted) || wanted.startsWith(displayName);
+        }) ??
+        null
+      );
+    };
+
+    // Backward-compatibility path for older relayed messages that were stored
+    // without system metadata. Infer requester by parsing "X asked me to let you know".
+    if (!requesterLink && missingTaskRequestMetadata && inferredRequesterName) {
+      await loadRequesterCandidates();
+      requesterLink = findRequesterLinkByName(inferredRequesterName);
+    }
+
+    // Metadata may point to a stale/wrong requester. If relay text says a
+    // specific requester name and we can map it, prefer the text match.
+    if (requesterLink && inferredRequesterName) {
+      await loadRequesterCandidates();
+      const metadataName = requesterNameByOrbitaId.get(requesterLink.orbita_user_id) ?? "";
+      const inferredName = normalizeDisplayName(inferredRequesterName);
+      if (inferredName && metadataName && metadataName !== inferredName) {
+        const textMatchedRequester = findRequesterLinkByName(inferredRequesterName);
+        if (textMatchedRequester?.conversation_id && textMatchedRequester.id !== requesterLink.id) {
+          if (PUSH_DEBUG) {
+            console.log("[ack] requester overridden by relay text", {
+              taskMessageId: taskMessage.id,
+              metadataRequester: metadataName,
+              inferredRequester: inferredName,
+            });
+          }
+          requesterLink = textMatchedRequester;
+        }
+      }
+    }
+
     if (!requesterLink?.conversation_id || !requesterLink?.agent_profile_id) {
+      if (PUSH_DEBUG) {
+        console.log("[ack] skip: requester link unresolved", {
+          conversationId,
+          taskMessageId: taskMessage.id,
+          acknowledgerId,
+          hasTaskRequestMetadata: !missingTaskRequestMetadata,
+          inferredRequesterName: inferredRequesterName || null,
+        });
+      }
       return null;
     }
 
