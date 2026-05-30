@@ -802,6 +802,13 @@ async function maybeSendTaskAcknowledgementMessage(conversationId, acknowledgerI
 
   if (senderAbout === "task manager agent") {
     if (!taskRequestInfo?.requesterConversationId && !taskRequestInfo?.requesterTaskmanagerUserId) {
+      if (PUSH_DEBUG) {
+        console.log("[ack] skip: missing task_request metadata", {
+          conversationId,
+          taskMessageId: taskMessage.id,
+          acknowledgerId,
+        });
+      }
       return null;
     }
 
