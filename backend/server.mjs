@@ -36,6 +36,7 @@ const TASK_MANAGER_ORBITA_CHANNEL = "orbita";
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
 const PUSH_DEBUG = process.env.ORBITA_PUSH_DEBUG === "1";
 const TASK_ACK_SYSTEM_KIND = "task_acknowledgement";
+const TASK_REQUEST_SYSTEM_KIND = "task_request";
 const ACKNOWLEDGEMENT_PATTERNS = [
   /\b(?:ack|acknowledge|acknowledged|acknowledgement)\b/i,
   /\b(?:noted|understood|received|got it|will do|i'?ll do it|i will do it|on it)\b/i,
@@ -43,6 +44,8 @@ const ACKNOWLEDGEMENT_PATTERNS = [
 const TASK_REQUEST_PATTERNS = [
   /\b(?:task|tasks|assign|assigned|assignment)\b/i,
   /\b(?:please|kindly)\b.*\b(?:do|complete|finish|send|share|review|update|follow\s*up|call|meet)\b/i,
+  /\b(?:asked|requested|wants|would\s+like|needs)\b.*\b(?:you|your)\b/i,
+  /\b(?:prepare|complete|finish|send|share|review|update|follow\s*up|call|meet|get\s+it\s+ready)\b/i,
 ];
 
 createServer(async (req, res) => {
@@ -414,6 +417,23 @@ function parseTaskAckInfo(payload) {
   return taskMessageId ? { taskMessageId } : null;
 }
 
+function parseTaskRequestInfo(payload) {
+  if (!isRecord(payload)) return null;
+  const system = payload.system;
+  if (!isRecord(system)) return null;
+  if (system.kind !== TASK_REQUEST_SYSTEM_KIND) return null;
+  return {
+    requesterConversationId:
+      typeof system.requesterConversationId === "string" ? system.requesterConversationId : "",
+    requesterOrbitaUserId:
+      typeof system.requesterOrbitaUserId === "string" ? system.requesterOrbitaUserId : "",
+    requesterTaskmanagerUserId:
+      typeof system.requesterTaskmanagerUserId === "string" ? system.requesterTaskmanagerUserId : "",
+    taskmanagerOrgId:
+      typeof system.taskmanagerOrgId === "string" ? system.taskmanagerOrgId : "",
+  };
+}
+
 function pushPreviewForMessage(kind, body) {
   const text = typeof body === "string" ? body.trim() : "";
   if (text) return text;
@@ -762,7 +782,7 @@ async function maybeSendTaskAcknowledgementMessage(conversationId, acknowledgerI
     const payload = messagePayload(row);
     if (parseTaskAckInfo(payload)) continue;
     const body = messageBody(row);
-    if (!isTaskRequestText(body)) continue;
+    if (!parseTaskRequestInfo(payload) && !isTaskRequestText(body)) continue;
     taskMessage = row;
     break;
   }
@@ -775,15 +795,54 @@ async function maybeSendTaskAcknowledgementMessage(conversationId, acknowledgerI
     .single();
   if (taskSenderProfileError) throw taskSenderProfileError;
   const senderAbout = typeof taskSenderProfile.about === "string" ? taskSenderProfile.about.trim().toLowerCase() : "";
+  const taskRequestInfo = parseTaskRequestInfo(messagePayload(taskMessage));
+  let acknowledgementConversationId = conversationId;
+  let acknowledgementSenderId = acknowledgerId;
+  let acknowledgementTargetId = taskMessage.sender_id;
+
   if (senderAbout === "task manager agent") {
-    return null;
+    if (!taskRequestInfo?.requesterConversationId && !taskRequestInfo?.requesterTaskmanagerUserId) {
+      return null;
+    }
+
+    let requesterLink = null;
+    if (taskRequestInfo.requesterConversationId) {
+      const { data, error } = await supabase
+        .from("taskmanager_agent_links")
+        .select("*")
+        .eq("conversation_id", taskRequestInfo.requesterConversationId)
+        .eq("enabled", true)
+        .maybeSingle();
+      if (error) throw error;
+      requesterLink = data;
+    }
+
+    if (!requesterLink && taskRequestInfo.requesterTaskmanagerUserId && taskRequestInfo.taskmanagerOrgId) {
+      const { data, error } = await supabase
+        .from("taskmanager_agent_links")
+        .select("*")
+        .eq("taskmanager_org_id", taskRequestInfo.taskmanagerOrgId)
+        .eq("taskmanager_user_id", taskRequestInfo.requesterTaskmanagerUserId)
+        .eq("enabled", true)
+        .maybeSingle();
+      if (error) throw error;
+      requesterLink = data;
+    }
+
+    if (!requesterLink?.conversation_id || !requesterLink?.agent_profile_id) {
+      return null;
+    }
+
+    acknowledgementConversationId = requesterLink.conversation_id;
+    acknowledgementSenderId = requesterLink.agent_profile_id;
+    acknowledgementTargetId = requesterLink.orbita_user_id;
   }
 
   const { data: ownRecentMessages, error: ownMessagesError } = await supabase
     .from("messages")
     .select("*")
-    .eq("conversation_id", conversationId)
-    .eq("sender_id", acknowledgerId)
+    .eq("conversation_id", acknowledgementConversationId)
+    .eq("sender_id", acknowledgementSenderId)
     .is("deleted_at", null)
     .order("created_at", { ascending: false })
     .limit(40);
@@ -804,20 +863,27 @@ async function maybeSendTaskAcknowledgementMessage(conversationId, acknowledgerI
 
   const acknowledgerName = profileDisplayName(acknowledgerProfile, "");
   const summary = taskSummaryText(messageBody(taskMessage));
+  const acknowledgementText = taskSummaryText(acknowledgementBody, 80);
   const confirmationBody = summary
-    ? `✅ ${acknowledgerName} acknowledged your task request: "${summary}"`
-    : `✅ ${acknowledgerName} acknowledged your task request.`;
+    ? `✅ ${acknowledgerName} acknowledged your task request: "${summary}"${acknowledgementText ? ` Reply: "${acknowledgementText}"` : ""}`
+    : `✅ ${acknowledgerName} acknowledged your task request${acknowledgementText ? `: "${acknowledgementText}"` : "."}`;
 
-  const message = await insertMessageWithReceipts(conversationId, acknowledgerId, "text", {
+  const message = await insertMessageWithReceipts(acknowledgementConversationId, acknowledgementSenderId, "text", {
     body: confirmationBody,
     system: {
       kind: TASK_ACK_SYSTEM_KIND,
       taskMessageId: taskMessage.id,
-      acknowledgedTo: taskMessage.sender_id,
+      acknowledgedBy: acknowledgerId,
+      acknowledgedTo: acknowledgementTargetId,
     },
   });
 
-  return { messageId: message.id, taskMessageId: taskMessage.id };
+  return {
+    messageId: message.id,
+    taskMessageId: taskMessage.id,
+    conversationId: acknowledgementConversationId,
+    acknowledgedTo: acknowledgementTargetId,
+  };
 }
 
 async function ensureConversationParticipants(conversationId, participants) {
@@ -1434,6 +1500,7 @@ async function handleServiceAction(action, payload) {
     const taskmanagerUserId = requiredString(payload, "taskmanagerUserId");
     const conversationId = requiredString(payload, "conversationId");
     const body = requiredString(payload, "body").slice(0, 5000);
+    const requesterTaskmanagerUserId = optionalString(payload, "requesterTaskmanagerUserId");
 
     const { data: link, error } = await supabase
       .from("taskmanager_agent_links")
@@ -1453,7 +1520,38 @@ async function handleServiceAction(action, payload) {
       { user_id: link.orbita_user_id, role: "member" },
     ]);
 
-    const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, "text", { body });
+    let requesterLink = null;
+    if (requesterTaskmanagerUserId && requesterTaskmanagerUserId !== taskmanagerUserId) {
+      const { data, error: requesterError } = await supabase
+        .from("taskmanager_agent_links")
+        .select("*")
+        .eq("taskmanager_org_id", taskmanagerOrgId)
+        .eq("taskmanager_user_id", requesterTaskmanagerUserId)
+        .eq("enabled", true)
+        .maybeSingle();
+      if (requesterError) throw requesterError;
+      requesterLink = data;
+    }
+
+    const hasExternalRequester =
+      requesterTaskmanagerUserId && requesterTaskmanagerUserId !== taskmanagerUserId;
+    const messagePayload = {
+      body,
+      ...(hasExternalRequester
+        ? {
+            system: {
+              kind: TASK_REQUEST_SYSTEM_KIND,
+              taskmanagerOrgId,
+              taskmanagerUserId,
+              requesterTaskmanagerUserId,
+              requesterConversationId: requesterLink?.conversation_id ?? "",
+              requesterOrbitaUserId: requesterLink?.orbita_user_id ?? "",
+            },
+          }
+        : {}),
+    };
+
+    const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, "text", messagePayload);
     return { message: mapMessage(message, []) };
   }
 
