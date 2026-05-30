@@ -2,3 +2,11 @@ No Orbita user found for that phone number. Error: No Orbita user found for that
     at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1070:31)
     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
     at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:97:26)
+Unknown action: register_push_token Error: Unknown action: register_push_token
+    at handleAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1414:9)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:115:26)
+Unknown action: register_push_token Error: Unknown action: register_push_token
+    at handleAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1414:9)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:115:26)

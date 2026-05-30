@@ -11,6 +11,7 @@ import {
 } from "expo-audio";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
+import * as Notifications from "expo-notifications";
 import type { RealtimeChannel, Session } from "@supabase/supabase-js";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -28,7 +29,6 @@ import {
   PanResponder,
   Platform,
   Pressable,
-  SafeAreaView as RNSafeAreaView,
   ScrollView,
   StyleProp,
   StyleSheet,
@@ -74,6 +74,7 @@ import {
   verifyPhoneOtp,
 } from "@/lib/supabase";
 import { subscribeMessengerRealtime } from "@/lib/messengerRealtime";
+import { registerForPushNotifications } from "@/lib/notifications";
 import { colors, radii, shadow } from "@/theme/colors";
 
 type Tab = "chats" | "status" | "contacts" | "calls" | "settings";
@@ -139,6 +140,29 @@ const DOCUMENT_TYPES = [
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+];
+const AGENT_QUICK_PROMPTS: Array<{ id: string; label: string; prompt: string }> = [
+  {
+    id: "team_overdue_widget",
+    label: "My Team - Overdue Tasks",
+    prompt:
+      'Create and send me a secure magic link widget titled "My Team - Overdue Tasks". ' +
+      "For everyone reporting to me, show overdue tasks first (with due date and overdue duration if any), then in-progress tasks, then recent completed tasks. " +
+      "Keep the layout compact and mobile-friendly.",
+  },
+  {
+    id: "team_status_snapshot",
+    label: "Team Status Snapshot",
+    prompt:
+      "Share a team snapshot for people reporting to me: overdue tasks, in-progress tasks, and last completed tasks. " +
+      "Prefer a secure widget link I can open.",
+  },
+  {
+    id: "overdue_only",
+    label: "Only Overdue Items",
+    prompt:
+      "List overdue tasks for people reporting to me with due date and overdue duration for each task.",
+  },
 ];
 
 type AppThemeContextValue = {
@@ -1119,6 +1143,7 @@ function MessengerShell({ session }: { session: Session }) {
   const lastUnreadTotalRef = useRef<number | null>(null);
   const incomingHapticAtRef = useRef(0);
   const bootstrapHasLoadedRef = useRef(false);
+  const pushTokenRef = useRef<string | null>(null);
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
   const conversationIds = useMemo(() => conversations.map((conversation) => conversation.id), [conversations]);
   const conversationKey = conversationIds.join("|");
@@ -1663,6 +1688,10 @@ function MessengerShell({ session }: { session: Session }) {
   }
 
   async function signOut() {
+    if (Platform.OS !== "web" && pushTokenRef.current !== null) {
+      await messengerApi.registerPushToken(null).catch(() => undefined);
+      pushTokenRef.current = null;
+    }
     await supabase?.auth.signOut();
   }
 
@@ -1690,6 +1719,64 @@ function MessengerShell({ session }: { session: Session }) {
     setSelectedId(conversationId);
     setActiveTab("chats");
   }, []);
+
+  const openConversationFromNotification = useCallback((conversationId: string) => {
+    if (!conversationId) return;
+    setActiveTab("chats");
+    const exists = conversationsRef.current.some((conversation) => conversation.id === conversationId);
+    if (exists) {
+      selectConversation(conversationId);
+      return;
+    }
+    setSelectedId(conversationId);
+    setLoadingMessagesFor(conversationId);
+    scheduleBootstrapRefresh();
+    scheduleMessageRefresh(conversationId);
+  }, [scheduleBootstrapRefresh, scheduleMessageRefresh, selectConversation]);
+
+  useEffect(() => {
+    if (!profileId || Platform.OS === "web") return undefined;
+    let cancelled = false;
+
+    const syncPushToken = async () => {
+      try {
+        const token = await registerForPushNotifications();
+        if (cancelled) return;
+        const normalized = token ?? null;
+        if (pushTokenRef.current === normalized) return;
+        await messengerApi.registerPushToken(normalized);
+        pushTokenRef.current = normalized;
+      } catch (nextError) {
+        if (!cancelled) {
+          setError(nextError instanceof Error ? nextError.message : "Unable to register push notifications.");
+        }
+      }
+    };
+
+    void syncPushToken();
+    return () => {
+      cancelled = true;
+    };
+  }, [profileId]);
+
+  useEffect(() => {
+    if (Platform.OS === "web") return undefined;
+
+    const handleResponse = (response: Notifications.NotificationResponse) => {
+      const data = response.notification.request.content.data as Record<string, unknown> | undefined;
+      const conversationId = typeof data?.conversationId === "string" ? data.conversationId : "";
+      openConversationFromNotification(conversationId);
+    };
+
+    const responseSubscription = Notifications.addNotificationResponseReceivedListener(handleResponse);
+    void Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (response) handleResponse(response);
+    });
+
+    return () => {
+      responseSubscription.remove();
+    };
+  }, [openConversationFromNotification]);
 
   const existingDirectByContactId = useMemo(() => {
     const directMap = new Map<string, BackendConversation>();
@@ -1844,9 +1931,15 @@ function MessengerShell({ session }: { session: Session }) {
     });
   }
 
-  async function sendMessage(kind: BackendMessage["kind"] = "text", body = draft.trim(), attachment = composerAttachment) {
+  async function sendMessage(
+    kind: BackendMessage["kind"] = "text",
+    body = draft.trim(),
+    attachment = composerAttachment,
+    modelBodyOverride?: string,
+  ) {
     const text = body.trim();
-    if (!selected || !profile || (!text && !attachment)) return;
+    const modelText = (modelBodyOverride ?? body).trim();
+    if (!selected || !profile || (!text && !modelText && !attachment)) return;
     stopTyping(selected.id);
     let resolvedKind = kind;
     if (attachment) {
@@ -1916,6 +2009,7 @@ function MessengerShell({ session }: { session: Session }) {
         kind: resolvedKind,
         body: text,
         attachmentId,
+        ...(modelText && modelText !== text ? { taskManagerText: modelText } : {}),
       });
       setSelectedMessages((current) => {
         const withoutTemp = current.filter(
@@ -2055,7 +2149,8 @@ function MessengerShell({ session }: { session: Session }) {
                 onTakePhoto={() => void takePhotoAttachment()}
                 onBack={() => selectConversation("")}
                 onRemoveAttachment={() => setComposerAttachment(null)}
-                onSend={(nextKind, nextBody, nextAttachment) => sendMessage(nextKind, nextBody, nextAttachment)}
+                onSend={(nextKind, nextBody, nextAttachment, modelBodyOverride) =>
+                  sendMessage(nextKind, nextBody, nextAttachment, modelBodyOverride)}
                 onSaveContact={() => {
                   if (selectedUnsavedPeer) setSaveContactPeer(selectedUnsavedPeer);
                 }}
@@ -2450,6 +2545,7 @@ function ChatPane({
     kind?: BackendMessage["kind"],
     body?: string,
     attachment?: ComposerAttachment | null,
+    modelBodyOverride?: string,
   ) => Promise<void> | void;
   onBack: () => void;
   onAddMembers: () => void;
@@ -2469,6 +2565,7 @@ function ChatPane({
   const previewStatus = useAudioPlayerStatus(previewPlayer);
   const [voiceComposerOpen, setVoiceComposerOpen] = useState(false);
   const [voiceAttachment, setVoiceAttachment] = useState<ComposerAttachment | null>(null);
+  const [quickPromptOpen, setQuickPromptOpen] = useState(false);
   const canTriggerOlderRef = useRef(false);
   const contentHeightRef = useRef(0);
   const lastOlderTriggerAtRef = useRef(0);
@@ -2476,6 +2573,7 @@ function ChatPane({
   const previousLastMessageIdRef = useRef("");
   const scrollOffsetYRef = useRef(0);
   const waitingForOlderLoadRef = useRef(false);
+  const isAgentConversation = isTaskManagerAgentConversation(conversation);
 
   const scrollToLatest = useCallback((animated = true) => {
     requestAnimationFrame(() => {
@@ -2548,6 +2646,7 @@ function ChatPane({
     lastOlderTriggerAtRef.current = 0;
     preserveOffsetOnNextSizeChangeRef.current = false;
     waitingForOlderLoadRef.current = false;
+    setQuickPromptOpen(false);
   }, [conversation.id]);
 
   useEffect(() => {
@@ -2621,6 +2720,11 @@ function ChatPane({
     setVoiceAttachment(null);
     setVoiceComposerOpen(false);
     await onSend("voice", draft, pendingVoice);
+  }
+
+  async function sendQuickPrompt(item: (typeof AGENT_QUICK_PROMPTS)[number]) {
+    setQuickPromptOpen(false);
+    await onSend("text", item.label, null, item.prompt);
   }
 
   const composerCanSend = Boolean(draft.trim() || attachment);
@@ -2767,6 +2871,37 @@ function ChatPane({
         ) : null}
       </ScrollView>
       <View style={[styles.composer, isDarkTheme && styles.composerDark]}>
+        {isAgentConversation ? (
+          <View style={styles.quickPromptDock}>
+            {quickPromptOpen ? (
+              <View style={[styles.quickPromptMenu, isDarkTheme && styles.quickPromptMenuDark]}>
+                <Text style={[styles.quickPromptMenuTitle, isDarkTheme && styles.quickPromptMenuTitleDark]}>
+                  Quick prompts
+                </Text>
+                {AGENT_QUICK_PROMPTS.map((item) => (
+                  <Pressable
+                    key={item.id}
+                    onPress={() => {
+                      void sendQuickPrompt(item);
+                    }}
+                    style={[styles.quickPromptItem, isDarkTheme && styles.quickPromptItemDark]}
+                  >
+                    <Text style={[styles.quickPromptItemText, isDarkTheme && styles.quickPromptItemTextDark]}>
+                      {item.label}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+            <Pressable
+              accessibilityLabel="Open quick prompts"
+              onPress={() => setQuickPromptOpen((prev) => !prev)}
+              style={[styles.quickPromptButton, isDarkTheme && styles.quickPromptButtonDark]}
+            >
+              <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.primaryDark} name="help-circle-outline" size={18} />
+            </Pressable>
+          </View>
+        ) : null}
         <Pressable accessibilityLabel="Add attachment" onPress={onOpenAttachmentMenu} style={[styles.composerAccessoryButton, isDarkTheme && styles.composerAccessoryButtonDark]}>
           <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name="add" size={22} />
         </Pressable>
@@ -4346,6 +4481,68 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   composerDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#101421" },
+  quickPromptDock: {
+    position: "relative",
+    alignSelf: "flex-end",
+    marginBottom: 2,
+  },
+  quickPromptButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(101,81,196,0.20)",
+    backgroundColor: "#F2EEF9",
+  },
+  quickPromptButtonDark: {
+    borderColor: "rgba(255,255,255,0.20)",
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  quickPromptMenu: {
+    position: "absolute",
+    left: 0,
+    bottom: 40,
+    width: 250,
+    padding: 10,
+    gap: 6,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surface,
+    shadowColor: "#101828",
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.18,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+  quickPromptMenuDark: {
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "#182034",
+  },
+  quickPromptMenuTitle: {
+    fontSize: 12,
+    fontWeight: "800",
+    color: colors.muted,
+    paddingHorizontal: 2,
+  },
+  quickPromptMenuTitleDark: { color: "rgba(255,255,255,0.62)" },
+  quickPromptItem: {
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    backgroundColor: "#F6F4FA",
+  },
+  quickPromptItemDark: {
+    backgroundColor: "rgba(255,255,255,0.08)",
+  },
+  quickPromptItemText: {
+    color: colors.ink,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  quickPromptItemTextDark: { color: "#FFFFFF" },
   composerAccessoryButton: {
     width: 40,
     height: 40,

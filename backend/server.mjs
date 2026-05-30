@@ -33,6 +33,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 });
 
 const TASK_MANAGER_ORBITA_CHANNEL = "orbita";
+const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
 
 createServer(async (req, res) => {
   const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -371,6 +372,90 @@ function mapMessage(row, attachments = []) {
   };
 }
 
+function pushPreviewForMessage(kind, body) {
+  const text = typeof body === "string" ? body.trim() : "";
+  if (text) return text;
+  if (kind === "image") return "Photo";
+  if (kind === "voice" || kind === "audio") return "Voice note";
+  if (kind === "document") return "Document";
+  return "New message";
+}
+
+function isExpoPushToken(value) {
+  return typeof value === "string" && /^(Exponent|Expo)PushToken\[[^\]]+\]$/.test(value.trim());
+}
+
+function chunkArray(values, size) {
+  const result = [];
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size));
+  }
+  return result;
+}
+
+async function sendPushNotificationsForMessage({
+  body,
+  conversationId,
+  kind,
+  messageId,
+  recipientUserIds,
+  senderId,
+}) {
+  const recipients = [...new Set(recipientUserIds)].filter(Boolean);
+  if (!recipients.length) return;
+
+  const [senderRes, conversationRes, recipientRes] = await Promise.all([
+    supabase.from("profiles").select("id, display_name").eq("id", senderId).single(),
+    supabase.from("conversations").select("id, kind, title").eq("id", conversationId).single(),
+    supabase.from("profiles").select("id, expo_push_token").in("id", recipients),
+  ]);
+  if (senderRes.error) throw senderRes.error;
+  if (conversationRes.error) throw conversationRes.error;
+  if (recipientRes.error) throw recipientRes.error;
+
+  const senderName = profileDisplayName(senderRes.data, "");
+  const conversation = conversationRes.data;
+  const title =
+    conversation.kind === "group"
+      ? (typeof conversation.title === "string" && conversation.title.trim()) || senderName
+      : senderName;
+  const notificationBody = pushPreviewForMessage(kind, body);
+  const tokens = [...new Set((recipientRes.data ?? [])
+    .map((row) => (typeof row.expo_push_token === "string" ? row.expo_push_token.trim() : ""))
+    .filter(isExpoPushToken))];
+  if (!tokens.length) return;
+
+  const accessToken = process.env.EXPO_PUSH_ACCESS_TOKEN?.trim();
+  const headers = {
+    Accept: "application/json",
+    "Accept-Encoding": "gzip, deflate",
+    "Content-Type": "application/json",
+    ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+  };
+
+  const messages = tokens.map((to) => ({
+    to,
+    title,
+    body: notificationBody,
+    data: { conversationId, messageId, senderId },
+    sound: "default",
+    channelId: "messages",
+    priority: "high",
+  }));
+
+  for (const batch of chunkArray(messages, 100)) {
+    const response = await fetch(EXPO_PUSH_ENDPOINT, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(batch),
+    });
+    if (!response.ok) {
+      const responseText = await response.text().catch(() => "");
+      console.error(`Expo push send failed: ${response.status} ${responseText}`);
+    }
+  }
+}
+
 async function createRealtimeEvents(targetUserIds, kind, conversationId, payload = {}) {
   const uniqueTargetIds = [...new Set(targetUserIds)].filter(Boolean);
   if (!uniqueTargetIds.length) return;
@@ -559,6 +644,17 @@ async function insertMessageWithReceipts(conversationId, senderId, kind, payload
       conversationId,
       { messageId: message.id, senderId },
     );
+
+    void sendPushNotificationsForMessage({
+      body: typeof payload?.body === "string" ? payload.body : "",
+      conversationId,
+      kind,
+      messageId: message.id,
+      recipientUserIds: participants.map((participant) => participant.user_id),
+      senderId,
+    }).catch((error) => {
+      console.error(errorMessage(error), error);
+    });
   }
 
   return message;
@@ -1003,7 +1099,13 @@ async function findAuthUserByEmail(email) {
   return null;
 }
 
-async function forwardTaskmanagerInbound(conversationId, senderId, message, attachments = []) {
+async function forwardTaskmanagerInbound(
+  conversationId,
+  senderId,
+  message,
+  attachments = [],
+  taskManagerTextOverride = "",
+) {
   const webhookUrl = process.env.TASK_MANAGER_ORBITA_WEBHOOK_URL;
   const secret = process.env.TASK_MANAGER_ORBITA_SECRET;
   if (!webhookUrl || !secret) {
@@ -1030,7 +1132,7 @@ async function forwardTaskmanagerInbound(conversationId, senderId, message, atta
     orbitaUserId: senderId,
     messageId: message.id,
     kind: message.kind,
-    text: message.body || undefined,
+    text: taskManagerTextOverride || message.body || undefined,
     attachment: attachments[0] ?? null,
     attachments,
     sentAt: message.createdAt ?? new Date().toISOString(),
@@ -1309,9 +1411,25 @@ async function handleAction(user, action, payload) {
     return { ok: true };
   }
 
+  if (
+    action === "register_push_token" ||
+    action === "register_fcm_token" ||
+    action === "register_expo_push_token"
+  ) {
+    const pushToken = optionalString(payload, "pushToken");
+    const token = pushToken && isExpoPushToken(pushToken) ? pushToken : null;
+    const { error } = await supabase
+      .from("profiles")
+      .update({ expo_push_token: token, updated_at: new Date().toISOString() })
+      .eq("id", user.id);
+    if (error) throw error;
+    return { ok: true };
+  }
+
   if (action === "send_message") {
     const conversationId = requiredString(payload, "conversationId");
     const body = optionalString(payload, "body").slice(0, 5000);
+    const taskManagerText = optionalString(payload, "taskManagerText").slice(0, 5000);
     const attachmentId = optionalString(payload, "attachmentId");
     await getConversation(user.id, conversationId);
     const attachmentRow = attachmentId ? await getOwnedStagedAttachment(user.id, attachmentId) : null;
@@ -1333,6 +1451,7 @@ async function handleAction(user, action, payload) {
       user.id,
       mappedMessage,
       attachments,
+      taskManagerText,
     ).catch((error) => {
       const reason = errorMessage(error);
       console.error(reason, error);

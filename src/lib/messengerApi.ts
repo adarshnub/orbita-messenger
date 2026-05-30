@@ -24,6 +24,7 @@ type ApiAction =
   | "add_group_members"
   | "list_messages"
   | "mark_conversation_read"
+  | "register_push_token"
   | "send_message"
   | "forward_messages"
   | "create_status"
@@ -217,11 +218,15 @@ export const messengerApi = {
   markConversationRead(conversationId: string) {
     return callApi<{ ok: true }>("mark_conversation_read", { conversationId });
   },
+  registerPushToken(pushToken: string | null) {
+    return callApi<{ ok: true }>("register_push_token", { pushToken });
+  },
   sendMessage(input: {
     conversationId: string;
     kind: BackendMessage["kind"];
     body: string;
     attachmentId?: string;
+    taskManagerText?: string;
   }) {
     return callApi<{
       message: BackendMessage;

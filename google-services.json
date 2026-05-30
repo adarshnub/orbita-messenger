@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1066334547434",
+    "project_id": "orbita-1ca1b",
+    "storage_bucket": "orbita-1ca1b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1066334547434:android:03319ec9e8ff39fc371693",
+        "android_client_info": {
+          "package_name": "com.orbita.messenger"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBQlt3EEdK0XfkZPRS5lWfqyjl57tDSzlU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
