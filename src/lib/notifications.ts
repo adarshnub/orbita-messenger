@@ -11,10 +11,10 @@ Notifications.setNotificationHandler({
   }),
 });
 
-export async function registerForPushNotifications() {
+export async function registerForPushNotifications(): Promise<string | null | undefined> {
   const isAndroidExpoGo = Platform.OS === "android" && Constants.appOwnership === "expo";
   if (isAndroidExpoGo) {
-    return null;
+    return undefined;
   }
 
   if (Platform.OS === "android") {
@@ -44,6 +44,6 @@ export async function registerForPushNotifications() {
     return token.data;
   } catch (error) {
     console.warn("Push notification registration failed.", error);
-    return null;
+    return undefined;
   }
 }

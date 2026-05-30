@@ -1405,6 +1405,16 @@ function MessengerShell({ session }: { session: Session }) {
     };
   }, []);
 
+  const hydrateWithConversationPreview = useCallback((conversationId: string, messages: ChatMessage[]) => {
+    const conversation = conversationsRef.current.find((item) => item.id === conversationId);
+    const preview = conversation?.lastMessage;
+    if (!preview || preview.conversationId !== conversationId) return messages;
+    if (messages.some((message) => message.id === preview.id)) return messages;
+    const merged = [...messages, preview];
+    merged.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    return merged;
+  }, []);
+
   const loadMessages = useCallback(async (conversationId: string) => {
     try {
       const data = await messengerApi.listMessages({ conversationId });
@@ -1535,10 +1545,15 @@ function MessengerShell({ session }: { session: Session }) {
       setSelectedMessages([]);
       return;
     }
-    const inMemoryMessages = messagesByConversationRef.current[selectedId] ?? [];
+    const inMemoryMessages = hydrateWithConversationPreview(selectedId, messagesByConversationRef.current[selectedId] ?? []);
     if (inMemoryMessages.length) {
+      rememberMessages(selectedId, inMemoryMessages);
       setSelectedMessages(inMemoryMessages);
       setLoadingMessagesFor("");
+      void loadMessages(selectedId);
+      return () => {
+        cancelled = true;
+      };
     } else {
       setSelectedMessages([]);
       setLoadingMessagesFor(selectedId);
@@ -1546,12 +1561,13 @@ function MessengerShell({ session }: { session: Session }) {
     void readCachedMessages(session.user.id, selectedId)
       .then((cachedMessages) => {
         if (cancelled) return;
-        if (cachedMessages.length) {
+        const hydratedCached = hydrateWithConversationPreview(selectedId, cachedMessages);
+        if (hydratedCached.length) {
           messagesByConversationRef.current = {
             ...messagesByConversationRef.current,
-            [selectedId]: cachedMessages,
+            [selectedId]: hydratedCached,
           };
-          setSelectedMessages(cachedMessages);
+          setSelectedMessages(hydratedCached);
           setLoadingMessagesFor("");
           return;
         }
@@ -1562,7 +1578,7 @@ function MessengerShell({ session }: { session: Session }) {
     return () => {
       cancelled = true;
     };
-  }, [loadMessages, selectedId, session.user.id]);
+  }, [hydrateWithConversationPreview, loadMessages, rememberMessages, selectedId, session.user.id]);
 
   useEffect(() => {
     if (!supabase || !selectedId || !profileId) return undefined;
@@ -1713,12 +1729,16 @@ function MessengerShell({ session }: { session: Session }) {
       return;
     }
 
-    const inMemoryMessages = messagesByConversationRef.current[conversationId] ?? [];
+    const inMemoryMessages = hydrateWithConversationPreview(
+      conversationId,
+      messagesByConversationRef.current[conversationId] ?? [],
+    );
+    rememberMessages(conversationId, inMemoryMessages);
     setSelectedMessages(inMemoryMessages);
     setLoadingMessagesFor(inMemoryMessages.length ? "" : conversationId);
     setSelectedId(conversationId);
     setActiveTab("chats");
-  }, []);
+  }, [hydrateWithConversationPreview, rememberMessages]);
 
   const openConversationFromNotification = useCallback((conversationId: string) => {
     if (!conversationId) return;
@@ -1742,6 +1762,7 @@ function MessengerShell({ session }: { session: Session }) {
       try {
         const token = await registerForPushNotifications();
         if (cancelled) return;
+        if (token === undefined) return;
         const normalized = token ?? null;
         if (pushTokenRef.current === normalized) return;
         await messengerApi.registerPushToken(normalized);

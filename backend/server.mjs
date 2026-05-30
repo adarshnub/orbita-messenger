@@ -768,6 +768,17 @@ async function maybeSendTaskAcknowledgementMessage(conversationId, acknowledgerI
   }
   if (!taskMessage) return null;
 
+  const { data: taskSenderProfile, error: taskSenderProfileError } = await supabase
+    .from("profiles")
+    .select("id, about")
+    .eq("id", taskMessage.sender_id)
+    .single();
+  if (taskSenderProfileError) throw taskSenderProfileError;
+  const senderAbout = typeof taskSenderProfile.about === "string" ? taskSenderProfile.about.trim().toLowerCase() : "";
+  if (senderAbout === "task manager agent") {
+    return null;
+  }
+
   const { data: ownRecentMessages, error: ownMessagesError } = await supabase
     .from("messages")
     .select("*")
@@ -1595,6 +1606,13 @@ async function handleAction(user, action, payload) {
       .update({ expo_push_token: token, updated_at: new Date().toISOString() })
       .eq("id", user.id);
     if (error) throw error;
+    if (PUSH_DEBUG) {
+      console.log("[push] token updated", {
+        userId: user.id,
+        hasToken: Boolean(token),
+        tokenPreview: token ? `${token.slice(0, 20)}...` : null,
+      });
+    }
     return { ok: true };
   }
 
