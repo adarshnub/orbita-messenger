@@ -1405,14 +1405,10 @@ function MessengerShell({ session }: { session: Session }) {
     };
   }, []);
 
-  const hydrateWithConversationPreview = useCallback((conversationId: string, messages: ChatMessage[]) => {
+  const isPreviewOnlyMessageSet = useCallback((conversationId: string, messages: ChatMessage[]) => {
+    if (messages.length !== 1) return false;
     const conversation = conversationsRef.current.find((item) => item.id === conversationId);
-    const preview = conversation?.lastMessage;
-    if (!preview || preview.conversationId !== conversationId) return messages;
-    if (messages.some((message) => message.id === preview.id)) return messages;
-    const merged = [...messages, preview];
-    merged.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-    return merged;
+    return conversation?.lastMessage?.id === messages[0]?.id;
   }, []);
 
   const loadMessages = useCallback(async (conversationId: string) => {
@@ -1545,9 +1541,8 @@ function MessengerShell({ session }: { session: Session }) {
       setSelectedMessages([]);
       return;
     }
-    const inMemoryMessages = hydrateWithConversationPreview(selectedId, messagesByConversationRef.current[selectedId] ?? []);
-    if (inMemoryMessages.length) {
-      rememberMessages(selectedId, inMemoryMessages);
+    const inMemoryMessages = messagesByConversationRef.current[selectedId] ?? [];
+    if (inMemoryMessages.length && !isPreviewOnlyMessageSet(selectedId, inMemoryMessages)) {
       setSelectedMessages(inMemoryMessages);
       setLoadingMessagesFor("");
       void loadMessages(selectedId);
@@ -1561,13 +1556,12 @@ function MessengerShell({ session }: { session: Session }) {
     void readCachedMessages(session.user.id, selectedId)
       .then((cachedMessages) => {
         if (cancelled) return;
-        const hydratedCached = hydrateWithConversationPreview(selectedId, cachedMessages);
-        if (hydratedCached.length) {
+        if (cachedMessages.length && !isPreviewOnlyMessageSet(selectedId, cachedMessages)) {
           messagesByConversationRef.current = {
             ...messagesByConversationRef.current,
-            [selectedId]: hydratedCached,
+            [selectedId]: cachedMessages,
           };
-          setSelectedMessages(hydratedCached);
+          setSelectedMessages(cachedMessages);
           setLoadingMessagesFor("");
           return;
         }
@@ -1578,7 +1572,7 @@ function MessengerShell({ session }: { session: Session }) {
     return () => {
       cancelled = true;
     };
-  }, [hydrateWithConversationPreview, loadMessages, rememberMessages, selectedId, session.user.id]);
+  }, [isPreviewOnlyMessageSet, loadMessages, selectedId, session.user.id]);
 
   useEffect(() => {
     if (!supabase || !selectedId || !profileId) return undefined;
@@ -1729,16 +1723,13 @@ function MessengerShell({ session }: { session: Session }) {
       return;
     }
 
-    const inMemoryMessages = hydrateWithConversationPreview(
-      conversationId,
-      messagesByConversationRef.current[conversationId] ?? [],
-    );
-    rememberMessages(conversationId, inMemoryMessages);
-    setSelectedMessages(inMemoryMessages);
-    setLoadingMessagesFor(inMemoryMessages.length ? "" : conversationId);
+    const inMemoryMessages = messagesByConversationRef.current[conversationId] ?? [];
+    const canUseCachedMessages = inMemoryMessages.length > 0 && !isPreviewOnlyMessageSet(conversationId, inMemoryMessages);
+    setSelectedMessages(canUseCachedMessages ? inMemoryMessages : []);
+    setLoadingMessagesFor(canUseCachedMessages ? "" : conversationId);
     setSelectedId(conversationId);
     setActiveTab("chats");
-  }, [hydrateWithConversationPreview, rememberMessages]);
+  }, [isPreviewOnlyMessageSet]);
 
   const openConversationFromNotification = useCallback((conversationId: string) => {
     if (!conversationId) return;
@@ -2589,6 +2580,7 @@ function ChatPane({
   const [quickPromptOpen, setQuickPromptOpen] = useState(false);
   const canTriggerOlderRef = useRef(false);
   const contentHeightRef = useRef(0);
+  const isNearLatestRef = useRef(true);
   const lastOlderTriggerAtRef = useRef(0);
   const preserveOffsetOnNextSizeChangeRef = useRef(false);
   const previousLastMessageIdRef = useRef("");
@@ -2617,13 +2609,23 @@ function ChatPane({
       if (!loadingOlder) {
         preserveOffsetOnNextSizeChangeRef.current = false;
       }
+    } else if (previousHeight && height > previousHeight && !loadingOlder && isNearLatestRef.current) {
+      scrollToLatest(false);
     }
     contentHeightRef.current = height;
-  }, [loadingOlder]);
+  }, [loadingOlder, scrollToLatest]);
 
-  const handleMessageScroll = useCallback((event: { nativeEvent: { contentOffset: { y: number } } }) => {
-    const offsetY = event.nativeEvent.contentOffset.y;
+  const handleMessageScroll = useCallback((event: {
+    nativeEvent: {
+      contentOffset: { y: number };
+      contentSize: { height: number };
+      layoutMeasurement: { height: number };
+    };
+  }) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const offsetY = contentOffset.y;
     scrollOffsetYRef.current = offsetY;
+    isNearLatestRef.current = offsetY + layoutMeasurement.height >= contentSize.height - 90;
     if (offsetY > 80) {
       canTriggerOlderRef.current = true;
       return;
@@ -2681,6 +2683,7 @@ function ChatPane({
     canTriggerOlderRef.current = false;
     lastOlderTriggerAtRef.current = 0;
     preserveOffsetOnNextSizeChangeRef.current = false;
+    isNearLatestRef.current = true;
     waitingForOlderLoadRef.current = false;
     previousMessageCountRef.current = 0;
     setQuickPromptOpen(false);
