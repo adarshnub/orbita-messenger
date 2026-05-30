@@ -35,6 +35,15 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 const TASK_MANAGER_ORBITA_CHANNEL = "orbita";
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
 const PUSH_DEBUG = process.env.ORBITA_PUSH_DEBUG === "1";
+const TASK_ACK_SYSTEM_KIND = "task_acknowledgement";
+const ACKNOWLEDGEMENT_PATTERNS = [
+  /\b(?:ack|acknowledge|acknowledged|acknowledgement)\b/i,
+  /\b(?:noted|understood|received|got it|will do|i'?ll do it|i will do it|on it)\b/i,
+];
+const TASK_REQUEST_PATTERNS = [
+  /\b(?:task|tasks|assign|assigned|assignment)\b/i,
+  /\b(?:please|kindly)\b.*\b(?:do|complete|finish|send|share|review|update|follow\s*up|call|meet)\b/i,
+];
 
 createServer(async (req, res) => {
   const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -373,6 +382,38 @@ function mapMessage(row, attachments = []) {
   };
 }
 
+function compactMessageText(value) {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim() : "";
+}
+
+function isAcknowledgementText(value) {
+  const text = compactMessageText(value);
+  if (!text) return false;
+  return ACKNOWLEDGEMENT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function isTaskRequestText(value) {
+  const text = compactMessageText(value);
+  if (!text) return false;
+  return TASK_REQUEST_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function taskSummaryText(value, maxLength = 90) {
+  const text = compactMessageText(value);
+  if (!text) return "";
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function parseTaskAckInfo(payload) {
+  if (!isRecord(payload)) return null;
+  const system = payload.system;
+  if (!isRecord(system)) return null;
+  if (system.kind !== TASK_ACK_SYSTEM_KIND) return null;
+  const taskMessageId = typeof system.taskMessageId === "string" ? system.taskMessageId : "";
+  return taskMessageId ? { taskMessageId } : null;
+}
+
 function pushPreviewForMessage(kind, body) {
   const text = typeof body === "string" ? body.trim() : "";
   if (text) return text;
@@ -701,6 +742,71 @@ async function insertMessageWithReceipts(conversationId, senderId, kind, payload
   }
 
   return message;
+}
+
+async function maybeSendTaskAcknowledgementMessage(conversationId, acknowledgerId, acknowledgementBody) {
+  if (!isAcknowledgementText(acknowledgementBody)) return null;
+
+  const { data: recentIncoming, error: incomingError } = await supabase
+    .from("messages")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .neq("sender_id", acknowledgerId)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(40);
+  if (incomingError) throw incomingError;
+
+  let taskMessage = null;
+  for (const row of recentIncoming ?? []) {
+    const payload = messagePayload(row);
+    if (parseTaskAckInfo(payload)) continue;
+    const body = messageBody(row);
+    if (!isTaskRequestText(body)) continue;
+    taskMessage = row;
+    break;
+  }
+  if (!taskMessage) return null;
+
+  const { data: ownRecentMessages, error: ownMessagesError } = await supabase
+    .from("messages")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .eq("sender_id", acknowledgerId)
+    .is("deleted_at", null)
+    .order("created_at", { ascending: false })
+    .limit(40);
+  if (ownMessagesError) throw ownMessagesError;
+
+  const alreadyNotified = (ownRecentMessages ?? []).some((row) => {
+    const ackInfo = parseTaskAckInfo(messagePayload(row));
+    return ackInfo?.taskMessageId === taskMessage.id;
+  });
+  if (alreadyNotified) return null;
+
+  const { data: acknowledgerProfile, error: acknowledgerProfileError } = await supabase
+    .from("profiles")
+    .select("id, display_name, phone")
+    .eq("id", acknowledgerId)
+    .single();
+  if (acknowledgerProfileError) throw acknowledgerProfileError;
+
+  const acknowledgerName = profileDisplayName(acknowledgerProfile, "");
+  const summary = taskSummaryText(messageBody(taskMessage));
+  const confirmationBody = summary
+    ? `✅ ${acknowledgerName} acknowledged your task request: "${summary}"`
+    : `✅ ${acknowledgerName} acknowledged your task request.`;
+
+  const message = await insertMessageWithReceipts(conversationId, acknowledgerId, "text", {
+    body: confirmationBody,
+    system: {
+      kind: TASK_ACK_SYSTEM_KIND,
+      taskMessageId: taskMessage.id,
+      acknowledgedTo: taskMessage.sender_id,
+    },
+  });
+
+  return { messageId: message.id, taskMessageId: taskMessage.id };
 }
 
 async function ensureConversationParticipants(conversationId, participants) {
@@ -1523,8 +1629,13 @@ async function handleAction(user, action, payload) {
       console.error(reason, error);
       return { forwarded: false, reason };
     });
+    const taskAcknowledgement = await maybeSendTaskAcknowledgementMessage(conversationId, user.id, body).catch((error) => {
+      const reason = errorMessage(error);
+      console.error(reason, error);
+      return { error: reason };
+    });
 
-    return { message: mappedMessage, taskManagerForward };
+    return { message: mappedMessage, taskManagerForward, taskAcknowledgement };
   }
 
   if (action === "forward_messages") {
