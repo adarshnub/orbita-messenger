@@ -722,7 +722,7 @@ async function uploadMediaAttachment(userId, form) {
   };
 }
 
-async function insertMessageWithReceipts(conversationId, senderId, kind, payload) {
+async function insertMessageWithReceipts(conversationId, senderId, kind, payload, options = {}) {
   const { data: message, error } = await supabase
     .from("messages")
     .insert({
@@ -765,7 +765,7 @@ async function insertMessageWithReceipts(conversationId, senderId, kind, payload
       { messageId: message.id, senderId },
     );
 
-    void sendPushNotificationsForMessage({
+    const pushPromise = sendPushNotificationsForMessage({
       body: typeof payload?.body === "string" ? payload.body : "",
       conversationId,
       kind,
@@ -775,6 +775,9 @@ async function insertMessageWithReceipts(conversationId, senderId, kind, payload
     }).catch((error) => {
       console.error(errorMessage(error), error);
     });
+    if (options.awaitPush) {
+      await pushPromise;
+    }
   }
 
   return message;
@@ -1698,7 +1701,9 @@ async function handleServiceAction(action, payload) {
         : {}),
     };
 
-    const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, "text", messagePayload);
+    const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, "text", messagePayload, {
+      awaitPush: true,
+    });
     return { message: mapMessage(message, []) };
   }
 
