@@ -2212,7 +2212,7 @@ function MessengerShell({ session }: { session: Session }) {
       contactsWithDefaultAgent.find((contact) => contact.about?.trim().toLowerCase() === "task manager agent")?.id ?? "",
     [contactsWithDefaultAgent],
   );
-  const showAgentFab = !selected && Boolean(agentConversationId || agentContactId);
+  const showAgentFab = !selected;
 
   async function openContactConversation(otherUserId: string) {
     await run(async () => {
