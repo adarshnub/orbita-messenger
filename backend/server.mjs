@@ -498,10 +498,11 @@ async function sendPushNotificationsForMessage({
   messageId,
   recipientUserIds,
   senderId,
+  source = "message",
 }) {
   const recipients = [...new Set(recipientUserIds)].filter(Boolean);
   if (!recipients.length) {
-    if (PUSH_DEBUG) console.log("[push] no recipients", { conversationId, messageId, senderId });
+    console.log("[push] no recipients", { conversationId, messageId, senderId, source });
     return;
   }
 
@@ -522,7 +523,7 @@ async function sendPushNotificationsForMessage({
     .map((row) => (typeof row.expo_push_token === "string" ? row.expo_push_token.trim() : ""))
     .filter(isExpoPushToken))];
   if (!tokens.length) {
-    if (PUSH_DEBUG) console.log("[push] recipients have no expo tokens", { conversationId, messageId, recipients });
+    console.log("[push] recipients have no expo tokens", { conversationId, messageId, recipients, source });
     return;
   }
 
@@ -544,16 +545,15 @@ async function sendPushNotificationsForMessage({
     channelId: "messages",
     priority: "high",
   }));
-  if (PUSH_DEBUG) {
-    console.log("[push] sending", {
-      conversationId,
-      messageId,
-      recipients: recipients.length,
-      tokens: tokens.length,
-      title: copy.title,
-      subtitle: copy.subtitle,
-    });
-  }
+  console.log("[push] sending", {
+    conversationId,
+    messageId,
+    recipients: recipients.length,
+    tokens: tokens.length,
+    title: copy.title,
+    subtitle: copy.subtitle,
+    source,
+  });
 
   for (const batch of chunkArray(messages, 100)) {
     const response = await fetch(EXPO_PUSH_ENDPOINT, {
@@ -570,8 +570,13 @@ async function sendPushNotificationsForMessage({
     const erroredTickets = resultData.filter((item) => item?.status === "error");
     if (erroredTickets.length) {
       console.error(`Expo push ticket errors: ${JSON.stringify(erroredTickets)}`);
-    } else if (PUSH_DEBUG) {
-      console.log("[push] ticket ok", resultData.map((item) => item?.id).filter(Boolean));
+    } else {
+      console.log("[push] ticket ok", {
+        conversationId,
+        messageId,
+        ticketIds: resultData.map((item) => item?.id).filter(Boolean),
+        source,
+      });
     }
   }
 }
@@ -772,6 +777,7 @@ async function insertMessageWithReceipts(conversationId, senderId, kind, payload
       messageId: message.id,
       recipientUserIds: participants.map((participant) => participant.user_id),
       senderId,
+      source: options.pushSource ?? "message",
     }).catch((error) => {
       console.error(errorMessage(error), error);
     });
@@ -1701,8 +1707,21 @@ async function handleServiceAction(action, payload) {
         : {}),
     };
 
+    console.log("[service] send_agent_message", {
+      conversationId,
+      taskmanagerOrgId,
+      taskmanagerUserId,
+      requesterTaskmanagerUserId: requesterTaskmanagerUserId || null,
+    });
+
     const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, "text", messagePayload, {
       awaitPush: true,
+      pushSource: "send_agent_message",
+    });
+    console.log("[service] send_agent_message inserted", {
+      conversationId,
+      messageId: message.id,
+      taskmanagerUserId,
     });
     return { message: mapMessage(message, []) };
   }
