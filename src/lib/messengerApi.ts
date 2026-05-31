@@ -51,18 +51,28 @@ async function callApi<T>(action: ApiAction, payload: Record<string, unknown> = 
 }
 
 async function callBackendApi<T>(action: ApiAction, payload: Record<string, unknown>, token: string) {
+  const body = JSON.stringify({ action, payload });
+  const primary = await backendRequest(`/api/messenger`, token, body);
+  if (!primary.response.ok && isRouteNotFound(primary.data)) {
+    const fallback = await backendRequest(`/api/messenger-api`, token, body);
+    return parseBackendResponse<T>(fallback.response, fallback.data);
+  }
+  return parseBackendResponse<T>(primary.response, primary.data);
+}
+
+async function backendRequest(path: string, token: string, body: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(`${orbitaApiUrl}/api/messenger`, {
+    response = await fetch(`${orbitaApiUrl}${path}`, {
       method: "POST",
       signal: controller.signal,
       headers: {
         Authorization: `Bearer ${token}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ action, payload }),
+      body,
     });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
@@ -73,6 +83,10 @@ async function callBackendApi<T>(action: ApiAction, payload: Record<string, unkn
     clearTimeout(timeout);
   }
   const data = (await response.json().catch(() => null)) as unknown;
+  return { data, response };
+}
+
+function parseBackendResponse<T>(response: Response, data: unknown) {
 
   if (!response.ok) {
     const message = apiError(data) ?? `Orbita backend request failed: ${response.status}`;
@@ -88,11 +102,20 @@ async function callBackendApi<T>(action: ApiAction, payload: Record<string, unkn
 }
 
 async function uploadBackendMedia<T>(form: FormData, token: string, endpoint = "media") {
+  const primary = await backendUploadRequest(`/api/messenger/${endpoint}`, token, form);
+  if (!primary.response.ok && isRouteNotFound(primary.data)) {
+    const fallback = await backendUploadRequest(`/api/messenger-api/${endpoint}`, token, form);
+    return parseBackendResponse<T>(fallback.response, fallback.data);
+  }
+  return parseBackendResponse<T>(primary.response, primary.data);
+}
+
+async function backendUploadRequest(path: string, token: string, form: FormData) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(`${orbitaApiUrl}/api/messenger/${endpoint}`, {
+    response = await fetch(`${orbitaApiUrl}${path}`, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -110,23 +133,19 @@ async function uploadBackendMedia<T>(form: FormData, token: string, endpoint = "
   }
 
   const data = (await response.json().catch(() => null)) as unknown;
-  if (!response.ok) {
-    const message = apiError(data) ?? `Orbita backend request failed: ${response.status}`;
-    throw new Error(message);
-  }
-
-  const error = apiError(data);
-  if (error) {
-    throw new Error(error);
-  }
-
-  return data as T;
+  return { data, response };
 }
 
 function apiError(data: unknown) {
   if (!data || typeof data !== "object" || !("error" in data)) return null;
   const error = (data as { error?: unknown }).error;
   return typeof error === "string" ? error : null;
+}
+
+function isRouteNotFound(data: unknown) {
+  const error = apiError(data);
+  if (!error) return false;
+  return error.trim().toLowerCase() === "route not found.";
 }
 
 async function getAccessToken(options: { forceRefresh?: boolean } = {}) {
@@ -182,6 +201,7 @@ function normalizeOrbitaApiBase(input: string) {
   try {
     const url = new URL(trimmed);
     const normalizedPath = url.pathname
+      .replace(/\/api\/?$/i, "")
       .replace(/\/api\/messenger-api\/?$/i, "")
       .replace(/\/api\/messenger\/?$/i, "")
       || "/";
@@ -189,6 +209,7 @@ function normalizeOrbitaApiBase(input: string) {
     return url.toString().replace(/\/$/, "");
   } catch {
     return trimmed
+      .replace(/\/api\/?$/i, "")
       .replace(/\/api\/messenger-api\/?$/i, "")
       .replace(/\/api\/messenger\/?$/i, "");
   }

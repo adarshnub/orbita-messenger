@@ -9,6 +9,9 @@ type ForegroundNotificationContext = {
 };
 
 type FeedbackCueKind = "message_sent" | "message_received";
+const FEEDBACK_CHANNEL_ID = "feedback-cues";
+let feedbackPermissionChecked = false;
+let feedbackPermissionGranted = false;
 
 const foregroundNotificationContext: ForegroundNotificationContext = {
   activeConversationId: "",
@@ -89,6 +92,8 @@ Notifications.setNotificationHandler({
 
 export async function playInAppCueSound(kind: FeedbackCueKind) {
   if (Platform.OS === "web") return;
+  const canPlay = await ensureFeedbackCueReady();
+  if (!canPlay) return;
   try {
     await Notifications.scheduleNotificationAsync({
       content: {
@@ -96,6 +101,7 @@ export async function playInAppCueSound(kind: FeedbackCueKind) {
         body: kind === "message_received" ? "Message received" : "Message sent",
         data: { feedbackOnly: true, kind },
         sound: "default",
+        ...(Platform.OS === "android" ? { channelId: FEEDBACK_CHANNEL_ID } : {}),
       },
       trigger: null,
     });
@@ -114,26 +120,40 @@ function safeJsonParse(value: string) {
 
 export async function registerForPushNotifications(): Promise<string | null | undefined> {
   const isAndroidExpoGo = Platform.OS === "android" && Constants.appOwnership === "expo";
-  if (isAndroidExpoGo) {
-    return undefined;
-  }
 
   if (Platform.OS === "android") {
     await Notifications.setNotificationChannelAsync("messages", {
       name: "Messages",
       importance: Notifications.AndroidImportance.HIGH,
+      sound: "default",
       vibrationPattern: [0, 250, 250, 250],
       lightColor: "#6551C4",
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    });
+    await Notifications.setNotificationChannelAsync(FEEDBACK_CHANNEL_ID, {
+      name: "In-app Feedback",
+      importance: Notifications.AndroidImportance.DEFAULT,
+      sound: "default",
+      vibrationPattern: [0, 120],
+      lightColor: "#6551C4",
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.SECRET,
     });
   }
 
   const current = await Notifications.getPermissionsAsync();
   const finalStatus =
     current.status === "granted" ? current : await Notifications.requestPermissionsAsync();
+  feedbackPermissionChecked = true;
+  feedbackPermissionGranted = finalStatus.status === "granted";
 
   if (finalStatus.status !== "granted") {
-    return null;
+    return isAndroidExpoGo ? undefined : null;
+  }
+
+  if (isAndroidExpoGo) {
+    // Expo Go cannot provide an Expo push token for remote push on Android,
+    // but we still complete local permission/channel setup for in-app cue sounds.
+    return undefined;
   }
 
   const projectId =
@@ -147,4 +167,27 @@ export async function registerForPushNotifications(): Promise<string | null | un
     console.warn("Push notification registration failed.", error);
     return undefined;
   }
+}
+
+async function ensureFeedbackCueReady() {
+  if (Platform.OS === "web") return false;
+  if (Platform.OS === "android") {
+    await Notifications.setNotificationChannelAsync(FEEDBACK_CHANNEL_ID, {
+      name: "In-app Feedback",
+      importance: Notifications.AndroidImportance.DEFAULT,
+      sound: "default",
+      vibrationPattern: [0, 120],
+      lightColor: "#6551C4",
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.SECRET,
+    });
+  }
+
+  if (feedbackPermissionChecked) return feedbackPermissionGranted;
+
+  const current = await Notifications.getPermissionsAsync();
+  const finalStatus =
+    current.status === "granted" ? current : await Notifications.requestPermissionsAsync();
+  feedbackPermissionChecked = true;
+  feedbackPermissionGranted = finalStatus.status === "granted";
+  return feedbackPermissionGranted;
 }

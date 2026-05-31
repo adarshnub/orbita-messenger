@@ -110,6 +110,7 @@ type ComposerAttachment = {
 type ForwardTarget = {
   avatarUrl?: string | null;
   id: string;
+  isBot?: boolean;
   type: "conversation" | "contact";
   title: string;
   subtitle: string;
@@ -515,24 +516,78 @@ function AuthSignalScene({ inline = false }: { inline?: boolean }) {
   );
 }
 
-function Avatar({ avatarUrl, name, size = 46 }: { avatarUrl?: string | null; name: string; size?: number }) {
+function Avatar({
+  avatarUrl,
+  isBot = false,
+  name,
+  size = 46,
+}: {
+  avatarUrl?: string | null;
+  isBot?: boolean;
+  name: string;
+  size?: number;
+}) {
   const [failed, setFailed] = useState(false);
+  const pulse = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     setFailed(false);
   }, [avatarUrl]);
+  useEffect(() => {
+    if (!isBot) return undefined;
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 920, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0, duration: 920, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [isBot, pulse]);
 
   const hasImage = Boolean(avatarUrl) && !failed;
+  const pulseScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
+  const pulseOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.62, 0.2] });
   return (
-    <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2 }]}>
+    <View style={[styles.avatarWrap, { width: size, height: size }]}>
+      {isBot ? (
+        <>
+          <Animated.View
+            style={[
+              styles.botAvatarPulse,
+              {
+                width: size + 8,
+                height: size + 8,
+                borderRadius: (size + 8) / 2,
+                opacity: pulseOpacity,
+                transform: [{ scale: pulseScale }],
+              },
+            ]}
+          />
+          <View style={[styles.botAvatarRing, { width: size + 4, height: size + 4, borderRadius: (size + 4) / 2 }]} />
+        </>
+      ) : null}
+      <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2 }]}>
       {hasImage ? (
         <Image
           source={{ uri: avatarUrl! }}
           onError={() => setFailed(true)}
           style={[styles.avatarImage, { width: size, height: size, borderRadius: size / 2 }]}
         />
+      ) : isBot ? (
+        <View style={styles.botAvatarFace}>
+          <View style={styles.botAvatarEyeRow}>
+            <View style={styles.botAvatarEye} />
+            <View style={styles.botAvatarEye} />
+          </View>
+          <View style={styles.botAvatarMouth} />
+          <View style={styles.botAvatarChip}>
+            <Ionicons color={colors.primaryDark} name="sparkles" size={9} />
+          </View>
+        </View>
       ) : (
         <Text style={[styles.avatarText, { fontSize: size > 52 ? 20 : 15 }]}>{initials(name || "U")}</Text>
       )}
+      </View>
     </View>
   );
 }
@@ -1200,6 +1255,7 @@ function MessengerShell({ session }: { session: Session }) {
   const incomingHapticAtRef = useRef(0);
   const bootstrapHasLoadedRef = useRef(false);
   const pushTokenRef = useRef<string | null>(null);
+  const openingAgentFromFabRef = useRef(false);
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
   const conversationIds = useMemo(() => conversations.map((conversation) => conversation.id), [conversations]);
   const conversationKey = conversationIds.join("|");
@@ -2097,6 +2153,7 @@ function MessengerShell({ session }: { session: Session }) {
       .map((conversation) => ({
         avatarUrl: conversation.avatarUrl,
         id: conversation.id,
+        isBot: isTaskManagerAgentConversation(conversation),
         type: "conversation" as const,
         title: conversation.title,
         subtitle:
@@ -2112,6 +2169,7 @@ function MessengerShell({ session }: { session: Session }) {
       .map((contact) => ({
         avatarUrl: contact.avatarUrl,
         id: contact.id,
+        isBot: contact.about?.trim().toLowerCase() === "task manager agent",
         type: "contact" as const,
         title: contact.displayName,
         subtitle: contact.phone || "Create direct chat",
@@ -2128,6 +2186,16 @@ function MessengerShell({ session }: { session: Session }) {
       })),
     [contactsWithDefaultAgent, existingDirectByContactId],
   );
+  const agentConversationId = useMemo(
+    () => conversations.find((conversation) => isTaskManagerAgentConversation(conversation))?.id ?? "",
+    [conversations],
+  );
+  const agentContactId = useMemo(
+    () =>
+      contactsWithDefaultAgent.find((contact) => contact.about?.trim().toLowerCase() === "task manager agent")?.id ?? "",
+    [contactsWithDefaultAgent],
+  );
+  const showAgentFab = !selected && Boolean(agentConversationId || agentContactId);
 
   async function openContactConversation(otherUserId: string) {
     await run(async () => {
@@ -2140,6 +2208,39 @@ function MessengerShell({ session }: { session: Session }) {
       await loadBootstrap();
       selectConversation(result.conversation.id);
     });
+  }
+
+  async function openAgentChatFromFab() {
+    if (openingAgentFromFabRef.current) return;
+    openingAgentFromFabRef.current = true;
+    setActiveTab("chats");
+    setError("");
+    try {
+      if (agentConversationId) {
+        selectConversation(agentConversationId);
+        return;
+      }
+
+      if (agentContactId) {
+        const existingConversationId = existingDirectByContactId.get(agentContactId)?.id;
+        if (existingConversationId) {
+          selectConversation(existingConversationId);
+          return;
+        }
+
+        const result = await messengerApi.createDirectConversation(agentContactId);
+        await loadBootstrap();
+        selectConversation(result.conversation.id);
+        return;
+      }
+
+      setError("Task Manager agent is not available for this account yet.");
+    } catch (nextError) {
+      const message = nextError instanceof Error ? nextError.message : "Unable to open agent chat right now.";
+      setError(message === "Route not found." ? "Unable to open agent chat right now. Please retry." : message);
+    } finally {
+      openingAgentFromFabRef.current = false;
+    }
   }
 
   async function pickImageAttachment() {
@@ -2480,6 +2581,22 @@ function MessengerShell({ session }: { session: Session }) {
       </View>
       {showBottomTabs ? (
         <BottomTabs activeTab={activeTab} bottomInset={bottomInset} onChange={changeTab} unreadTotal={unreadTotal} />
+      ) : null}
+      {showAgentFab ? (
+        <Pressable
+          accessibilityLabel="Open agent chat"
+          onPress={() => {
+            void openAgentChatFromFab();
+          }}
+          style={[
+            styles.agentFab,
+            isDarkTheme && styles.agentFabDark,
+            { bottom: showBottomTabs ? 66 + bottomInset : 20 + bottomInset },
+          ]}
+        >
+          <Ionicons color={isDarkTheme ? colors.primaryDark : "#FFFFFF"} name="sparkles" size={18} />
+          <Text style={[styles.agentFabText, isDarkTheme && styles.agentFabTextDark]}>Agent</Text>
+        </Pressable>
       ) : null}
       {busy ? <View style={styles.busyOverlay}><ActivityIndicator color="#FFFFFF" /></View> : null}
       <NewChatModal
@@ -2865,7 +2982,11 @@ function ChatsPanel({
                       isDarkTheme && selectedId === conversation.id && styles.chatRowActiveDark,
                     ]}
                   >
-                    <Avatar avatarUrl={conversation.avatarUrl} name={conversation.title} />
+                    <Avatar
+                      avatarUrl={conversation.avatarUrl}
+                      isBot={isTaskManagerAgentConversation(conversation)}
+                      name={conversation.title}
+                    />
                     <View style={styles.chatListRowBody}>
                       <View style={styles.chatListTextColumn}>
                         <Text numberOfLines={1} style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{conversation.title}</Text>
@@ -2899,7 +3020,11 @@ function ChatsPanel({
                   onPress={() => onOpenContact(contact.id)}
                   style={[styles.chatRow, isDarkTheme && styles.chatRowDark]}
                 >
-                  <Avatar avatarUrl={contact.avatarUrl} name={contact.displayName} />
+                  <Avatar
+                    avatarUrl={contact.avatarUrl}
+                    isBot={contact.about?.trim().toLowerCase() === "task manager agent"}
+                    name={contact.displayName}
+                  />
                   <View style={styles.chatListRowBody}>
                     <View style={styles.chatListTextColumn}>
                       <Text numberOfLines={1} style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{contact.displayName}</Text>
@@ -3237,10 +3362,13 @@ function ChatPane({
         !isWide && { paddingBottom: keyboardInset || Math.max(bottomInset, KEYBOARD_COMPOSER_GAP) },
       ]}
     >
+      {quickPromptOpen ? (
+        <Pressable onPress={() => setQuickPromptOpen(false)} style={styles.quickPromptBackdrop} />
+      ) : null}
       <View style={[styles.chatHeader, isDarkTheme && styles.chatHeaderDark]}>
         <View style={[styles.row, styles.chatHeaderMain]}>
           {!isWide ? <IconButton icon="arrow-back" label="Back to chats" onPress={onBack} /> : null}
-          <Avatar avatarUrl={conversation.avatarUrl} name={conversation.title} />
+          <Avatar avatarUrl={conversation.avatarUrl} isBot={isAgentConversation} name={conversation.title} />
           <View style={styles.chatRowBody}>
             <Text numberOfLines={1} style={styles.chatHeaderTitle}>{conversation.title}</Text>
             <Text style={[styles.chatHeaderSub, Boolean(typingText) && styles.chatHeaderSubTyping]}>
@@ -3724,7 +3852,11 @@ function ContactsPanel({
       <ScrollView contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}>
         {contacts.length ? contacts.map((contact) => (
           <View key={contact.id} style={[styles.contactRow, isDarkTheme && styles.contactRowDark]}>
-            <Avatar avatarUrl={contact.avatarUrl} name={contact.displayName} />
+            <Avatar
+              avatarUrl={contact.avatarUrl}
+              isBot={contact.about?.trim().toLowerCase() === "task manager agent"}
+              name={contact.displayName}
+            />
             <View style={styles.chatRowBody}>
               <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{contact.displayName}</Text>
               <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{contact.phone ?? contact.about}</Text>
@@ -3824,20 +3956,6 @@ function SettingsPanel({
           <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Add contact</Text>
           <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Start a chat by phone number</Text>
         </View>
-      </Pressable>
-      <Pressable
-        disabled={isSyncingDeviceContacts}
-        onPress={onSyncDeviceContacts}
-        style={[styles.settingRow, isDarkTheme && styles.settingRowDark, isSyncingDeviceContacts && styles.disabledPressable]}
-      >
-        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="sync-outline" size={22} />
-        <View style={styles.chatRowBody}>
-          <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Sync phone contacts</Text>
-          <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>
-            {isSyncingDeviceContacts ? "Syncing contacts..." : "Import matching Orbita users from this device"}
-          </Text>
-        </View>
-        {isSyncingDeviceContacts ? <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} size="small" /> : null}
       </Pressable>
       {notice ? <Text style={[styles.settingsNotice, isDarkTheme && styles.settingsNoticeDark]}>{notice}</Text> : null}
       {[
@@ -3952,7 +4070,11 @@ function NewChatModal({
           <ScrollView contentContainerStyle={styles.newChatContactListContent} style={styles.newChatContactList}>
             {contacts.length ? contacts.map((contact) => (
               <Pressable key={contact.id} onPress={() => onOpenConversation(contact.id)} style={styles.newChatContactRow}>
-                <Avatar avatarUrl={contact.avatarUrl} name={contact.displayName} />
+                <Avatar
+                  avatarUrl={contact.avatarUrl}
+                  isBot={contact.about?.trim().toLowerCase() === "task manager agent"}
+                  name={contact.displayName}
+                />
                 <View style={styles.chatRowBody}>
                   <Text numberOfLines={1} style={styles.chatTitle}>{contact.displayName}</Text>
                   <Text numberOfLines={1} style={styles.chatPreview}>{contact.phone}</Text>
@@ -4129,7 +4251,11 @@ function ContactPicker({
     <ScrollView style={styles.modalList}>
       {contacts.length ? contacts.map((contact) => (
         <Pressable key={contact.id} onPress={() => toggle(contact.id)} style={styles.modalRow}>
-          <Avatar avatarUrl={contact.avatarUrl} name={contact.displayName} />
+          <Avatar
+            avatarUrl={contact.avatarUrl}
+            isBot={contact.about?.trim().toLowerCase() === "task manager agent"}
+            name={contact.displayName}
+          />
           <View style={styles.chatRowBody}>
             <Text style={styles.chatTitle}>{contact.displayName}</Text>
             <Text style={styles.chatPreview}>{contact.phone}</Text>
@@ -4234,7 +4360,7 @@ function ForwardPickerModal({
               }
               style={styles.modalRow}
             >
-              <Avatar avatarUrl={target.avatarUrl} name={target.title} />
+              <Avatar avatarUrl={target.avatarUrl} isBot={Boolean(target.isBot)} name={target.title} />
               <View style={styles.chatRowBody}>
                 <Text style={styles.chatTitle}>{target.title}</Text>
                 <Text style={styles.chatPreview}>{target.subtitle}</Text>
@@ -4882,7 +5008,58 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   contactRowDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
+  avatarWrap: { alignItems: "center", justifyContent: "center" },
+  botAvatarPulse: {
+    position: "absolute",
+    borderWidth: 2,
+    borderColor: "rgba(101,81,196,0.38)",
+    backgroundColor: "rgba(101,81,196,0.08)",
+  },
+  botAvatarRing: {
+    position: "absolute",
+    borderWidth: 1.5,
+    borderColor: "rgba(242,244,123,0.75)",
+    backgroundColor: "transparent",
+  },
   avatar: { alignItems: "center", justifyContent: "center", backgroundColor: colors.primary },
+  botAvatarFace: {
+    width: "80%",
+    height: "80%",
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F5F7FF",
+    borderWidth: 1,
+    borderColor: "rgba(101,81,196,0.22)",
+    position: "relative",
+    gap: 4,
+  },
+  botAvatarEyeRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  botAvatarEye: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: colors.primaryDark,
+  },
+  botAvatarMouth: {
+    width: 14,
+    height: 3,
+    borderRadius: 3,
+    backgroundColor: "rgba(101,81,196,0.72)",
+  },
+  botAvatarChip: {
+    position: "absolute",
+    right: -1,
+    bottom: -1,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.accent,
+    borderWidth: 1,
+    borderColor: "rgba(101,81,196,0.28)",
+  },
   avatarImage: { resizeMode: "cover" },
   avatarText: { color: "#FFFFFF", fontWeight: "900" },
   chatRowBody: { flex: 1, minWidth: 0 },
@@ -5077,6 +5254,13 @@ const styles = StyleSheet.create({
     position: "relative",
     alignSelf: "flex-end",
     marginBottom: 2,
+    zIndex: 80,
+    elevation: 10,
+  },
+  quickPromptBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 60,
+    backgroundColor: "transparent",
   },
   quickPromptButton: {
     width: 34,
@@ -5323,6 +5507,34 @@ const styles = StyleSheet.create({
   agentWelcomeTitleDark: { color: "#FFFFFF" },
   agentWelcomeBody: { color: colors.muted, fontSize: 13, lineHeight: 18 },
   agentWelcomeBodyDark: { color: "rgba(255,255,255,0.70)" },
+  agentFab: {
+    position: "absolute",
+    right: 16,
+    height: 44,
+    borderRadius: 22,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    backgroundColor: colors.primaryDark,
+    borderWidth: 1,
+    borderColor: "rgba(101,81,196,0.35)",
+    ...shadow,
+    zIndex: 130,
+    elevation: 12,
+  },
+  agentFabDark: {
+    backgroundColor: colors.accent,
+    borderColor: "rgba(242,244,123,0.55)",
+  },
+  agentFabText: {
+    color: "#FFFFFF",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  agentFabTextDark: {
+    color: colors.primaryDark,
+  },
   busyOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",

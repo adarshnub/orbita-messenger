@@ -20,14 +20,29 @@ function runVibration(pattern: number | number[]) {
   }
 }
 
+async function runAndroidHaptic(type: Haptics.AndroidHaptics) {
+  if (Platform.OS !== "android") return;
+  try {
+    await Haptics.performAndroidHapticsAsync(type);
+  } catch {
+    // Fallbacks handle devices that don't support Android haptic primitives.
+  }
+}
+
 export function hapticMessageSent() {
-  runVibration(12);
+  runVibration([0, 22]);
   void playInAppCueSound("message_sent");
-  return runHaptic(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light));
+  if (Platform.OS === "android") {
+    void runAndroidHaptic(Haptics.AndroidHaptics.Confirm);
+  }
+  return runHaptic(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium));
 }
 
 export function hapticMessageReceived() {
-  runVibration([0, 18, 26, 18]);
+  runVibration([0, 44, 38, 44]);
   void playInAppCueSound("message_received");
+  if (Platform.OS === "android") {
+    void runAndroidHaptic(Haptics.AndroidHaptics.Context_Click);
+  }
   return runHaptic(() => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success));
 }
