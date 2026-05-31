@@ -1,8 +1,10 @@
 import { supabase } from "./supabase";
+import type { BackendMessage } from "@/features/chats/backendTypes";
 
 type RealtimeHandlers = {
   conversationIds: string[];
   onConversationEvent: (conversationId: string) => void;
+  onMessageInserted?: (message: BackendMessage) => void;
   onSubscribed?: () => void;
   onRealtimeEvent: (conversationId: string | null) => void;
   onUserEvent: () => void;
@@ -12,6 +14,7 @@ type RealtimeHandlers = {
 export function subscribeMessengerRealtime({
   conversationIds,
   onConversationEvent,
+  onMessageInserted,
   onSubscribed,
   onRealtimeEvent,
   onUserEvent,
@@ -84,7 +87,13 @@ export function subscribeMessengerRealtime({
             schema: "public",
             table: "messages",
           },
-          () => onConversationEvent(conversationId),
+          (payload) => {
+            if (payload.eventType === "INSERT") {
+              const message = mapRealtimeMessage(payload.new);
+              if (message) onMessageInserted?.(message);
+            }
+            onConversationEvent(conversationId);
+          },
         )
         .on(
           "postgres_changes",
@@ -105,4 +114,43 @@ export function subscribeMessengerRealtime({
       client.removeChannel(channel);
     });
   };
+}
+
+function mapRealtimeMessage(row: unknown): BackendMessage | null {
+  if (!row || typeof row !== "object") return null;
+  const value = row as Record<string, unknown>;
+  const payload = value.encrypted_payload;
+  const encryptedPayload =
+    payload && typeof payload === "object" ? (payload as Record<string, unknown>) : {};
+  const body = typeof encryptedPayload.body === "string" ? encryptedPayload.body : "";
+  const kind = typeof value.kind === "string" ? value.kind : "text";
+  const forwardedFrom =
+    encryptedPayload.forwardedFrom && typeof encryptedPayload.forwardedFrom === "object"
+      ? (encryptedPayload.forwardedFrom as BackendMessage["forwardedFrom"])
+      : null;
+
+  if (
+    typeof value.id !== "string" ||
+    typeof value.conversation_id !== "string" ||
+    typeof value.sender_id !== "string" ||
+    typeof value.created_at !== "string"
+  ) {
+    return null;
+  }
+
+  return {
+    attachments: [],
+    body,
+    conversationId: value.conversation_id,
+    createdAt: value.created_at,
+    forwardedFrom,
+    id: value.id,
+    kind: isBackendMessageKind(kind) ? kind : "text",
+    senderId: value.sender_id,
+    status: "sent",
+  };
+}
+
+function isBackendMessageKind(value: string): value is BackendMessage["kind"] {
+  return ["text", "image", "video", "document", "audio", "voice"].includes(value);
 }

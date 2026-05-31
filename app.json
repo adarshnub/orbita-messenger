@@ -14,6 +14,11 @@
       "icon": "./assets/notification-icon.png",
       "color": "#6551C4"
     },
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#101421"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.orbita.messenger",
@@ -29,7 +34,7 @@
       "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#E7F4FF"
+        "backgroundColor": "#101421"
       },
       "permissions": [
         "android.permission.READ_CONTACTS",
@@ -40,7 +45,8 @@
     },
     "web": {
       "bundler": "metro",
-      "output": "single"
+      "output": "single",
+      "favicon": "./assets/icon.png"
     },
     "plugins": [
       "expo-router",

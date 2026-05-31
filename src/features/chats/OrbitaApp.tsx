@@ -9,6 +9,7 @@ import {
   useAudioRecorder,
   useAudioRecorderState,
 } from "expo-audio";
+import * as DeviceContacts from "expo-contacts";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import * as Notifications from "expo-notifications";
@@ -125,6 +126,7 @@ const TYPING_IDLE_MS = 1_900;
 const TYPING_EXPIRE_MS = 4_800;
 const AGENT_THINKING_POLL_MS = 3_500;
 const AGENT_THINKING_TIMEOUT_MS = 45_000;
+const CHAT_PAGE_SIZE = 24;
 const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: "chats", label: "Chats", icon: "chatbubbles-outline" },
   { id: "status", label: "Status", icon: "aperture-outline" },
@@ -304,6 +306,10 @@ function peerLabel(profile: BackendProfile) {
   return profile.phone || profile.displayName || "Orbita user";
 }
 
+function searchableText(values: Array<string | null | undefined>) {
+  return values.filter(Boolean).join(" ").trim().toLowerCase();
+}
+
 function keyboardClearance(height?: number, bottomInset = 0, keyboardTop?: number, windowHeight?: number) {
   const keyboardHeight = Math.max(0, Math.round(height ?? 0));
   const hasKeyboardTop = typeof keyboardTop === "number" && keyboardTop > 0 && typeof windowHeight === "number";
@@ -362,6 +368,21 @@ function mergeMessages(incoming: BackendMessage[], local: ChatMessage[]) {
 
   stable.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
   return stable;
+}
+
+function upsertMessage(messages: ChatMessage[], incoming: BackendMessage): ChatMessage[] {
+  const withoutDuplicate = messages.filter((message) => message.id !== incoming.id);
+  const matchingLocal = withoutDuplicate.find((message) => {
+    if (!message.localState) return false;
+    if (message.senderId !== incoming.senderId) return false;
+    if (messageSignature(message) !== messageSignature(incoming)) return false;
+    return Math.abs(Date.parse(message.createdAt) - Date.parse(incoming.createdAt)) <= MESSAGE_RECONCILE_WINDOW_MS;
+  });
+  const next = matchingLocal
+    ? withoutDuplicate.map((message) => (message.id === matchingLocal.id ? incoming : message))
+    : [...withoutDuplicate, incoming];
+
+  return next.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 }
 
 function OrbitaLogo({ size = 64 }: { size?: number }) {
@@ -1117,6 +1138,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [loadingOlderFor, setLoadingOlderFor] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [settingsNotice, setSettingsNotice] = useState("");
   const [agentThinkingFor, setAgentThinkingFor] = useState<Record<string, string>>({});
   const [typingByConversation, setTypingByConversation] = useState<Record<string, Record<string, TypingParticipant>>>({});
   const [newChatOpen, setNewChatOpen] = useState(false);
@@ -1407,6 +1429,44 @@ function MessengerShell({ session }: { session: Session }) {
     };
   }, []);
 
+  const applyRealtimeMessage = useCallback((message: BackendMessage) => {
+    const activeConversationId = selectedIdRef.current;
+    const currentForConversation = messagesByConversationRef.current[message.conversationId] ?? [];
+    const nextMessages = upsertMessage(currentForConversation, message);
+    rememberMessages(message.conversationId, nextMessages);
+
+    if (activeConversationId === message.conversationId) {
+      setSelectedMessages(nextMessages);
+      if (message.senderId !== profileId) {
+        playIncomingHaptic();
+        markConversationReadLocally(message.conversationId);
+      }
+    }
+
+    setConversations((current) =>
+      current.map((conversation) => {
+        if (conversation.id !== message.conversationId) return conversation;
+        const shouldIncrementUnread = message.senderId !== profileId && activeConversationId !== message.conversationId;
+        return {
+          ...conversation,
+          lastMessage: message,
+          updatedAt: message.createdAt,
+          unreadCount: shouldIncrementUnread ? conversation.unreadCount + 1 : conversation.unreadCount,
+        };
+      }),
+    );
+
+    if (message.senderId !== profileId && agentThinkingForRef.current[message.conversationId]) {
+      setAgentThinkingFor((currentThinking) => {
+        const next = { ...currentThinking };
+        delete next[message.conversationId];
+        return next;
+      });
+    }
+
+    void writeConversationMessages(session.user.id, message.conversationId, nextMessages).catch(() => undefined);
+  }, [markConversationReadLocally, playIncomingHaptic, profileId, rememberMessages, session.user.id]);
+
   const isPreviewOnlyMessageSet = useCallback((conversationId: string, messages: ChatMessage[]) => {
     if (messages.length !== 1) return false;
     const conversation = conversationsRef.current.find((item) => item.id === conversationId);
@@ -1644,6 +1704,7 @@ function MessengerShell({ session }: { session: Session }) {
       onConversationEvent: (conversationId) => {
         refreshActiveConversation(conversationId === selectedId ? conversationId : "");
       },
+      onMessageInserted: applyRealtimeMessage,
       onRealtimeEvent: (conversationId) => {
         refreshActiveConversation(conversationId && conversationId === selectedId ? conversationId : "");
       },
@@ -1651,7 +1712,7 @@ function MessengerShell({ session }: { session: Session }) {
         scheduleBootstrapRefresh();
       },
     });
-  }, [conversationKey, profileId, scheduleBootstrapRefresh, scheduleMessageRefresh, selectedId]);
+  }, [applyRealtimeMessage, conversationKey, profileId, scheduleBootstrapRefresh, scheduleMessageRefresh, selectedId]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
@@ -1659,12 +1720,12 @@ function MessengerShell({ session }: { session: Session }) {
         stopTyping(selectedId);
         return;
       }
-      scheduleBootstrapRefresh();
-      if (selectedId) scheduleMessageRefresh(selectedId);
+      void loadBootstrap();
+      if (selectedId) void loadMessages(selectedId);
     });
 
     return () => subscription.remove();
-  }, [scheduleBootstrapRefresh, scheduleMessageRefresh, selectedId, stopTyping]);
+  }, [loadBootstrap, loadMessages, selectedId, stopTyping]);
 
   useEffect(() => {
     if (Platform.OS !== "android") return undefined;
@@ -1734,6 +1795,58 @@ function MessengerShell({ session }: { session: Session }) {
       pushTokenRef.current = null;
     }
     await supabase?.auth.signOut();
+  }
+
+  async function syncDeviceContacts() {
+    if (Platform.OS === "web") {
+      setSettingsNotice("Contact sync is available only on mobile.");
+      return;
+    }
+
+    await run(async () => {
+      const permission = await DeviceContacts.requestPermissionsAsync();
+      if (!permission.granted) {
+        setSettingsNotice("Contact permission was not granted.");
+        return;
+      }
+
+      const result = await DeviceContacts.getContactsAsync({
+        fields: [DeviceContacts.Fields.PhoneNumbers],
+        pageSize: 1000,
+      });
+      const seen = new Set<string>();
+      const candidates = result.data.flatMap((contact) =>
+        (contact.phoneNumbers ?? []).map((phoneNumber) => ({
+          name: contact.name || [contact.firstName, contact.lastName].filter(Boolean).join(" ") || undefined,
+          phone: normalizePhone(phoneNumber.number ?? ""),
+        })),
+      ).filter((contact) => {
+        if (!contact.phone || contact.phone === normalizePhone(profile?.phone ?? "")) return false;
+        if (seen.has(contact.phone)) return false;
+        seen.add(contact.phone);
+        return true;
+      });
+
+      let imported = 0;
+      let skipped = 0;
+      for (const contact of candidates) {
+        try {
+          await messengerApi.addContactByPhone(contact.phone, contact.name);
+          imported += 1;
+        } catch {
+          skipped += 1;
+        }
+      }
+
+      await loadBootstrap();
+      setSettingsNotice(
+        imported
+          ? `Synced ${imported} contact${imported === 1 ? "" : "s"}. ${skipped ? `${skipped} not on Orbita yet.` : ""}`.trim()
+          : skipped
+            ? "No matching Orbita users found in your phone contacts yet."
+            : "No phone contacts found to sync.",
+      );
+    });
   }
 
   async function retryBootstrap() {
@@ -2028,6 +2141,9 @@ function MessengerShell({ session }: { session: Session }) {
     });
     void upsertCachedMessage(profile.id, optimisticMessage).catch(() => undefined);
     updateConversationPreview(optimisticMessage);
+    if (isTaskManagerAgentConversation(selected)) {
+      setAgentThinkingFor((current) => ({ ...current, [selected.id]: optimisticMessage.createdAt }));
+    }
 
     try {
       let attachmentId: string | undefined;
@@ -2139,6 +2255,7 @@ function MessengerShell({ session }: { session: Session }) {
 
   const showPanel = isWide || activeTab !== "chats" || !selected;
   const showBottomTabs = !isWide && !(activeTab === "chats" && selected);
+  const showAppHeader = isWide || !(activeTab === "chats" && selected);
   const bottomInset = Math.max(insets.bottom, Platform.OS === "android" ? 8 : 0);
 
   return (
@@ -2146,18 +2263,13 @@ function MessengerShell({ session }: { session: Session }) {
       <View style={[styles.appFrame, isDarkTheme && styles.appFrameDark]}>
         {isWide ? <Sidebar activeTab={activeTab} onChange={changeTab} onNewChat={() => setNewChatOpen(true)} /> : null}
         <View style={[styles.workspace, isDarkTheme && styles.workspaceDark]}>
-          <AppHeader
-            isWide={isWide}
-            onNewChat={() => setNewChatOpen(true)}
-            onOpenProfile={() => setProfileOpen(true)}
-            onSignOut={signOut}
-          />
+          {showAppHeader ? <AppHeader isWide={isWide} /> : null}
           {error ? <Text style={styles.errorBar}>{error}</Text> : null}
           <View
             style={[
               styles.content,
               isDarkTheme && styles.contentDark,
-              !isWide && [styles.contentMobile, { paddingBottom: showBottomTabs ? 64 + bottomInset : 0 }],
+              !isWide && [styles.contentMobile, { paddingBottom: showBottomTabs ? 58 + bottomInset : 0 }],
               !isWide && isDarkTheme && styles.contentMobileDark,
               !isWide && activeTab === "chats" && selected && styles.contentMobileChat,
             ]}
@@ -2173,9 +2285,12 @@ function MessengerShell({ session }: { session: Session }) {
                 onNewStatus={() => setStatusOpen(true)}
                 onOpenProfile={() => setProfileOpen(true)}
                 onOpenContact={openContactConversation}
+                onSignOut={signOut}
+                onSyncDeviceContacts={syncDeviceContacts}
                 onSelect={selectConversation}
                 profile={profile}
                 selectedId={selected?.id}
+                settingsNotice={settingsNotice}
                 statuses={statuses}
               />
             ) : null}
@@ -2317,24 +2432,13 @@ function MessengerShell({ session }: { session: Session }) {
 
 function AppHeader({
   isWide,
-  onNewChat,
-  onOpenProfile,
-  onSignOut,
 }: {
   isWide: boolean;
-  onNewChat: () => void;
-  onOpenProfile: () => void;
-  onSignOut: () => void;
 }) {
   const { isDarkTheme } = useAppTheme();
   return (
     <View style={[styles.header, isDarkTheme && styles.headerDark, !isWide && styles.headerMobile]}>
       <OrbitaBrand compact={!isWide} inverse={isDarkTheme} />
-      <View style={styles.headerActions}>
-        <IconButton icon="create-outline" label="New chat" onPress={onNewChat} />
-        <IconButton icon="person-circle-outline" label="Profile" onPress={onOpenProfile} />
-        <IconButton icon="log-out-outline" label="Sign out" onPress={onSignOut} />
-      </View>
     </View>
   );
 }
@@ -2394,7 +2498,7 @@ function BottomTabs({
             <Ionicons
               color={activeTab === tab.id ? (isDarkTheme ? colors.accent : colors.primaryDark) : isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted}
               name={tab.icon}
-              size={24}
+              size={21}
             />
             {tab.id === "chats" && unreadTotal > 0 ? <UnreadBadge count={unreadTotal} compact /> : null}
           </View>
@@ -2434,8 +2538,11 @@ function Panel({
   onNewStatus,
   onOpenProfile,
   onSelect,
+  onSignOut,
+  onSyncDeviceContacts,
   profile,
   selectedId,
+  settingsNotice,
   statuses,
 }: {
   activeTab: Tab;
@@ -2448,8 +2555,11 @@ function Panel({
   onNewStatus: () => void;
   onOpenProfile: () => void;
   onSelect: (id: string) => void;
+  onSignOut: () => void;
+  onSyncDeviceContacts: () => void;
   profile: BackendProfile;
   selectedId?: string;
+  settingsNotice: string;
   statuses: BackendStatus[];
 }) {
   const { isDarkTheme } = useAppTheme();
@@ -2463,56 +2573,173 @@ function Panel({
     return <CallsPanel isWide={isWide} />;
   }
   if (activeTab === "settings") {
-    return <SettingsPanel isWide={isWide} onOpenProfile={onOpenProfile} profile={profile} />;
+    return (
+      <SettingsPanel
+        isWide={isWide}
+        notice={settingsNotice}
+        onNewChat={onNewChat}
+        onOpenProfile={onOpenProfile}
+        onSignOut={onSignOut}
+        onSyncDeviceContacts={onSyncDeviceContacts}
+        profile={profile}
+      />
+    );
+  }
+
+  return (
+    <ChatsPanel
+      contacts={contacts}
+      conversations={conversations}
+      isWide={isWide}
+      onNewChat={onNewChat}
+      onOpenContact={onOpenContact}
+      onSelect={onSelect}
+      selectedId={selectedId}
+    />
+  );
+}
+
+function ChatsPanel({
+  contacts,
+  conversations,
+  isWide,
+  onNewChat,
+  onOpenContact,
+  onSelect,
+  selectedId,
+}: {
+  contacts: ChatListContact[];
+  conversations: BackendConversation[];
+  isWide: boolean;
+  onNewChat: () => void;
+  onOpenContact: (contactId: string) => void;
+  onSelect: (id: string) => void;
+  selectedId?: string;
+}) {
+  const { isDarkTheme } = useAppTheme();
+  const [query, setQuery] = useState("");
+  const [visibleCount, setVisibleCount] = useState(CHAT_PAGE_SIZE);
+  const normalizedQuery = query.trim().toLowerCase();
+
+  useEffect(() => {
+    setVisibleCount(CHAT_PAGE_SIZE);
+  }, [normalizedQuery, conversations.length, contacts.length]);
+
+  const rows = useMemo(() => {
+    const conversationRows = conversations
+      .filter((conversation) => {
+        if (!normalizedQuery) return true;
+        return searchableText([
+          conversation.title,
+          messagePreviewText(conversation.lastMessage),
+          ...conversation.participants.map((participant) => participant.displayName),
+          ...conversation.participants.map((participant) => participant.phone),
+        ]).includes(normalizedQuery);
+      })
+      .map((conversation) => ({ conversation, id: `conversation-${conversation.id}`, type: "conversation" as const }));
+
+    const contactRows = contacts
+      .filter((contact) => !contact.existingConversationId)
+      .filter((contact) => {
+        if (!normalizedQuery) return true;
+        return searchableText([contact.displayName, contact.phone, contact.about]).includes(normalizedQuery);
+      })
+      .map((contact) => ({ contact, id: `contact-${contact.id}`, type: "contact" as const }));
+
+    return [...conversationRows, ...contactRows];
+  }, [contacts, conversations, normalizedQuery]);
+
+  const visibleRows = rows.slice(0, visibleCount);
+  const canLoadMore = visibleCount < rows.length;
+
+  function handleScroll(event: {
+    nativeEvent: {
+      contentOffset: { y: number };
+      contentSize: { height: number };
+      layoutMeasurement: { height: number };
+    };
+  }) {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const nearEnd = contentOffset.y + layoutMeasurement.height >= contentSize.height - 180;
+    if (nearEnd && canLoadMore) {
+      setVisibleCount((current) => Math.min(current + CHAT_PAGE_SIZE, rows.length));
+    }
   }
 
   return (
     <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
-      <PanelTitle title="Chats" actionIcon="create-outline" actionLabel="New chat" onAction={onNewChat} />
-      <ScrollView contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}>
-        {conversations.length || contacts.length ? (
+      <View style={[styles.chatSearchHeader, isDarkTheme && styles.chatSearchHeaderDark]}>
+        <View style={[styles.searchBox, isDarkTheme && styles.searchBoxDark]}>
+          <Ionicons color={isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted} name="search-outline" size={18} />
+          <TextInput
+            onChangeText={setQuery}
+            placeholder="Search contacts or chats"
+            placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
+            style={[styles.searchInput, isDarkTheme && styles.searchInputDark]}
+            value={query}
+          />
+          {query ? (
+            <Pressable onPress={() => setQuery("")}>
+              <Ionicons color={isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted} name="close-circle" size={18} />
+            </Pressable>
+          ) : null}
+        </View>
+        <Pressable accessibilityLabel="Add contact" onPress={onNewChat} style={[styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark]}>
+          <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="person-add-outline" size={20} />
+        </Pressable>
+      </View>
+      <ScrollView
+        contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}
+        onScroll={handleScroll}
+        scrollEventThrottle={120}
+      >
+        {visibleRows.length ? (
           <>
-            {conversations.map((conversation) => (
-              <Pressable
-                key={`conversation-${conversation.id}`}
-                onPress={() => onSelect(conversation.id)}
-                style={[
-                  styles.chatRow,
-                  isDarkTheme && styles.chatRowDark,
-                  selectedId === conversation.id && styles.chatRowActive,
-                  isDarkTheme && selectedId === conversation.id && styles.chatRowActiveDark,
-                ]}
-              >
-                <Avatar name={conversation.title} />
-                <View style={styles.chatListRowBody}>
-                  <View style={styles.chatListTextColumn}>
-                    <Text numberOfLines={1} style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{conversation.title}</Text>
-                    <Text
-                      numberOfLines={1}
-                      style={[
-                        styles.chatPreview,
-                        isDarkTheme && styles.chatPreviewDark,
-                        conversation.unreadCount > 0 && styles.chatPreviewUnread,
-                        isDarkTheme && conversation.unreadCount > 0 && styles.chatPreviewUnreadDark,
-                      ]}
-                    >
-                      {messagePreviewText(conversation.lastMessage) || conversationFallbackPreview(conversation)}
-                    </Text>
-                  </View>
-                  <View style={styles.chatListMetaColumn}>
-                    <Text numberOfLines={1} style={[styles.chatTime, isDarkTheme && styles.chatTimeDark]}>
-                      {conversation.lastMessage ? formatTime(conversation.lastMessage.createdAt) : ""}
-                    </Text>
-                    {conversation.unreadCount > 0 ? <UnreadBadge count={conversation.unreadCount} /> : null}
-                  </View>
-                </View>
-              </Pressable>
-            ))}
-            {contacts
-              .filter((contact) => !contact.existingConversationId)
-              .map((contact) => (
+            {visibleRows.map((row) => {
+              if (row.type === "conversation") {
+                const conversation = row.conversation;
+                return (
+                  <Pressable
+                    key={row.id}
+                    onPress={() => onSelect(conversation.id)}
+                    style={[
+                      styles.chatRow,
+                      isDarkTheme && styles.chatRowDark,
+                      selectedId === conversation.id && styles.chatRowActive,
+                      isDarkTheme && selectedId === conversation.id && styles.chatRowActiveDark,
+                    ]}
+                  >
+                    <Avatar name={conversation.title} />
+                    <View style={styles.chatListRowBody}>
+                      <View style={styles.chatListTextColumn}>
+                        <Text numberOfLines={1} style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{conversation.title}</Text>
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            styles.chatPreview,
+                            isDarkTheme && styles.chatPreviewDark,
+                            conversation.unreadCount > 0 && styles.chatPreviewUnread,
+                            isDarkTheme && conversation.unreadCount > 0 && styles.chatPreviewUnreadDark,
+                          ]}
+                        >
+                          {messagePreviewText(conversation.lastMessage) || conversationFallbackPreview(conversation)}
+                        </Text>
+                      </View>
+                      <View style={styles.chatListMetaColumn}>
+                        <Text numberOfLines={1} style={[styles.chatTime, isDarkTheme && styles.chatTimeDark]}>
+                          {conversation.lastMessage ? formatTime(conversation.lastMessage.createdAt) : ""}
+                        </Text>
+                        {conversation.unreadCount > 0 ? <UnreadBadge count={conversation.unreadCount} /> : null}
+                      </View>
+                    </View>
+                  </Pressable>
+                );
+              }
+
+              const contact = row.contact;
+              return (
                 <Pressable
-                  key={`contact-${contact.id}`}
+                  key={row.id}
                   onPress={() => onOpenContact(contact.id)}
                   style={[styles.chatRow, isDarkTheme && styles.chatRowDark]}
                 >
@@ -2522,13 +2749,21 @@ function Panel({
                       <Text numberOfLines={1} style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{contact.displayName}</Text>
                       <Text numberOfLines={1} style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Tap to start a 1:1 chat</Text>
                     </View>
-                    <Ionicons color={colors.primaryDark} name="chatbubble-outline" size={21} />
+                    <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="chatbubble-outline" size={21} />
                   </View>
                 </Pressable>
-              ))}
+              );
+            })}
+            {canLoadMore ? (
+              <Text style={[styles.listFooterText, isDarkTheme && styles.listFooterTextDark]}>Scroll for more chats</Text>
+            ) : null}
           </>
         ) : (
-          <EmptyState icon="chatbubbles-outline" title="No chats yet" copy="Add a contact or create a group." />
+          <EmptyState
+            icon={normalizedQuery ? "search-outline" : "chatbubbles-outline"}
+            title={normalizedQuery ? "No matches" : "No chats yet"}
+            copy={normalizedQuery ? "Try another contact name or phone number." : "Add a contact or sync contacts from Settings."}
+          />
         )}
       </ScrollView>
     </View>
@@ -2690,8 +2925,10 @@ function ChatPane({
     const previousLastMessageId = previousLastMessageIdRef.current;
     previousLastMessageIdRef.current = lastMessageId;
     if (!lastMessageId || previousLastMessageId === lastMessageId || loadingOlder) return;
-    scrollToLatest();
-  }, [lastMessageId, loadingOlder, scrollToLatest]);
+    const lastMessage = messages[messages.length - 1];
+    const shouldFollowLatest = lastMessage?.senderId === currentUserId || isNearLatestRef.current;
+    if (shouldFollowLatest) scrollToLatest();
+  }, [currentUserId, lastMessageId, loadingOlder, messages, scrollToLatest]);
 
   useEffect(() => {
     const previousCount = previousMessageCountRef.current;
@@ -2923,7 +3160,7 @@ function ChatPane({
                       <View style={styles.messageMeta}>
                         <Text style={[styles.metaText, mine && styles.metaTextMine]}>{formatTime(message.createdAt)}</Text>
                         {mine && message.localState === "sending" ? (
-                          <ActivityIndicator color={colors.primarySoft} size="small" />
+                          <Ionicons color="rgba(255,255,255,0.72)" name="time-outline" size={13} />
                         ) : null}
                         {mine && message.localState === "failed" ? (
                           <Ionicons color={colors.danger} name="alert-circle" size={15} />
@@ -3344,17 +3581,26 @@ function CallsPanel({ isWide }: { isWide: boolean }) {
 
 function SettingsPanel({
   isWide,
+  notice,
+  onNewChat,
   onOpenProfile,
+  onSignOut,
+  onSyncDeviceContacts,
   profile,
 }: {
   isWide: boolean;
+  notice: string;
+  onNewChat: () => void;
   onOpenProfile: () => void;
+  onSignOut: () => void;
+  onSyncDeviceContacts: () => void;
   profile: BackendProfile;
 }) {
   const { isDarkTheme, themeMode, toggleTheme } = useAppTheme();
   return (
     <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Settings" actionIcon="create-outline" actionLabel="Edit profile" onAction={onOpenProfile} />
+      <ScrollView contentContainerStyle={[styles.settingsContent, isDarkTheme && styles.listContentDark]}>
       <View style={[styles.profileCard, isDarkTheme && styles.profileCardDark]}>
         <Avatar name={profile.displayName} size={64} />
         <View style={styles.chatRowBody}>
@@ -3375,6 +3621,28 @@ function SettingsPanel({
           <View style={[styles.themeSwitchKnob, isDarkTheme && styles.themeSwitchKnobOn]} />
         </View>
       </Pressable>
+      <Pressable onPress={onOpenProfile} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
+        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="person-circle-outline" size={22} />
+        <View style={styles.chatRowBody}>
+          <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Profile</Text>
+          <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Edit your display name and status line</Text>
+        </View>
+      </Pressable>
+      <Pressable onPress={onNewChat} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
+        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="person-add-outline" size={22} />
+        <View style={styles.chatRowBody}>
+          <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Add contact</Text>
+          <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Start a chat by phone number</Text>
+        </View>
+      </Pressable>
+      <Pressable onPress={onSyncDeviceContacts} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
+        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="sync-outline" size={22} />
+        <View style={styles.chatRowBody}>
+          <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Sync phone contacts</Text>
+          <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Import matching Orbita users from this device</Text>
+        </View>
+      </Pressable>
+      {notice ? <Text style={[styles.settingsNotice, isDarkTheme && styles.settingsNoticeDark]}>{notice}</Text> : null}
       {[
         ["key-outline", "Account", "Phone OTP session stored by Supabase Auth"],
         ["lock-closed-outline", "Privacy", "Profile and contact visibility enforced by RLS"],
@@ -3388,6 +3656,14 @@ function SettingsPanel({
           </View>
         </View>
       ))}
+      <Pressable onPress={onSignOut} style={[styles.settingRow, styles.settingDangerRow, isDarkTheme && styles.settingRowDark]}>
+        <Ionicons color={colors.danger} name="log-out-outline" size={22} />
+        <View style={styles.chatRowBody}>
+          <Text style={[styles.chatTitle, styles.settingDangerText]}>Log out</Text>
+          <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Remove this device session</Text>
+        </View>
+      </Pressable>
+      </ScrollView>
     </View>
   );
 }
@@ -4277,15 +4553,51 @@ const styles = StyleSheet.create({
   },
   mobilePanel: { flex: 1, width: "100%", borderRadius: 0, borderLeftWidth: 0, borderRightWidth: 0, borderTopWidth: 0 },
   panelTitle: {
-    minHeight: 72,
-    paddingHorizontal: 18,
+    minHeight: 58,
+    paddingHorizontal: 16,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     backgroundColor: colors.primaryDark,
   },
   panelTitleDark: { backgroundColor: "#171E31", borderBottomColor: "rgba(242,244,123,0.12)", borderBottomWidth: 1 },
-  panelHeading: { color: "#FFFFFF", fontSize: 39, fontWeight: "900" },
+  panelHeading: { color: "#FFFFFF", fontSize: 22, fontWeight: "900", letterSpacing: 0.2 },
+  chatSearchHeader: {
+    minHeight: 70,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderBottomColor: colors.line,
+    borderBottomWidth: 1,
+    backgroundColor: colors.surface,
+  },
+  chatSearchHeaderDark: { backgroundColor: "#171E31", borderBottomColor: "rgba(242,244,123,0.12)" },
+  searchBox: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 22,
+    paddingHorizontal: 13,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: colors.page,
+  },
+  searchBoxDark: { backgroundColor: "rgba(255,255,255,0.08)" },
+  searchInput: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 14, paddingVertical: 8 },
+  searchInputDark: { color: "#FFFFFF" },
+  searchAddButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.primarySoft,
+    borderWidth: 1,
+    borderColor: "rgba(101,81,196,0.14)",
+  },
+  searchAddButtonDark: { backgroundColor: "rgba(242,244,123,0.12)", borderColor: "rgba(242,244,123,0.20)" },
   iconButton: {
     width: 40,
     height: 40,
@@ -4302,8 +4614,8 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    minHeight: 66,
-    paddingTop: 7,
+    minHeight: 58,
+    paddingTop: 5,
     paddingHorizontal: 6,
     flexDirection: "row",
     justifyContent: "space-around",
@@ -4312,13 +4624,15 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   bottomTabsDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#101421" },
-  bottomTab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 3 },
-  bottomTabLabel: { color: colors.muted, fontSize: 11, fontWeight: "800" },
+  bottomTab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 2 },
+  bottomTabLabel: { color: colors.muted, fontSize: 10, fontWeight: "800" },
   bottomTabLabelDark: { color: "rgba(255,255,255,0.58)" },
   bottomTabLabelActive: { color: colors.primaryDark },
   bottomTabLabelActiveDark: { color: colors.accent },
   listContent: { padding: 12, gap: 10 },
   listContentDark: { backgroundColor: "#151A2A" },
+  listFooterText: { color: colors.muted, fontSize: 12, fontWeight: "700", textAlign: "center", paddingVertical: 8 },
+  listFooterTextDark: { color: "rgba(255,255,255,0.52)" },
   skeletonBlock: { backgroundColor: "#DDD7EB" },
   skeletonBlockDark: { backgroundColor: "rgba(255,255,255,0.16)" },
   skeletonLogo: { width: 48, height: 48, borderRadius: 16, backgroundColor: "rgba(255,255,255,0.35)" },
@@ -4719,6 +5033,7 @@ const styles = StyleSheet.create({
   quickActionDark: { backgroundColor: "rgba(242,244,123,0.10)" },
   quickActionText: { color: colors.primaryDark, fontWeight: "900" },
   quickActionTextDark: { color: colors.accent },
+  settingsContent: { paddingBottom: 18, backgroundColor: colors.surface },
   profileCard: { margin: 14, padding: 14, borderRadius: radii.md, flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: colors.surfaceBlue },
   profileCardDark: { backgroundColor: "rgba(255,255,255,0.06)" },
   profileName: { color: colors.ink, fontSize: 20, fontWeight: "900" },
@@ -4736,6 +5051,20 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   settingRowDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
+  settingDangerRow: { borderColor: "rgba(229,72,77,0.22)" },
+  settingDangerText: { color: colors.danger },
+  settingsNotice: {
+    marginHorizontal: 14,
+    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: radii.sm,
+    color: colors.primaryDark,
+    fontSize: 12,
+    fontWeight: "800",
+    backgroundColor: colors.accentSoft,
+  },
+  settingsNoticeDark: { color: colors.accent, backgroundColor: "rgba(242,244,123,0.12)" },
   themeSwitch: {
     width: 46,
     height: 26,
