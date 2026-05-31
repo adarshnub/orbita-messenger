@@ -264,6 +264,14 @@ function isTaskManagerAgentConversation(conversation: BackendConversation) {
   return conversation.participants.some((participant) => participant.about?.trim().toLowerCase() === "task manager agent");
 }
 
+function userFacingTaskManagerError(reason?: string) {
+  const normalized = (reason ?? "").trim().toLowerCase();
+  if (normalized.includes("conversation is not linked to task manager")) {
+    return "Your account is not linked by admin yet.";
+  }
+  return reason || "Unable to reach Task Manager agent right now.";
+}
+
 function shortDisplayName(name: string) {
   return name.trim().split(/\s+/)[0] || name.trim() || "Someone";
 }
@@ -2036,7 +2044,28 @@ function MessengerShell({ session }: { session: Session }) {
     });
     return directMap;
   }, [conversations, profileId]);
-  const savedContactIds = useMemo(() => new Set(contacts.map((contact) => contact.id)), [contacts]);
+  const contactsWithDefaultAgent = useMemo(() => {
+    const byId = new Map(contacts.map((contact) => [contact.id, contact]));
+    conversations.forEach((conversation) => {
+      if (conversation.kind !== "direct") return;
+      const peer = conversation.participants.find((participant) => participant.id !== profileId);
+      if (!peer) return;
+      if (peer.about?.trim().toLowerCase() !== "task manager agent") return;
+      if (!byId.has(peer.id)) {
+        byId.set(peer.id, {
+          about: peer.about,
+          avatarUrl: peer.avatarUrl,
+          displayName: peer.displayName,
+          id: peer.id,
+          isOnline: peer.isOnline,
+          lastSeenAt: peer.lastSeenAt,
+          phone: peer.phone,
+        });
+      }
+    });
+    return [...byId.values()];
+  }, [contacts, conversations, profileId]);
+  const savedContactIds = useMemo(() => new Set(contactsWithDefaultAgent.map((contact) => contact.id)), [contactsWithDefaultAgent]);
 
   const selectedDirectPeer = useMemo(() => {
     if (!selected || selected.kind !== "direct") return null;
@@ -2078,11 +2107,11 @@ function MessengerShell({ session }: { session: Session }) {
 
   const chatListContacts = useMemo<ChatListContact[]>(
     () =>
-      contacts.map((contact) => ({
+      contactsWithDefaultAgent.map((contact) => ({
         ...contact,
         existingConversationId: existingDirectByContactId.get(contact.id)?.id,
       })),
-    [contacts, existingDirectByContactId],
+    [contactsWithDefaultAgent, existingDirectByContactId],
   );
 
   async function openContactConversation(otherUserId: string) {
@@ -2286,7 +2315,7 @@ function MessengerShell({ session }: { session: Session }) {
             delete next[selected.id];
             return next;
           });
-          setError(result.taskManagerForward.reason || "Unable to reach Task Manager agent right now.");
+          setError(userFacingTaskManagerError(result.taskManagerForward.reason));
         } else {
           setAgentThinkingFor((current) => ({ ...current, [selected.id]: result.message.createdAt }));
         }
@@ -2311,7 +2340,12 @@ function MessengerShell({ session }: { session: Session }) {
         delete next[selected.id];
         return next;
       });
-      setError(nextError instanceof Error ? nextError.message : "Unable to send message.");
+      if (isTaskManagerAgentConversation(selected)) {
+        const raw = nextError instanceof Error ? nextError.message : "Unable to send message.";
+        setError(userFacingTaskManagerError(raw));
+      } else {
+        setError(nextError instanceof Error ? nextError.message : "Unable to send message.");
+      }
     }
   }
 
@@ -3275,7 +3309,18 @@ function ChatPane({
             })}
           </>
         ) : (
-          <EmptyState icon="lock-closed-outline" title="No messages" copy="Send the first message in this conversation." compact />
+          isAgentConversation ? (
+            <View style={[styles.agentWelcomeCard, isDarkTheme && styles.agentWelcomeCardDark]}>
+              <Text style={[styles.agentWelcomeTitle, isDarkTheme && styles.agentWelcomeTitleDark]}>
+                Welcome to your Task Manager Agent chat
+              </Text>
+              <Text style={[styles.agentWelcomeBody, isDarkTheme && styles.agentWelcomeBodyDark]}>
+                Ask me to assign tasks, send follow-ups, and share team status snapshots.
+              </Text>
+            </View>
+          ) : (
+            <EmptyState icon="lock-closed-outline" title="No messages" copy="Send the first message in this conversation." compact />
+          )
         )}
         {agentThinking ? (
           <View style={[styles.messageWrap, styles.messageTheirs]}>
@@ -5213,6 +5258,25 @@ const styles = StyleSheet.create({
   emptyTitleDark: { color: "#FFFFFF" },
   emptyCopy: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: "center" },
   emptyCopyDark: { color: "rgba(255,255,255,0.62)" },
+  agentWelcomeCard: {
+    marginHorizontal: 14,
+    marginVertical: 8,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: "rgba(101,81,196,0.18)",
+    backgroundColor: colors.surfaceBlue,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    gap: 6,
+  },
+  agentWelcomeCardDark: {
+    borderColor: "rgba(242,244,123,0.22)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  agentWelcomeTitle: { color: colors.ink, fontSize: 14, fontWeight: "900" },
+  agentWelcomeTitleDark: { color: "#FFFFFF" },
+  agentWelcomeBody: { color: colors.muted, fontSize: 13, lineHeight: 18 },
+  agentWelcomeBodyDark: { color: "rgba(255,255,255,0.70)" },
   busyOverlay: {
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",

@@ -8,6 +8,8 @@ type ForegroundNotificationContext = {
   isChatScreenOpen: boolean;
 };
 
+type FeedbackCueKind = "message_sent" | "message_received";
+
 const foregroundNotificationContext: ForegroundNotificationContext = {
   activeConversationId: "",
   appState: "active",
@@ -51,9 +53,24 @@ export function extractConversationIdFromNotificationData(data: unknown): string
   return "";
 }
 
+function isFeedbackOnlyNotificationData(data: unknown): boolean {
+  if (!data || typeof data !== "object") return false;
+  const value = data as Record<string, unknown>;
+  return value.feedbackOnly === true;
+}
+
 Notifications.setNotificationHandler({
   handleNotification: async (notification) => {
     const data = notification.request.content.data as Record<string, unknown> | undefined;
+    if (isFeedbackOnlyNotificationData(data)) {
+      return {
+        shouldPlaySound: true,
+        shouldSetBadge: false,
+        shouldShowBanner: false,
+        shouldShowList: false,
+      };
+    }
+
     const conversationId = extractConversationIdFromNotificationData(data);
     const shouldSuppress =
       foregroundNotificationContext.appState === "active" &&
@@ -69,6 +86,23 @@ Notifications.setNotificationHandler({
     };
   },
 });
+
+export async function playInAppCueSound(kind: FeedbackCueKind) {
+  if (Platform.OS === "web") return;
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: kind === "message_received" ? "New message" : "Sent",
+        body: kind === "message_received" ? "Message received" : "Message sent",
+        data: { feedbackOnly: true, kind },
+        sound: "default",
+      },
+      trigger: null,
+    });
+  } catch {
+    // Sound cues are optional and may be blocked by notification permissions.
+  }
+}
 
 function safeJsonParse(value: string) {
   try {

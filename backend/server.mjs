@@ -1198,7 +1198,35 @@ async function loadContacts(userId) {
     .eq("owner_id", userId)
     .order("created_at", { ascending: false });
   if (error) throw error;
-  return (data ?? []).map((row) => mapProfile({ ...(row.profiles ?? {}), nickname: row.nickname }, userId));
+
+  const mappedContacts = (data ?? []).map((row) => mapProfile({ ...(row.profiles ?? {}), nickname: row.nickname }, userId));
+  const byId = new Map(mappedContacts.map((profile) => [profile.id, profile]));
+
+  // Ensure Task Manager agent is visible as a default contact for linked users.
+  const { data: links, error: linksError } = await supabase
+    .from("taskmanager_agent_links")
+    .select("agent_profile_id")
+    .eq("orbita_user_id", userId)
+    .eq("enabled", true);
+  if (linksError) throw linksError;
+
+  const agentIds = [...new Set((links ?? []).map((row) => row.agent_profile_id).filter(Boolean))]
+    .filter((id) => !byId.has(id));
+
+  if (agentIds.length) {
+    const { data: agentProfiles, error: agentProfilesError } = await supabase
+      .from("profiles")
+      .select("*")
+      .in("id", agentIds);
+    if (agentProfilesError) throw agentProfilesError;
+
+    for (const row of agentProfiles ?? []) {
+      const mapped = mapProfile(row, userId);
+      byId.set(mapped.id, mapped);
+    }
+  }
+
+  return [...byId.values()];
 }
 
 async function loadMessages(userId, conversationId, options = {}) {
