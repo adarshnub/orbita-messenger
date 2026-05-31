@@ -790,10 +790,6 @@ async function uploadProfileAvatar(userId, form) {
   }
 
   const buffer = Buffer.from(await file.arrayBuffer());
-  const maxBytes = 5 * 1024 * 1024;
-  if (buffer.byteLength > maxBytes) {
-    throw new Error("Profile image must be 5 MB or smaller.");
-  }
 
   const bucket = "profile-images";
   const filename = sanitizeFilename(String(form.get("filename") ?? file.name ?? "avatar.jpg"), "avatar.jpg");

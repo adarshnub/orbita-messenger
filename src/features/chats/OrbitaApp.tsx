@@ -1165,6 +1165,8 @@ function MessengerShell({ session }: { session: Session }) {
   const [loadingMessagesFor, setLoadingMessagesFor] = useState("");
   const [loadingOlderFor, setLoadingOlderFor] = useState("");
   const [busy, setBusy] = useState(false);
+  const [syncingContacts, setSyncingContacts] = useState(false);
+  const [uploadingProfilePhoto, setUploadingProfilePhoto] = useState(false);
   const [error, setError] = useState("");
   const [settingsNotice, setSettingsNotice] = useState("");
   const [agentThinkingFor, setAgentThinkingFor] = useState<Record<string, string>>({});
@@ -1853,8 +1855,10 @@ function MessengerShell({ session }: { session: Session }) {
       setSettingsNotice("Contact sync is available only on mobile.");
       return;
     }
-
-    await run(async () => {
+    if (syncingContacts) return;
+    setSyncingContacts(true);
+    setError("");
+    try {
       const permission = await DeviceContacts.requestPermissionsAsync();
       if (!permission.granted) {
         setSettingsNotice("Contact permission was not granted.");
@@ -1897,7 +1901,11 @@ function MessengerShell({ session }: { session: Session }) {
             ? "No matching Orbita users found in your phone contacts yet."
             : "No phone contacts found to sync.",
       );
-    });
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to sync contacts right now.");
+    } finally {
+      setSyncingContacts(false);
+    }
   }
 
   async function retryBootstrap() {
@@ -1906,6 +1914,7 @@ function MessengerShell({ session }: { session: Session }) {
   }
 
   async function uploadProfileAvatarFromSettings() {
+    if (uploadingProfilePhoto) return;
     if (Platform.OS !== "web") {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
@@ -1923,7 +1932,9 @@ function MessengerShell({ session }: { session: Session }) {
     if (result.canceled || !result.assets?.[0]) return;
 
     const asset = result.assets[0];
-    await run(async () => {
+    setUploadingProfilePhoto(true);
+    setError("");
+    try {
       const fileName = asset.fileName || `avatar-${Date.now()}.jpg`;
       const mimeType = asset.mimeType || "image/jpeg";
       const uploaded = await messengerApi.uploadProfileAvatar({
@@ -1937,7 +1948,11 @@ function MessengerShell({ session }: { session: Session }) {
       setProfile(uploaded.profile);
       setSettingsNotice("Profile photo updated.");
       await loadBootstrap();
-    });
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Unable to upload profile photo right now.");
+    } finally {
+      setUploadingProfilePhoto(false);
+    }
   }
 
   useEffect(() => {
@@ -2417,6 +2432,8 @@ function MessengerShell({ session }: { session: Session }) {
                 onSignOut={signOut}
                 onSyncDeviceContacts={syncDeviceContacts}
                 onUploadProfilePhoto={uploadProfileAvatarFromSettings}
+                isSyncingDeviceContacts={syncingContacts}
+                isUploadingProfilePhoto={uploadingProfilePhoto}
                 onSelect={selectConversation}
                 profile={profile}
                 selectedId={selected?.id}
@@ -2671,6 +2688,8 @@ function Panel({
   onSignOut,
   onSyncDeviceContacts,
   onUploadProfilePhoto,
+  isSyncingDeviceContacts,
+  isUploadingProfilePhoto,
   profile,
   selectedId,
   settingsNotice,
@@ -2689,6 +2708,8 @@ function Panel({
   onSignOut: () => void;
   onSyncDeviceContacts: () => void;
   onUploadProfilePhoto: () => void;
+  isSyncingDeviceContacts: boolean;
+  isUploadingProfilePhoto: boolean;
   profile: BackendProfile;
   selectedId?: string;
   settingsNotice: string;
@@ -2714,6 +2735,8 @@ function Panel({
         onSignOut={onSignOut}
         onSyncDeviceContacts={onSyncDeviceContacts}
         onUploadProfilePhoto={onUploadProfilePhoto}
+        isSyncingDeviceContacts={isSyncingDeviceContacts}
+        isUploadingProfilePhoto={isUploadingProfilePhoto}
         profile={profile}
       />
     );
@@ -3731,6 +3754,8 @@ function SettingsPanel({
   onSignOut,
   onSyncDeviceContacts,
   onUploadProfilePhoto,
+  isSyncingDeviceContacts,
+  isUploadingProfilePhoto,
   profile,
 }: {
   isWide: boolean;
@@ -3740,6 +3765,8 @@ function SettingsPanel({
   onSignOut: () => void;
   onSyncDeviceContacts: () => void;
   onUploadProfilePhoto: () => void;
+  isSyncingDeviceContacts: boolean;
+  isUploadingProfilePhoto: boolean;
   profile: BackendProfile;
 }) {
   const { isDarkTheme, themeMode, toggleTheme } = useAppTheme();
@@ -3748,17 +3775,28 @@ function SettingsPanel({
       <PanelTitle title="Settings" actionIcon="create-outline" actionLabel="Edit profile" onAction={onOpenProfile} />
       <ScrollView contentContainerStyle={[styles.settingsContent, isDarkTheme && styles.listContentDark]}>
       <View style={[styles.profileCard, isDarkTheme && styles.profileCardDark]}>
-        <Pressable hitSlop={10} onPress={onUploadProfilePhoto} style={styles.profileAvatarButton}>
+        <Pressable
+          disabled={isUploadingProfilePhoto}
+          hitSlop={10}
+          onPress={onUploadProfilePhoto}
+          style={[styles.profileAvatarButton, isUploadingProfilePhoto && styles.disabledPressable]}
+        >
           <Avatar avatarUrl={profile.avatarUrl} name={profile.displayName} size={64} />
           <View style={[styles.profileAvatarBadge, isDarkTheme && styles.profileAvatarBadgeDark]}>
-            <Ionicons color={isDarkTheme ? colors.primaryDark : "#FFFFFF"} name="camera" size={11} />
+            {isUploadingProfilePhoto ? (
+              <ActivityIndicator color={isDarkTheme ? colors.primaryDark : "#FFFFFF"} size="small" />
+            ) : (
+              <Ionicons color={isDarkTheme ? colors.primaryDark : "#FFFFFF"} name="camera" size={11} />
+            )}
           </View>
         </Pressable>
         <View style={styles.chatRowBody}>
           <Text style={[styles.profileName, isDarkTheme && styles.profileNameDark]}>{profile.displayName}</Text>
           <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{profile.phone ?? "No phone on profile"}</Text>
           <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{profile.about}</Text>
-          <Text style={[styles.profileAvatarHint, isDarkTheme && styles.profileAvatarHintDark]}>Tap profile photo to upload or replace</Text>
+          <Text style={[styles.profileAvatarHint, isDarkTheme && styles.profileAvatarHintDark]}>
+            {isUploadingProfilePhoto ? "Uploading profile photo..." : "Tap profile photo to upload or replace"}
+          </Text>
         </View>
       </View>
       <Pressable onPress={toggleTheme} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
@@ -3787,12 +3825,19 @@ function SettingsPanel({
           <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Start a chat by phone number</Text>
         </View>
       </Pressable>
-      <Pressable onPress={onSyncDeviceContacts} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
+      <Pressable
+        disabled={isSyncingDeviceContacts}
+        onPress={onSyncDeviceContacts}
+        style={[styles.settingRow, isDarkTheme && styles.settingRowDark, isSyncingDeviceContacts && styles.disabledPressable]}
+      >
         <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="sync-outline" size={22} />
         <View style={styles.chatRowBody}>
           <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Sync phone contacts</Text>
-          <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Import matching Orbita users from this device</Text>
+          <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>
+            {isSyncingDeviceContacts ? "Syncing contacts..." : "Import matching Orbita users from this device"}
+          </Text>
         </View>
+        {isSyncingDeviceContacts ? <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} size="small" /> : null}
       </Pressable>
       {notice ? <Text style={[styles.settingsNotice, isDarkTheme && styles.settingsNoticeDark]}>{notice}</Text> : null}
       {[
@@ -5224,6 +5269,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   settingRowDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
+  disabledPressable: { opacity: 0.7 },
   settingDangerRow: { borderColor: "rgba(229,72,77,0.22)" },
   settingDangerText: { color: colors.danger },
   settingsNotice: {
