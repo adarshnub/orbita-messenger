@@ -87,12 +87,12 @@ async function callBackendApi<T>(action: ApiAction, payload: Record<string, unkn
   return data as T;
 }
 
-async function uploadBackendMedia<T>(form: FormData, token: string) {
+async function uploadBackendMedia<T>(form: FormData, token: string, endpoint = "media") {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(`${orbitaApiUrl}/api/messenger/media`, {
+    response = await fetch(`${orbitaApiUrl}/api/messenger/${endpoint}`, {
       method: "POST",
       signal: controller.signal,
       headers: {
@@ -161,18 +161,36 @@ function isExpiredTokenError(message: string) {
 
 function resolveOrbitaApiUrl(value?: string) {
   if (!value) return "";
-  if (Platform.OS === "web") return value;
+  const normalizedValue = normalizeOrbitaApiBase(value);
+  if (Platform.OS === "web") return normalizedValue;
 
   try {
-    const url = new URL(value);
+    const url = new URL(normalizedValue);
     const pointsAtLocalMachine = ["localhost", "127.0.0.1", "0.0.0.0"].includes(url.hostname);
-    if (!pointsAtLocalMachine) return value;
+    if (!pointsAtLocalMachine) return normalizedValue;
 
     const host = expoDevHost() ?? (Platform.OS === "android" ? "10.0.2.2" : "localhost");
     url.hostname = host;
     return url.toString().replace(/\/$/, "");
   } catch {
-    return value;
+    return normalizedValue;
+  }
+}
+
+function normalizeOrbitaApiBase(input: string) {
+  const trimmed = input.replace(/\/$/, "");
+  try {
+    const url = new URL(trimmed);
+    const normalizedPath = url.pathname
+      .replace(/\/api\/messenger-api\/?$/i, "")
+      .replace(/\/api\/messenger\/?$/i, "")
+      || "/";
+    url.pathname = normalizedPath;
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return trimmed
+      .replace(/\/api\/messenger-api\/?$/i, "")
+      .replace(/\/api\/messenger\/?$/i, "");
   }
 }
 
@@ -262,12 +280,42 @@ export const messengerApi = {
     };
     const token = await getAccessToken();
     try {
-      return await uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), token);
+      return await uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), token, "media");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!isExpiredTokenError(message)) throw error;
       const retryToken = await getAccessToken({ forceRefresh: true });
-      return uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), retryToken);
+      return uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), retryToken, "media");
+    }
+  },
+  async uploadProfileAvatar(input: {
+    file:
+      | {
+          uri: string;
+          name: string;
+          type: string;
+        }
+      | File;
+  }) {
+    const buildForm = () => {
+      const next = new FormData();
+      if (typeof File !== "undefined" && input.file instanceof File) {
+        next.append("filename", input.file.name);
+        next.append("file", input.file);
+      } else {
+        next.append("filename", input.file.name);
+        next.append("file", input.file as unknown as Blob);
+      }
+      return next;
+    };
+    const token = await getAccessToken();
+    try {
+      return await uploadBackendMedia<{ profile: BackendProfile }>(buildForm(), token, "avatar");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isExpiredTokenError(message)) throw error;
+      const retryToken = await getAccessToken({ forceRefresh: true });
+      return uploadBackendMedia<{ profile: BackendProfile }>(buildForm(), retryToken, "avatar");
     }
   },
   createStatus(input: { text: string; visibility: BackendStatus["visibility"] }) {

@@ -2,14 +2,81 @@ import * as Notifications from "expo-notifications";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 
+type ForegroundNotificationContext = {
+  activeConversationId: string;
+  appState: string;
+  isChatScreenOpen: boolean;
+};
+
+const foregroundNotificationContext: ForegroundNotificationContext = {
+  activeConversationId: "",
+  appState: "active",
+  isChatScreenOpen: false,
+};
+
+export function setForegroundNotificationContext(context: Partial<ForegroundNotificationContext>) {
+  if (typeof context.activeConversationId === "string") {
+    foregroundNotificationContext.activeConversationId = context.activeConversationId;
+  }
+  if (typeof context.appState === "string") {
+    foregroundNotificationContext.appState = context.appState;
+  }
+  if (typeof context.isChatScreenOpen === "boolean") {
+    foregroundNotificationContext.isChatScreenOpen = context.isChatScreenOpen;
+  }
+}
+
+export function extractConversationIdFromNotificationData(data: unknown): string {
+  if (!data || typeof data !== "object") return "";
+  const value = data as Record<string, unknown>;
+  if (typeof value.conversationId === "string" && value.conversationId.trim()) {
+    return value.conversationId.trim();
+  }
+  if (typeof value.conversation_id === "string" && value.conversation_id.trim()) {
+    return value.conversation_id.trim();
+  }
+
+  // Some providers relay nested payloads as stringified JSON.
+  const nestedBody = typeof value.body === "string" ? safeJsonParse(value.body) : null;
+  if (nestedBody && typeof nestedBody === "object") {
+    const nested = nestedBody as Record<string, unknown>;
+    if (typeof nested.conversationId === "string" && nested.conversationId.trim()) {
+      return nested.conversationId.trim();
+    }
+    if (typeof nested.conversation_id === "string" && nested.conversation_id.trim()) {
+      return nested.conversation_id.trim();
+    }
+  }
+
+  return "";
+}
+
 Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldPlaySound: true,
-    shouldSetBadge: false,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
+  handleNotification: async (notification) => {
+    const data = notification.request.content.data as Record<string, unknown> | undefined;
+    const conversationId = extractConversationIdFromNotificationData(data);
+    const shouldSuppress =
+      foregroundNotificationContext.appState === "active" &&
+      foregroundNotificationContext.isChatScreenOpen &&
+      Boolean(foregroundNotificationContext.activeConversationId) &&
+      conversationId === foregroundNotificationContext.activeConversationId;
+
+    return {
+      shouldPlaySound: !shouldSuppress,
+      shouldSetBadge: false,
+      shouldShowBanner: !shouldSuppress,
+      shouldShowList: !shouldSuppress,
+    };
+  },
 });
+
+function safeJsonParse(value: string) {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
 
 export async function registerForPushNotifications(): Promise<string | null | undefined> {
   const isAndroidExpoGo = Platform.OS === "android" && Constants.appOwnership === "expo";

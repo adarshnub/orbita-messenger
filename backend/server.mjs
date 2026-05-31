@@ -92,6 +92,31 @@ createServer(async (req, res) => {
       return;
     }
 
+    if (pathname === "/api/messenger/avatar" || pathname === "/api/messenger-api/avatar") {
+      const authHeader = String(req.headers.authorization ?? "");
+      if (!authHeader) {
+        sendJson(res, 401, { error: "Missing authorization." }, req);
+        return;
+      }
+
+      const jwt = authHeader.replace(/^Bearer\s+/i, "");
+      const { data, error } = await supabase.auth.getUser(jwt);
+      if (error || !data.user) {
+        sendJson(res, 401, { error: "Invalid session." }, req);
+        return;
+      }
+
+      const request = new Request(`http://localhost${req.url ?? "/api/messenger/avatar"}`, {
+        method: "POST",
+        headers: req.headers,
+        body: req,
+        duplex: "half",
+      });
+      const form = await request.formData();
+      sendJson(res, 200, await uploadProfileAvatar(data.user.id, form), req);
+      return;
+    }
+
     const rawBody = await readBody(req);
     const body = rawBody ? JSON.parse(rawBody) : {};
     const action = requiredString(body, "action");
@@ -750,6 +775,54 @@ async function uploadMediaAttachment(userId, form) {
 
   return {
     attachment: mapAttachment(data, await signedAttachmentUrl(data, 12 * 60 * 60)),
+  };
+}
+
+async function uploadProfileAvatar(userId, form) {
+  const file = form.get("file");
+  if (!file || typeof file.arrayBuffer !== "function") {
+    throw new Error("file is required.");
+  }
+
+  const mimeType = typeof file.type === "string" && file.type ? file.type : "application/octet-stream";
+  if (!mimeType.startsWith("image/")) {
+    throw new Error("Only image files are supported for profile avatars.");
+  }
+
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const maxBytes = 5 * 1024 * 1024;
+  if (buffer.byteLength > maxBytes) {
+    throw new Error("Profile image must be 5 MB or smaller.");
+  }
+
+  const bucket = "profile-images";
+  const filename = sanitizeFilename(String(form.get("filename") ?? file.name ?? "avatar.jpg"), "avatar.jpg");
+  const objectPath = `${userId}/avatars/${Date.now()}-${filename}`;
+
+  const { error: uploadError } = await supabase.storage.from(bucket).upload(objectPath, buffer, {
+    contentType: mimeType,
+    upsert: false,
+  });
+  if (uploadError) throw uploadError;
+
+  const publicUrl = supabase.storage.from(bucket).getPublicUrl(objectPath).data.publicUrl;
+  if (!publicUrl) throw new Error("Unable to generate avatar URL.");
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .update({ avatar_url: publicUrl, updated_at: new Date().toISOString() })
+    .eq("id", userId)
+    .select()
+    .single();
+  if (error) throw error;
+
+  return {
+    profile: mapProfile(data, userId),
+    avatar: {
+      bucket,
+      objectPath,
+      url: publicUrl,
+    },
   };
 }
 

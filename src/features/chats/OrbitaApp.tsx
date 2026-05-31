@@ -75,7 +75,11 @@ import {
   verifyPhoneOtp,
 } from "@/lib/supabase";
 import { subscribeMessengerRealtime } from "@/lib/messengerRealtime";
-import { registerForPushNotifications } from "@/lib/notifications";
+import {
+  extractConversationIdFromNotificationData,
+  registerForPushNotifications,
+  setForegroundNotificationContext,
+} from "@/lib/notifications";
 import { colors, radii, shadow } from "@/theme/colors";
 
 type Tab = "chats" | "status" | "contacts" | "calls" | "settings";
@@ -104,6 +108,7 @@ type ComposerAttachment = {
   durationMs?: number | null;
 };
 type ForwardTarget = {
+  avatarUrl?: string | null;
   id: string;
   type: "conversation" | "contact";
   title: string;
@@ -502,10 +507,24 @@ function AuthSignalScene({ inline = false }: { inline?: boolean }) {
   );
 }
 
-function Avatar({ name, size = 46 }: { name: string; size?: number }) {
+function Avatar({ avatarUrl, name, size = 46 }: { avatarUrl?: string | null; name: string; size?: number }) {
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setFailed(false);
+  }, [avatarUrl]);
+
+  const hasImage = Boolean(avatarUrl) && !failed;
   return (
     <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2 }]}>
-      <Text style={[styles.avatarText, { fontSize: size > 52 ? 20 : 15 }]}>{initials(name || "U")}</Text>
+      {hasImage ? (
+        <Image
+          source={{ uri: avatarUrl! }}
+          onError={() => setFailed(true)}
+          style={[styles.avatarImage, { width: size, height: size, borderRadius: size / 2 }]}
+        />
+      ) : (
+        <Text style={[styles.avatarText, { fontSize: size > 52 ? 20 : 15 }]}>{initials(name || "U")}</Text>
+      )}
     </View>
   );
 }
@@ -1125,6 +1144,7 @@ function MessengerShell({ session }: { session: Session }) {
   const { isDarkTheme } = useAppTheme();
   const isWide = width >= 840;
   const [activeTab, setActiveTab] = useState<Tab>("chats");
+  const [appLifecycleState, setAppLifecycleState] = useState(AppState.currentState);
   const [profile, setProfile] = useState<BackendProfile | null>(null);
   const [contacts, setContacts] = useState<BackendProfile[]>([]);
   const [conversations, setConversations] = useState<BackendConversation[]>([]);
@@ -1157,6 +1177,8 @@ function MessengerShell({ session }: { session: Session }) {
   const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const typingRefreshAtRef = useRef(0);
   const typingIsActiveRef = useRef(false);
+  const activeTabRef = useRef<Tab>("chats");
+  const appLifecycleStateRef = useRef(AppState.currentState);
   const conversationsRef = useRef<BackendConversation[]>([]);
   const messagesByConversationRef = useRef<Record<string, ChatMessage[]>>({});
   const contactsRef = useRef<BackendProfile[]>([]);
@@ -1213,6 +1235,14 @@ function MessengerShell({ session }: { session: Session }) {
   useEffect(() => {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    appLifecycleStateRef.current = appLifecycleState;
+  }, [appLifecycleState]);
 
   useEffect(() => {
     hasVisibleBootstrapRef.current = Boolean(profile);
@@ -1398,11 +1428,14 @@ function MessengerShell({ session }: { session: Session }) {
     setLoading(false);
   }, [playIncomingHaptic]);
 
-  const markConversationReadLocally = useCallback((conversationId: string) => {
+  const markConversationReadLocally = useCallback((
+    conversationId: string,
+    options: { forceRemoteSync?: boolean } = {},
+  ) => {
     const hasUnread = conversationsRef.current.some(
       (conversation) => conversation.id === conversationId && conversation.unreadCount > 0,
     );
-    if (hasUnread) {
+    if (hasUnread || options.forceRemoteSync) {
       void messengerApi.markConversationRead(conversationId).catch(() => undefined);
     }
     setConversations((current) =>
@@ -1439,7 +1472,7 @@ function MessengerShell({ session }: { session: Session }) {
       setSelectedMessages(nextMessages);
       if (message.senderId !== profileId) {
         playIncomingHaptic();
-        markConversationReadLocally(message.conversationId);
+        markConversationReadLocally(message.conversationId, { forceRemoteSync: true });
       }
     }
 
@@ -1715,7 +1748,17 @@ function MessengerShell({ session }: { session: Session }) {
   }, [applyRealtimeMessage, conversationKey, profileId, scheduleBootstrapRefresh, scheduleMessageRefresh, selectedId]);
 
   useEffect(() => {
+    if (Platform.OS === "web") return;
+    setForegroundNotificationContext({
+      activeConversationId: selectedId,
+      appState: appLifecycleState,
+      isChatScreenOpen: activeTab === "chats" && Boolean(selectedId),
+    });
+  }, [activeTab, appLifecycleState, selectedId]);
+
+  useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
+      setAppLifecycleState(state);
       if (state !== "active") {
         stopTyping(selectedId);
         return;
@@ -1854,6 +1897,41 @@ function MessengerShell({ session }: { session: Session }) {
     await loadBootstrap();
   }
 
+  async function uploadProfileAvatarFromSettings() {
+    if (Platform.OS !== "web") {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        setSettingsNotice("Photo library permission was not granted.");
+        return;
+      }
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      allowsEditing: true,
+      mediaTypes: ["images"],
+      quality: 0.88,
+      selectionLimit: 1,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+
+    const asset = result.assets[0];
+    await run(async () => {
+      const fileName = asset.fileName || `avatar-${Date.now()}.jpg`;
+      const mimeType = asset.mimeType || "image/jpeg";
+      const uploaded = await messengerApi.uploadProfileAvatar({
+        file: {
+          uri: asset.uri,
+          name: fileName,
+          type: mimeType,
+        },
+      });
+
+      setProfile(uploaded.profile);
+      setSettingsNotice("Profile photo updated.");
+      await loadBootstrap();
+    });
+  }
+
   useEffect(() => {
     setComposerAttachment(null);
     setAttachmentMenuOpen(false);
@@ -1920,9 +1998,23 @@ function MessengerShell({ session }: { session: Session }) {
 
     const handleResponse = (response: Notifications.NotificationResponse) => {
       const data = response.notification.request.content.data as Record<string, unknown> | undefined;
-      const conversationId = typeof data?.conversationId === "string" ? data.conversationId : "";
+      const conversationId = extractConversationIdFromNotificationData(data);
       openConversationFromNotification(conversationId);
     };
+
+    const receivedSubscription = Notifications.addNotificationReceivedListener((notification) => {
+      const data = notification.request.content.data as Record<string, unknown> | undefined;
+      const conversationId = extractConversationIdFromNotificationData(data);
+      const activeConversationId = selectedIdRef.current;
+      const shouldSuppress =
+        appLifecycleStateRef.current === "active" &&
+        activeTabRef.current === "chats" &&
+        Boolean(activeConversationId) &&
+        conversationId === activeConversationId;
+
+      if (!shouldSuppress) return;
+      void Notifications.dismissNotificationAsync(notification.request.identifier).catch(() => undefined);
+    });
 
     const responseSubscription = Notifications.addNotificationResponseReceivedListener(handleResponse);
     void Notifications.getLastNotificationResponseAsync().then((response) => {
@@ -1930,6 +2022,7 @@ function MessengerShell({ session }: { session: Session }) {
     });
 
     return () => {
+      receivedSubscription.remove();
       responseSubscription.remove();
     };
   }, [openConversationFromNotification]);
@@ -1958,6 +2051,7 @@ function MessengerShell({ session }: { session: Session }) {
     const conversationTargets = conversations
       .filter((conversation) => conversation.id !== selectedId)
       .map((conversation) => ({
+        avatarUrl: conversation.avatarUrl,
         id: conversation.id,
         type: "conversation" as const,
         title: conversation.title,
@@ -1972,6 +2066,7 @@ function MessengerShell({ session }: { session: Session }) {
     const extraContactTargets = contacts
       .filter((contact) => !existingDirectByContactId.has(contact.id))
       .map((contact) => ({
+        avatarUrl: contact.avatarUrl,
         id: contact.id,
         type: "contact" as const,
         title: contact.displayName,
@@ -2287,6 +2382,7 @@ function MessengerShell({ session }: { session: Session }) {
                 onOpenContact={openContactConversation}
                 onSignOut={signOut}
                 onSyncDeviceContacts={syncDeviceContacts}
+                onUploadProfilePhoto={uploadProfileAvatarFromSettings}
                 onSelect={selectConversation}
                 profile={profile}
                 selectedId={selected?.id}
@@ -2540,6 +2636,7 @@ function Panel({
   onSelect,
   onSignOut,
   onSyncDeviceContacts,
+  onUploadProfilePhoto,
   profile,
   selectedId,
   settingsNotice,
@@ -2557,6 +2654,7 @@ function Panel({
   onSelect: (id: string) => void;
   onSignOut: () => void;
   onSyncDeviceContacts: () => void;
+  onUploadProfilePhoto: () => void;
   profile: BackendProfile;
   selectedId?: string;
   settingsNotice: string;
@@ -2581,6 +2679,7 @@ function Panel({
         onOpenProfile={onOpenProfile}
         onSignOut={onSignOut}
         onSyncDeviceContacts={onSyncDeviceContacts}
+        onUploadProfilePhoto={onUploadProfilePhoto}
         profile={profile}
       />
     );
@@ -2709,7 +2808,7 @@ function ChatsPanel({
                       isDarkTheme && selectedId === conversation.id && styles.chatRowActiveDark,
                     ]}
                   >
-                    <Avatar name={conversation.title} />
+                    <Avatar avatarUrl={conversation.avatarUrl} name={conversation.title} />
                     <View style={styles.chatListRowBody}>
                       <View style={styles.chatListTextColumn}>
                         <Text numberOfLines={1} style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{conversation.title}</Text>
@@ -2743,7 +2842,7 @@ function ChatsPanel({
                   onPress={() => onOpenContact(contact.id)}
                   style={[styles.chatRow, isDarkTheme && styles.chatRowDark]}
                 >
-                  <Avatar name={contact.displayName} />
+                  <Avatar avatarUrl={contact.avatarUrl} name={contact.displayName} />
                   <View style={styles.chatListRowBody}>
                     <View style={styles.chatListTextColumn}>
                       <Text numberOfLines={1} style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{contact.displayName}</Text>
@@ -3084,7 +3183,7 @@ function ChatPane({
       <View style={[styles.chatHeader, isDarkTheme && styles.chatHeaderDark]}>
         <View style={[styles.row, styles.chatHeaderMain]}>
           {!isWide ? <IconButton icon="arrow-back" label="Back to chats" onPress={onBack} /> : null}
-          <Avatar name={conversation.title} />
+          <Avatar avatarUrl={conversation.avatarUrl} name={conversation.title} />
           <View style={styles.chatRowBody}>
             <Text numberOfLines={1} style={styles.chatHeaderTitle}>{conversation.title}</Text>
             <Text style={[styles.chatHeaderSub, Boolean(typingText) && styles.chatHeaderSubTyping]}>
@@ -3507,7 +3606,7 @@ function StatusPanel({
       <PanelTitle title="Status" actionIcon="add-circle-outline" actionLabel="New status" onAction={onNewStatus} />
       <ScrollView contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}>
         <Pressable onPress={onNewStatus} style={[styles.statusComposer, isDarkTheme && styles.statusComposerDark]}>
-          <Avatar name={profile.displayName} size={54} />
+          <Avatar avatarUrl={profile.avatarUrl} name={profile.displayName} size={54} />
           <View style={styles.chatRowBody}>
             <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>My status</Text>
             <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Create a text status backed by Supabase.</Text>
@@ -3518,7 +3617,7 @@ function StatusPanel({
           statuses.map((status) => (
             <View key={status.id} style={[styles.statusCard, isDarkTheme && styles.statusCardDark]}>
               <View style={styles.row}>
-                <Avatar name={status.author.displayName} />
+                <Avatar avatarUrl={status.author.avatarUrl} name={status.author.displayName} />
                 <View style={styles.chatRowBody}>
                   <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{status.author.displayName}</Text>
                   <Text style={styles.chatPreview}>{formatTime(status.createdAt)} · {status.viewCount} views</Text>
@@ -3557,7 +3656,7 @@ function ContactsPanel({
       <ScrollView contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}>
         {contacts.length ? contacts.map((contact) => (
           <View key={contact.id} style={[styles.contactRow, isDarkTheme && styles.contactRowDark]}>
-            <Avatar name={contact.displayName} />
+            <Avatar avatarUrl={contact.avatarUrl} name={contact.displayName} />
             <View style={styles.chatRowBody}>
               <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{contact.displayName}</Text>
               <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{contact.phone ?? contact.about}</Text>
@@ -3586,6 +3685,7 @@ function SettingsPanel({
   onOpenProfile,
   onSignOut,
   onSyncDeviceContacts,
+  onUploadProfilePhoto,
   profile,
 }: {
   isWide: boolean;
@@ -3594,6 +3694,7 @@ function SettingsPanel({
   onOpenProfile: () => void;
   onSignOut: () => void;
   onSyncDeviceContacts: () => void;
+  onUploadProfilePhoto: () => void;
   profile: BackendProfile;
 }) {
   const { isDarkTheme, themeMode, toggleTheme } = useAppTheme();
@@ -3602,11 +3703,17 @@ function SettingsPanel({
       <PanelTitle title="Settings" actionIcon="create-outline" actionLabel="Edit profile" onAction={onOpenProfile} />
       <ScrollView contentContainerStyle={[styles.settingsContent, isDarkTheme && styles.listContentDark]}>
       <View style={[styles.profileCard, isDarkTheme && styles.profileCardDark]}>
-        <Avatar name={profile.displayName} size={64} />
+        <Pressable hitSlop={10} onPress={onUploadProfilePhoto} style={styles.profileAvatarButton}>
+          <Avatar avatarUrl={profile.avatarUrl} name={profile.displayName} size={64} />
+          <View style={[styles.profileAvatarBadge, isDarkTheme && styles.profileAvatarBadgeDark]}>
+            <Ionicons color={isDarkTheme ? colors.primaryDark : "#FFFFFF"} name="camera" size={11} />
+          </View>
+        </Pressable>
         <View style={styles.chatRowBody}>
           <Text style={[styles.profileName, isDarkTheme && styles.profileNameDark]}>{profile.displayName}</Text>
           <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{profile.phone ?? "No phone on profile"}</Text>
           <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{profile.about}</Text>
+          <Text style={[styles.profileAvatarHint, isDarkTheme && styles.profileAvatarHintDark]}>Tap profile photo to upload or replace</Text>
         </View>
       </View>
       <Pressable onPress={toggleTheme} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
@@ -3755,7 +3862,7 @@ function NewChatModal({
           <ScrollView contentContainerStyle={styles.newChatContactListContent} style={styles.newChatContactList}>
             {contacts.length ? contacts.map((contact) => (
               <Pressable key={contact.id} onPress={() => onOpenConversation(contact.id)} style={styles.newChatContactRow}>
-                <Avatar name={contact.displayName} />
+                <Avatar avatarUrl={contact.avatarUrl} name={contact.displayName} />
                 <View style={styles.chatRowBody}>
                   <Text numberOfLines={1} style={styles.chatTitle}>{contact.displayName}</Text>
                   <Text numberOfLines={1} style={styles.chatPreview}>{contact.phone}</Text>
@@ -3932,7 +4039,7 @@ function ContactPicker({
     <ScrollView style={styles.modalList}>
       {contacts.length ? contacts.map((contact) => (
         <Pressable key={contact.id} onPress={() => toggle(contact.id)} style={styles.modalRow}>
-          <Avatar name={contact.displayName} />
+          <Avatar avatarUrl={contact.avatarUrl} name={contact.displayName} />
           <View style={styles.chatRowBody}>
             <Text style={styles.chatTitle}>{contact.displayName}</Text>
             <Text style={styles.chatPreview}>{contact.phone}</Text>
@@ -4037,7 +4144,7 @@ function ForwardPickerModal({
               }
               style={styles.modalRow}
             >
-              <Avatar name={target.title} />
+              <Avatar avatarUrl={target.avatarUrl} name={target.title} />
               <View style={styles.chatRowBody}>
                 <Text style={styles.chatTitle}>{target.title}</Text>
                 <Text style={styles.chatPreview}>{target.subtitle}</Text>
@@ -4686,6 +4793,7 @@ const styles = StyleSheet.create({
   },
   contactRowDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
   avatar: { alignItems: "center", justifyContent: "center", backgroundColor: colors.primary },
+  avatarImage: { resizeMode: "cover" },
   avatarText: { color: "#FFFFFF", fontWeight: "900" },
   chatRowBody: { flex: 1, minWidth: 0 },
   chatListRowBody: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 10 },
@@ -5036,6 +5144,26 @@ const styles = StyleSheet.create({
   settingsContent: { paddingBottom: 18, backgroundColor: colors.surface },
   profileCard: { margin: 14, padding: 14, borderRadius: radii.md, flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: colors.surfaceBlue },
   profileCardDark: { backgroundColor: "rgba(255,255,255,0.06)" },
+  profileAvatarButton: { borderRadius: 32, position: "relative" },
+  profileAvatarBadge: {
+    position: "absolute",
+    right: -2,
+    bottom: -2,
+    width: 21,
+    height: 21,
+    borderRadius: 11,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.primaryDark,
+  },
+  profileAvatarBadgeDark: {
+    borderColor: "rgba(242,244,123,0.36)",
+    backgroundColor: colors.accent,
+  },
+  profileAvatarHint: { marginTop: 4, color: colors.primaryDark, fontSize: 11, fontWeight: "700" },
+  profileAvatarHintDark: { color: colors.accent },
   profileName: { color: colors.ink, fontSize: 20, fontWeight: "900" },
   profileNameDark: { color: "#FFFFFF" },
   settingRow: {
