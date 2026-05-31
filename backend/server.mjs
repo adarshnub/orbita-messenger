@@ -491,6 +491,32 @@ function chunkArray(values, size) {
   return result;
 }
 
+function pushLog(event, payload) {
+  console.log(JSON.stringify({ event, ...payload }));
+}
+
+function pushError(event, payload) {
+  console.error(JSON.stringify({ event, ...payload }));
+}
+
+async function filterPushableRecipients(userIds) {
+  const ids = [...new Set(userIds)].filter(Boolean);
+  if (!ids.length) return [];
+
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("id, about")
+    .in("id", ids);
+  if (error) throw error;
+
+  const agentIds = new Set(
+    (data ?? [])
+      .filter((row) => typeof row.about === "string" && row.about.trim().toLowerCase() === "task manager agent")
+      .map((row) => row.id),
+  );
+  return ids.filter((id) => !agentIds.has(id));
+}
+
 async function sendPushNotificationsForMessage({
   body,
   conversationId,
@@ -500,9 +526,9 @@ async function sendPushNotificationsForMessage({
   senderId,
   source = "message",
 }) {
-  const recipients = [...new Set(recipientUserIds)].filter(Boolean);
+  const recipients = await filterPushableRecipients(recipientUserIds);
   if (!recipients.length) {
-    console.log("[push] no recipients", { conversationId, messageId, senderId, source });
+    pushLog("push.no_recipients", { conversationId, messageId, senderId, source });
     return;
   }
 
@@ -523,7 +549,7 @@ async function sendPushNotificationsForMessage({
     .map((row) => (typeof row.expo_push_token === "string" ? row.expo_push_token.trim() : ""))
     .filter(isExpoPushToken))];
   if (!tokens.length) {
-    console.log("[push] recipients have no expo tokens", { conversationId, messageId, recipients, source });
+    pushLog("push.no_tokens", { conversationId, messageId, recipients, source });
     return;
   }
 
@@ -545,7 +571,7 @@ async function sendPushNotificationsForMessage({
     channelId: "messages",
     priority: "high",
   }));
-  console.log("[push] sending", {
+  pushLog("push.sending", {
     conversationId,
     messageId,
     recipients: recipients.length,
@@ -563,15 +589,15 @@ async function sendPushNotificationsForMessage({
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok) {
-      console.error(`Expo push send failed: ${response.status} ${JSON.stringify(payload)}`);
+      pushError("push.send_failed", { conversationId, messageId, status: response.status, payload, source });
       continue;
     }
     const resultData = Array.isArray(payload?.data) ? payload.data : [];
     const erroredTickets = resultData.filter((item) => item?.status === "error");
     if (erroredTickets.length) {
-      console.error(`Expo push ticket errors: ${JSON.stringify(erroredTickets)}`);
+      pushError("push.ticket_errors", { conversationId, messageId, errors: erroredTickets, source });
     } else {
-      console.log("[push] ticket ok", {
+      pushLog("push.ticket_ok", {
         conversationId,
         messageId,
         ticketIds: resultData.map((item) => item?.id).filter(Boolean),
@@ -1707,7 +1733,7 @@ async function handleServiceAction(action, payload) {
         : {}),
     };
 
-    console.log("[service] send_agent_message", {
+    pushLog("service.send_agent_message", {
       conversationId,
       taskmanagerOrgId,
       taskmanagerUserId,
@@ -1718,7 +1744,7 @@ async function handleServiceAction(action, payload) {
       awaitPush: true,
       pushSource: "send_agent_message",
     });
-    console.log("[service] send_agent_message inserted", {
+    pushLog("service.send_agent_message_inserted", {
       conversationId,
       messageId: message.id,
       taskmanagerUserId,
