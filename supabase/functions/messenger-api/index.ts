@@ -797,7 +797,7 @@ async function createDirectConversation(supabase: SupabaseClient, userId: string
 async function loadConversationParticipants(supabase: SupabaseClient, conversationId: string) {
   const { data, error } = await supabase
     .from("conversation_participants")
-    .select("role, profiles(*)")
+    .select("role, user_id, profiles(*)")
     .eq("conversation_id", conversationId)
     .order("joined_at", { ascending: true });
   if (error) throw error;
@@ -922,12 +922,56 @@ async function forwardTaskmanagerInbound(
     .eq("enabled", true)
     .maybeSingle();
   if (error) throw error;
-  if (!link) return { forwarded: false, reason: "Conversation is not linked to Task Manager." };
-  if (link.agent_profile_id === senderId) return { forwarded: false, reason: "Sender is the Task Manager agent." };
+  let activeLink = link;
+  if (!activeLink) {
+    // Self-heal stale agent-thread links after employee remove/re-add flows.
+    const participants = await loadConversationParticipants(supabase, conversationId);
+    const senderParticipant = participants.find((row) => String((row as Record<string, unknown>).user_id ?? "") === senderId);
+    if (!senderParticipant) {
+      return { forwarded: false, reason: "Conversation is not linked to Task Manager." };
+    }
+
+    const agentParticipant = participants.find((row) => {
+      const profile = (row as Record<string, unknown>).profiles as Record<string, unknown> | null;
+      const about = typeof profile?.about === "string" ? profile.about.trim().toLowerCase() : "";
+      return about === "task manager agent";
+    });
+    const agentParticipantId = String((agentParticipant as Record<string, unknown> | undefined)?.user_id ?? "");
+    if (!agentParticipantId) {
+      return { forwarded: false, reason: "Conversation is not linked to Task Manager." };
+    }
+
+    const { data: fallbackLink, error: fallbackError } = await supabase
+      .from("taskmanager_agent_links")
+      .select("*")
+      .eq("orbita_user_id", senderId)
+      .eq("agent_profile_id", agentParticipantId)
+      .eq("enabled", true)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (fallbackError) throw fallbackError;
+    if (!fallbackLink) {
+      return { forwarded: false, reason: "Conversation is not linked to Task Manager." };
+    }
+
+    const { data: reboundLink, error: reboundError } = await supabase
+      .from("taskmanager_agent_links")
+      .update({
+        conversation_id: conversationId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", fallbackLink.id)
+      .select("*")
+      .single();
+    if (reboundError) throw reboundError;
+    activeLink = reboundLink;
+  }
+  if (activeLink.agent_profile_id === senderId) return { forwarded: false, reason: "Sender is the Task Manager agent." };
 
   const raw = JSON.stringify({
-    taskmanagerOrgId: link.taskmanager_org_id,
-    taskmanagerUserId: link.taskmanager_user_id,
+    taskmanagerOrgId: activeLink.taskmanager_org_id,
+    taskmanagerUserId: activeLink.taskmanager_user_id,
     channel: TASK_MANAGER_ORBITA_CHANNEL,
     connection: TASK_MANAGER_ORBITA_CHANNEL,
     userConnection: TASK_MANAGER_ORBITA_CHANNEL,
