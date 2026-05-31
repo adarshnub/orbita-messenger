@@ -123,6 +123,8 @@ const MESSAGE_RECONCILE_WINDOW_MS = 12_000;
 const TYPING_REFRESH_MS = 2_400;
 const TYPING_IDLE_MS = 1_900;
 const TYPING_EXPIRE_MS = 4_800;
+const AGENT_THINKING_POLL_MS = 3_500;
+const AGENT_THINKING_TIMEOUT_MS = 45_000;
 const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: "chats", label: "Chats", icon: "chatbubbles-outline" },
   { id: "status", label: "Status", icon: "aperture-outline" },
@@ -1685,6 +1687,35 @@ function MessengerShell({ session }: { session: Session }) {
     return () => subscription.remove();
   }, [activeTab, selectedId]);
 
+  useEffect(() => {
+    const thinkingConversationIds = Object.keys(agentThinkingForRef.current);
+    if (!thinkingConversationIds.length) return undefined;
+
+    const interval = setInterval(() => {
+      const currentThinking = agentThinkingForRef.current;
+      const now = Date.now();
+
+      Object.entries(currentThinking).forEach(([conversationId, thinkingSince]) => {
+        const elapsed = now - Date.parse(thinkingSince);
+        if (elapsed >= AGENT_THINKING_TIMEOUT_MS) {
+          setAgentThinkingFor((current) => {
+            const next = { ...current };
+            delete next[conversationId];
+            return next;
+          });
+          if (selectedIdRef.current === conversationId) {
+            setError("Agent is taking longer than expected. Please try again.");
+          }
+          return;
+        }
+
+        scheduleMessageRefresh(conversationId);
+      });
+    }, AGENT_THINKING_POLL_MS);
+
+    return () => clearInterval(interval);
+  }, [agentThinkingFor, scheduleMessageRefresh]);
+
   async function run(action: () => Promise<void>) {
     setBusy(true);
     setError("");
@@ -2038,7 +2069,16 @@ function MessengerShell({ session }: { session: Session }) {
       updateConversationPreview(result.message);
       void hapticMessageSent();
       if (isTaskManagerAgentConversation(selected)) {
-        setAgentThinkingFor((current) => ({ ...current, [selected.id]: result.message.createdAt }));
+        if (result.taskManagerForward?.forwarded === false) {
+          setAgentThinkingFor((current) => {
+            const next = { ...current };
+            delete next[selected.id];
+            return next;
+          });
+          setError(result.taskManagerForward.reason || "Unable to reach Task Manager agent right now.");
+        } else {
+          setAgentThinkingFor((current) => ({ ...current, [selected.id]: result.message.createdAt }));
+        }
       }
       scheduleBootstrapRefresh();
       scheduleMessageRefresh(selected.id);
