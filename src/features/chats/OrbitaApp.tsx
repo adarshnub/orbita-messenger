@@ -1443,6 +1443,8 @@ function MessengerShell({ session }: { session: Session }) {
     const displayConversations = applySavedContactNamesToConversations(cached.conversations, cached.contacts, cached.profile.id);
     lastUnreadTotalRef.current = displayConversations.reduce((total, conversation) => total + conversation.unreadCount, 0);
     hasVisibleBootstrapRef.current = true;
+    contactsRef.current = cached.contacts;
+    conversationsRef.current = displayConversations;
     setProfile(cached.profile);
     setContacts(cached.contacts);
     setConversations(displayConversations);
@@ -1465,6 +1467,8 @@ function MessengerShell({ session }: { session: Session }) {
         lastUnreadTotalRef.current = nextUnreadTotal;
         bootstrapHasLoadedRef.current = true;
         const displayConversations = applySavedContactNamesToConversations(data.conversations, data.contacts, data.profile.id);
+        contactsRef.current = data.contacts;
+        conversationsRef.current = displayConversations;
         setProfile(data.profile);
         setContacts(data.contacts);
         setConversations(displayConversations);
@@ -2203,16 +2207,32 @@ function MessengerShell({ session }: { session: Session }) {
       })),
     [contactsWithDefaultAgent, existingDirectByContactId],
   );
-  const agentConversationId = useMemo(
-    () => conversations.find((conversation) => isTaskManagerAgentConversation(conversation))?.id ?? "",
-    [conversations],
-  );
-  const agentContactId = useMemo(
-    () =>
-      contactsWithDefaultAgent.find((contact) => contact.about?.trim().toLowerCase() === "task manager agent")?.id ?? "",
-    [contactsWithDefaultAgent],
-  );
   const showAgentFab = !selected;
+
+  function resolveAgentTargetFromSnapshot(
+    snapshotConversations: BackendConversation[],
+    snapshotContacts: BackendProfile[],
+    viewerId: string,
+  ) {
+    const directAgentConversation =
+      snapshotConversations.find((conversation) => isTaskManagerAgentConversation(conversation)) ?? null;
+    if (directAgentConversation) {
+      return { conversationId: directAgentConversation.id, contactId: "" };
+    }
+
+    const agentContact =
+      snapshotContacts.find((contact) => contact.about?.trim().toLowerCase() === "task manager agent") ?? null;
+    if (!agentContact) {
+      return { conversationId: "", contactId: "" };
+    }
+
+    const existingDirect = snapshotConversations.find((conversation) => {
+      if (conversation.kind !== "direct") return false;
+      const peer = conversation.participants.find((participant) => participant.id !== viewerId);
+      return peer?.id === agentContact.id;
+    });
+    return { conversationId: existingDirect?.id ?? "", contactId: agentContact.id };
+  }
 
   async function openContactConversation(otherUserId: string) {
     await run(async () => {
@@ -2233,19 +2253,43 @@ function MessengerShell({ session }: { session: Session }) {
     setActiveTab("chats");
     setError("");
     try {
-      if (agentConversationId) {
-        selectConversation(agentConversationId);
+      const viewerId = profile?.id ?? "";
+      let target = resolveAgentTargetFromSnapshot(
+        conversationsRef.current,
+        contactsRef.current,
+        viewerId,
+      );
+
+      if (target.conversationId) {
+        selectConversation(target.conversationId);
         return;
       }
 
-      if (agentContactId) {
-        const existingConversationId = existingDirectByContactId.get(agentContactId)?.id;
-        if (existingConversationId) {
-          selectConversation(existingConversationId);
+      if (target.contactId) {
+        if (target.conversationId) {
+          selectConversation(target.conversationId);
           return;
         }
+        const result = await messengerApi.createDirectConversation(target.contactId);
+        await loadBootstrap();
+        selectConversation(result.conversation.id);
+        return;
+      }
 
-        const result = await messengerApi.createDirectConversation(agentContactId);
+      await loadBootstrap();
+      target = resolveAgentTargetFromSnapshot(
+        conversationsRef.current,
+        contactsRef.current,
+        viewerId,
+      );
+
+      if (target.conversationId) {
+        selectConversation(target.conversationId);
+        return;
+      }
+
+      if (target.contactId) {
+        const result = await messengerApi.createDirectConversation(target.contactId);
         await loadBootstrap();
         selectConversation(result.conversation.id);
         return;
