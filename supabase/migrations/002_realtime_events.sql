@@ -8,7 +8,8 @@ create table if not exists public.realtime_events (
       'group_created',
       'group_member_added',
       'message_created',
-      'conversation_read'
+      'conversation_read',
+      'taskmanager_admin_status_changed'
     )
   ),
   payload jsonb not null default '{}'::jsonb,
@@ -24,14 +25,33 @@ on public.realtime_events (conversation_id);
 
 alter table public.realtime_events enable row level security;
 
-create policy "users view own realtime events"
-on public.realtime_events for select
-using (target_user_id = auth.uid());
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'realtime_events'
+      and policyname = 'users view own realtime events'
+  ) then
+    create policy "users view own realtime events"
+    on public.realtime_events for select
+    using (target_user_id = auth.uid());
+  end if;
 
-create policy "users mark own realtime events"
-on public.realtime_events for update
-using (target_user_id = auth.uid())
-with check (target_user_id = auth.uid());
+  if not exists (
+    select 1
+    from pg_policies
+    where schemaname = 'public'
+      and tablename = 'realtime_events'
+      and policyname = 'users mark own realtime events'
+  ) then
+    create policy "users mark own realtime events"
+    on public.realtime_events for update
+    using (target_user_id = auth.uid())
+    with check (target_user_id = auth.uid());
+  end if;
+end $$;
 
 do $$
 begin

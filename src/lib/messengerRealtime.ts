@@ -6,9 +6,15 @@ type RealtimeHandlers = {
   onConversationEvent: (conversationId: string) => void;
   onMessageInserted?: (message: BackendMessage) => void;
   onSubscribed?: () => void;
-  onRealtimeEvent: (conversationId: string | null) => void;
+  onRealtimeEvent: (event: MessengerRealtimeEvent) => void;
   onUserEvent: () => void;
   userId: string;
+};
+
+export type MessengerRealtimeEvent = {
+  conversationId: string | null;
+  kind: string;
+  payload: Record<string, unknown>;
 };
 
 export function subscribeMessengerRealtime({
@@ -67,7 +73,12 @@ export function subscribeMessengerRealtime({
         (payload) => {
           const conversationId =
             typeof payload.new?.conversation_id === "string" ? payload.new.conversation_id : null;
-          onRealtimeEvent(conversationId);
+          const kind = typeof payload.new?.kind === "string" ? payload.new.kind : "";
+          const eventPayload =
+            payload.new?.payload && typeof payload.new.payload === "object"
+              ? payload.new.payload as Record<string, unknown>
+              : {};
+          onRealtimeEvent({ conversationId, kind, payload: eventPayload });
         },
       )
       .subscribe((status) => {

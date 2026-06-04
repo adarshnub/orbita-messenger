@@ -48,6 +48,11 @@ const TASK_REQUEST_PATTERNS = [
   /\b(?:prepare|complete|finish|send|share|review|update|follow\s*up|call|meet|get\s+it\s+ready)\b/i,
 ];
 
+const TASK_MANAGER_ADMIN_SESSION_URL =
+  process.env.TASK_MANAGER_ORBITA_ADMIN_SESSION_URL ||
+  process.env.TASK_MANAGER_ADMIN_SESSION_URL ||
+  deriveTaskManagerAdminSessionUrl(process.env.TASK_MANAGER_ORBITA_WEBHOOK_URL);
+
 createServer(async (req, res) => {
   const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
 
@@ -67,7 +72,7 @@ createServer(async (req, res) => {
       return;
     }
 
-    if (pathname === "/api/messenger/media" || pathname === "/api/messenger-api/media") {
+    if (pathname === "/api/messenger/media") {
       const authHeader = String(req.headers.authorization ?? "");
       if (!authHeader) {
         sendJson(res, 401, { error: "Missing authorization." }, req);
@@ -92,7 +97,7 @@ createServer(async (req, res) => {
       return;
     }
 
-    if (pathname === "/api/messenger/avatar" || pathname === "/api/messenger-api/avatar") {
+    if (pathname === "/api/messenger/avatar") {
       const authHeader = String(req.headers.authorization ?? "");
       if (!authHeader) {
         sendJson(res, 401, { error: "Missing authorization." }, req);
@@ -137,7 +142,7 @@ createServer(async (req, res) => {
       return;
     }
 
-    if (pathname === "/api/messenger" || pathname === "/api/messenger-api") {
+    if (pathname === "/api/messenger") {
       const authHeader = String(req.headers.authorization ?? "");
       if (!authHeader) {
         sendJson(res, 401, { error: "Missing authorization." }, req);
@@ -151,7 +156,7 @@ createServer(async (req, res) => {
         return;
       }
 
-      sendJson(res, 200, await handleAction(data.user, action, payload), req);
+      sendJson(res, 200, await handleAction(data.user, action, payload, req), req);
       return;
     }
 
@@ -269,6 +274,30 @@ function sha256(value) {
 
 function hmacSha256(value, secret) {
   return createHmac("sha256", secret).update(value).digest("hex");
+}
+
+function deriveTaskManagerAdminSessionUrl(webhookUrl) {
+  if (!webhookUrl) return "";
+  return webhookUrl.replace(/\/webhooks\/orbita\/messages\/?$/i, "/orbita/admin/sessions");
+}
+
+function deriveTaskManagerApiBaseUrl(sessionUrl) {
+  if (!sessionUrl) return "";
+  return sessionUrl.replace(/\/orbita\/admin\/sessions\/?$/i, "");
+}
+
+function clientReachableTaskManagerApiBaseUrl(sessionUrl, req) {
+  const baseUrl = deriveTaskManagerApiBaseUrl(sessionUrl);
+  try {
+    const url = new URL(baseUrl);
+    if (!["localhost", "127.0.0.1", "0.0.0.0"].includes(url.hostname)) return baseUrl;
+    const requestHost = String(req?.headers?.host ?? "").split(":")[0];
+    if (!requestHost || ["localhost", "127.0.0.1", "0.0.0.0"].includes(requestHost)) return baseUrl;
+    url.hostname = requestHost;
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return baseUrl;
+  }
 }
 
 function verifyIntegrationSignature(rawBody, signature, secret) {
@@ -1894,11 +1923,96 @@ async function handleServiceAction(action, payload) {
     return { message: mapMessage(message, []) };
   }
 
+  if (action === "taskmanager_admin_status_changed") {
+    const taskmanagerOrgId = requiredString(payload, "taskmanagerOrgId");
+    const taskmanagerUserId = requiredString(payload, "taskmanagerUserId");
+    const role = optionalString(payload, "role") || "member";
+    const isActive = payload.isActive !== false;
+
+    const { data: links, error } = await supabase
+      .from("taskmanager_agent_links")
+      .select("*")
+      .eq("taskmanager_org_id", taskmanagerOrgId)
+      .eq("taskmanager_user_id", taskmanagerUserId)
+      .eq("enabled", true);
+    if (error) throw error;
+
+    const targetUserIds = [...new Set((links ?? []).map((link) => link.orbita_user_id).filter(Boolean))];
+    if (!targetUserIds.length) {
+      return { notified: 0 };
+    }
+
+    const primaryConversationId =
+      typeof links?.[0]?.conversation_id === "string" ? links[0].conversation_id : null;
+    await createRealtimeEvents(targetUserIds, "taskmanager_admin_status_changed", primaryConversationId, {
+      taskmanagerOrgId,
+      taskmanagerUserId,
+      role,
+      isActive,
+      isAdmin: isActive && role === "admin",
+    });
+
+    return { notified: targetUserIds.length };
+  }
+
   throw new Error(`Unknown service action: ${action}`);
 }
 
-async function handleAction(user, action, payload) {
+async function handleAction(user, action, payload, req) {
   await ensureProfile(user);
+
+  if (action === "create_taskmanager_admin_session") {
+    const secret = process.env.TASK_MANAGER_ORBITA_SECRET;
+    if (!TASK_MANAGER_ADMIN_SESSION_URL || !secret) {
+      return { available: false, reason: "Task Manager admin mode is not configured." };
+    }
+
+    const conversationId = optionalString(payload, "conversationId");
+    let query = supabase
+      .from("taskmanager_agent_links")
+      .select("*")
+      .eq("orbita_user_id", user.id)
+      .eq("enabled", true)
+      .order("updated_at", { ascending: false })
+      .limit(1);
+    if (conversationId) query = query.eq("conversation_id", conversationId);
+
+    const { data: links, error } = await query;
+    if (error) throw error;
+    const link = links?.[0];
+    if (!link?.taskmanager_org_id || !link?.taskmanager_user_id || !link?.conversation_id) {
+      return { available: false, reason: "This Orbita account is not linked to Task Manager." };
+    }
+
+    const raw = JSON.stringify({
+      taskmanagerOrgId: link.taskmanager_org_id,
+      taskmanagerUserId: link.taskmanager_user_id,
+      orbitaUserId: user.id,
+      conversationId: link.conversation_id,
+    });
+
+    const response = await fetch(TASK_MANAGER_ADMIN_SESSION_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-orbita-signature": `sha256=${hmacSha256(raw, secret)}`,
+      },
+      body: raw,
+    });
+    const data = await response.json().catch(() => null);
+    if (response.status === 403) {
+      return { available: false, reason: apiErrorMessage(data) || "Task Manager admin mode is not enabled for this user." };
+    }
+    if (!response.ok) {
+      throw new Error(apiErrorMessage(data) || `Task Manager admin session failed: ${response.status}`);
+    }
+
+    return {
+      available: true,
+      apiBaseUrl: clientReachableTaskManagerApiBaseUrl(TASK_MANAGER_ADMIN_SESSION_URL, req),
+      session: data,
+    };
+  }
 
   if (action === "bootstrap") {
     return {
@@ -2178,4 +2292,10 @@ function errorMessage(error) {
     }
   }
   return "Unexpected server error.";
+}
+
+function apiErrorMessage(data) {
+  if (!data || typeof data !== "object") return "";
+  const error = data.error;
+  return typeof error === "string" ? error : "";
 }

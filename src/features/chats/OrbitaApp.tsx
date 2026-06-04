@@ -56,6 +56,20 @@ import {
 } from "@/features/chats/messageUtils";
 import { messengerApi } from "@/lib/messengerApi";
 import {
+  clearTaskManagerAdminSession,
+  loadTaskManagerAdminSession,
+  saveTaskManagerAdminSession,
+  TASK_MANAGER_EMPLOYEE_ROLES,
+  taskManagerAdminApi,
+  type TaskManagerAdminSession,
+  type TaskManagerAdminSummary,
+  type TaskManagerAdminTask,
+  type TaskManagerAdminUser,
+  type TaskManagerChatMessage,
+  type TaskManagerDepartment,
+  type TaskManagerDepartmentDetails,
+} from "@/lib/taskManagerAdminApi";
+import {
   applySavedContactNamesToConversations,
   markCachedMessageFailed,
   readCachedBootstrap,
@@ -82,7 +96,7 @@ import {
 } from "@/lib/notifications";
 import { colors, radii, shadow } from "@/theme/colors";
 
-type Tab = "chats" | "status" | "contacts" | "calls" | "settings";
+type Tab = "chats" | "status" | "contacts" | "calls" | "settings" | "admin";
 type AuthMode = "signin" | "signup";
 type AppThemeMode = "light" | "dark";
 type ChatMessage = BackendMessage & { localState?: "sending" | "failed" };
@@ -120,6 +134,7 @@ type UnsavedPeer = {
   defaultName: string;
   phone: string;
 };
+type AdminSectionId = "overview" | "employees" | "departments" | "tasks" | "chats" | "reports" | "settings";
 
 const KEYBOARD_COMPOSER_GAP = 18;
 const KEYBOARD_SAFETY_GAP = Platform.OS === "android" ? 34 : 14;
@@ -135,6 +150,7 @@ const AGENT_THINKING_TIMEOUT_MS = 45_000;
 const CHAT_PAGE_SIZE = 24;
 const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: "chats", label: "Chats", icon: "chatbubbles-outline" },
+  { id: "admin", label: "Admin", icon: "briefcase-outline" },
   { id: "status", label: "Status", icon: "aperture-outline" },
   { id: "contacts", label: "Contacts", icon: "people-outline" },
   { id: "calls", label: "Calls", icon: "call-outline" },
@@ -1224,6 +1240,19 @@ function MessengerShell({ session }: { session: Session }) {
   const [uploadingProfilePhoto, setUploadingProfilePhoto] = useState(false);
   const [error, setError] = useState("");
   const [settingsNotice, setSettingsNotice] = useState("");
+  const [adminSession, setAdminSession] = useState<TaskManagerAdminSession | null>(null);
+  const [adminLoading, setAdminLoading] = useState(false);
+  const [adminNotice, setAdminNotice] = useState("");
+  const [adminSummary, setAdminSummary] = useState<TaskManagerAdminSummary | null>(null);
+  const [adminUsers, setAdminUsers] = useState<TaskManagerAdminUser[]>([]);
+  const [adminTasks, setAdminTasks] = useState<TaskManagerAdminTask[]>([]);
+  const [adminDepartments, setAdminDepartments] = useState<TaskManagerDepartment[]>([]);
+  const [adminReports, setAdminReports] = useState<Awaited<ReturnType<typeof taskManagerAdminApi.taskReports>> | null>(null);
+  const [adminSettings, setAdminSettings] = useState<Record<string, unknown> | null>(null);
+  const [adminChats, setAdminChats] = useState<TaskManagerChatMessage[]>([]);
+  const [adminSelectedUserId, setAdminSelectedUserId] = useState("");
+  const [adminEmployeeName, setAdminEmployeeName] = useState("");
+  const [adminEmployeeRole, setAdminEmployeeRole] = useState<"admin" | "member">("member");
   const [agentThinkingFor, setAgentThinkingFor] = useState<Record<string, string>>({});
   const [typingByConversation, setTypingByConversation] = useState<Record<string, Record<string, TypingParticipant>>>({});
   const [newChatOpen, setNewChatOpen] = useState(false);
@@ -1254,9 +1283,12 @@ function MessengerShell({ session }: { session: Session }) {
   const lastUnreadTotalRef = useRef<number | null>(null);
   const incomingHapticAtRef = useRef(0);
   const bootstrapHasLoadedRef = useRef(false);
+  const adminModeCheckInFlightRef = useRef(false);
+  const adminSessionRef = useRef<TaskManagerAdminSession | null>(null);
   const pushTokenRef = useRef<string | null>(null);
   const openingAgentFromFabRef = useRef(false);
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
+  const visibleTabs = useMemo(() => (adminSession ? tabs : tabs.filter((tab) => tab.id !== "admin")), [adminSession]);
   const conversationIds = useMemo(() => conversations.map((conversation) => conversation.id), [conversations]);
   const conversationKey = conversationIds.join("|");
   const profileId = profile?.id ?? "";
@@ -1305,6 +1337,10 @@ function MessengerShell({ session }: { session: Session }) {
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
+
+  useEffect(() => {
+    adminSessionRef.current = adminSession;
+  }, [adminSession]);
 
   useEffect(() => {
     appLifecycleStateRef.current = appLifecycleState;
@@ -1497,6 +1533,96 @@ function MessengerShell({ session }: { session: Session }) {
     );
     setLoading(false);
   }, [playIncomingHaptic]);
+
+  const refreshAdminData = useCallback(async (
+    sessionOverride?: TaskManagerAdminSession | null,
+    options: { silent?: boolean } = {},
+  ): Promise<boolean> => {
+    const currentSession = sessionOverride ?? adminSessionRef.current;
+    if (!currentSession) return false;
+    if (!options.silent) setAdminLoading(true);
+    try {
+      const [summary, users, tasks, departments, reports, settings] = await Promise.all([
+        taskManagerAdminApi.summary(currentSession),
+        taskManagerAdminApi.users(currentSession),
+        taskManagerAdminApi.tasks(currentSession),
+        taskManagerAdminApi.departments(currentSession),
+        taskManagerAdminApi.taskReports(currentSession),
+        taskManagerAdminApi.settings(currentSession),
+      ]);
+      setAdminSummary(summary);
+      setAdminUsers(users);
+      setAdminTasks(tasks);
+      setAdminDepartments(departments);
+      setAdminReports(reports);
+      setAdminSettings(settings);
+      setAdminNotice("");
+      return true;
+    } catch (nextError) {
+      setAdminNotice(nextError instanceof Error ? nextError.message : "Unable to load admin data.");
+      adminSessionRef.current = null;
+      setAdminSession(null);
+      if (activeTabRef.current === "admin") setActiveTab("chats");
+      return false;
+    } finally {
+      if (!options.silent) setAdminLoading(false);
+    }
+  }, []);
+
+  const loadTaskManagerAdminMode = useCallback(async (options: { silent?: boolean } = {}) => {
+    if (adminModeCheckInFlightRef.current) return;
+    adminModeCheckInFlightRef.current = true;
+    try {
+      const saved = await loadTaskManagerAdminSession();
+      if (saved) {
+        const refreshed = await refreshAdminData(saved, options);
+        if (refreshed) {
+          setAdminSession(saved);
+          return;
+        }
+        await clearTaskManagerAdminSession();
+      }
+
+      const result = await messengerApi.createTaskManagerAdminSession();
+      if (!result.available) {
+        if (__DEV__ && result.reason) {
+          console.warn(`[task-manager-admin] ${result.reason}`);
+        }
+        setAdminSession(null);
+        setAdminNotice("");
+        return;
+      }
+      const nextSession: TaskManagerAdminSession = {
+        apiBaseUrl: result.apiBaseUrl,
+        token: result.session.token,
+        expiresAt: result.session.expires_at,
+        orgId: result.session.org_id,
+        orgName: result.session.org_name,
+        userId: result.session.user_id,
+        userName: result.session.user_name,
+      };
+      await saveTaskManagerAdminSession(nextSession);
+      const refreshed = await refreshAdminData(nextSession, options);
+      if (refreshed) {
+        setAdminSession(nextSession);
+      }
+    } catch (error) {
+      if (__DEV__) {
+        console.warn("[task-manager-admin] Admin session check failed.", error);
+      }
+      await clearTaskManagerAdminSession();
+      setAdminSession(null);
+      setAdminNotice("");
+    } finally {
+      adminModeCheckInFlightRef.current = false;
+    }
+  }, [refreshAdminData]);
+
+  useEffect(() => {
+    if (!profile) return undefined;
+    void loadTaskManagerAdminMode();
+    return undefined;
+  }, [loadTaskManagerAdminMode, profile?.id]);
 
   const markConversationReadLocally = useCallback((
     conversationId: string,
@@ -1822,14 +1948,18 @@ function MessengerShell({ session }: { session: Session }) {
         refreshActiveConversation(conversationId === selectedId ? conversationId : "");
       },
       onMessageInserted: applyRealtimeMessage,
-      onRealtimeEvent: (conversationId) => {
-        refreshActiveConversation(conversationId && conversationId === selectedId ? conversationId : "");
+      onRealtimeEvent: (event) => {
+        if (event.kind === "taskmanager_admin_status_changed") {
+          void loadTaskManagerAdminMode({ silent: true });
+          return;
+        }
+        refreshActiveConversation(event.conversationId && event.conversationId === selectedId ? event.conversationId : "");
       },
       onUserEvent: () => {
         scheduleBootstrapRefresh();
       },
     });
-  }, [applyRealtimeMessage, conversationKey, profileId, scheduleBootstrapRefresh, scheduleMessageRefresh, selectedId]);
+  }, [applyRealtimeMessage, conversationKey, loadTaskManagerAdminMode, profileId, scheduleBootstrapRefresh, scheduleMessageRefresh, selectedId]);
 
   useEffect(() => {
     if (Platform.OS === "web") return;
@@ -1848,11 +1978,12 @@ function MessengerShell({ session }: { session: Session }) {
         return;
       }
       void loadBootstrap();
+      void loadTaskManagerAdminMode({ silent: true });
       if (selectedId) void loadMessages(selectedId);
     });
 
     return () => subscription.remove();
-  }, [loadBootstrap, loadMessages, selectedId, stopTyping]);
+  }, [loadBootstrap, loadMessages, loadTaskManagerAdminMode, selectedId, stopTyping]);
 
   useEffect(() => {
     if (Platform.OS !== "android") return undefined;
@@ -2567,7 +2698,7 @@ function MessengerShell({ session }: { session: Session }) {
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={[styles.safe, isDarkTheme && styles.safeDark]}>
       <View style={[styles.appFrame, isDarkTheme && styles.appFrameDark]}>
-        {isWide ? <Sidebar activeTab={activeTab} onChange={changeTab} onNewChat={() => setNewChatOpen(true)} /> : null}
+        {isWide ? <Sidebar activeTab={activeTab} onChange={changeTab} onNewChat={() => setNewChatOpen(true)} tabs={visibleTabs} /> : null}
         <View style={[styles.workspace, isDarkTheme && styles.workspaceDark]}>
           {showAppHeader ? <AppHeader isWide={isWide} /> : null}
           {error ? <Text style={styles.errorBar}>{error}</Text> : null}
@@ -2583,16 +2714,53 @@ function MessengerShell({ session }: { session: Session }) {
             {showPanel ? (
               <Panel
                 activeTab={activeTab}
+                adminChats={adminChats}
+                adminDepartments={adminDepartments}
+                adminEmployeeName={adminEmployeeName}
+                adminEmployeeRole={adminEmployeeRole}
+                adminLoading={adminLoading}
+                adminNotice={adminNotice}
+                adminReports={adminReports}
+                adminSettings={adminSettings}
+                adminSelectedUserId={adminSelectedUserId}
+                adminSession={adminSession}
+                adminSummary={adminSummary}
+                adminTasks={adminTasks}
+                adminUsers={adminUsers}
                 contacts={chatListContacts}
                 conversations={conversations}
                 isWide={isWide}
                 onCreateGroup={() => setGroupOpen(true)}
+                onCreateAdminEmployee={async () => {
+                  if (!adminSession || !adminEmployeeName.trim()) return;
+                  await taskManagerAdminApi.createUser(adminSession, {
+                    name: adminEmployeeName.trim(),
+                    role: adminEmployeeRole,
+                  });
+                  setAdminEmployeeName("");
+                  setAdminEmployeeRole("member");
+                  await refreshAdminData(adminSession);
+                }}
                 onNewChat={() => setNewChatOpen(true)}
                 onNewStatus={() => setStatusOpen(true)}
                 onOpenProfile={() => setProfileOpen(true)}
                 onOpenContact={openContactConversation}
+                onRefreshAdmin={() => refreshAdminData()}
+                onSelectAdminUser={async (userId) => {
+                  setAdminSelectedUserId(userId);
+                  if (!adminSession) return;
+                  const chats = await taskManagerAdminApi.userChats(adminSession, userId);
+                  setAdminChats(chats);
+                }}
                 onSignOut={signOut}
+                onSetAdminEmployeeName={setAdminEmployeeName}
+                onSetAdminEmployeeRole={setAdminEmployeeRole}
                 onSyncDeviceContacts={syncDeviceContacts}
+                onUpdateAdminTaskStatus={async (taskId, status) => {
+                  if (!adminSession) return;
+                  await taskManagerAdminApi.updateTaskStatus(adminSession, taskId, status);
+                  await refreshAdminData(adminSession, { silent: true });
+                }}
                 onUploadProfilePhoto={uploadProfileAvatarFromSettings}
                 isSyncingDeviceContacts={syncingContacts}
                 isUploadingProfilePhoto={uploadingProfilePhoto}
@@ -2641,7 +2809,7 @@ function MessengerShell({ session }: { session: Session }) {
         </View>
       </View>
       {showBottomTabs ? (
-        <BottomTabs activeTab={activeTab} bottomInset={bottomInset} onChange={changeTab} unreadTotal={unreadTotal} />
+        <BottomTabs activeTab={activeTab} bottomInset={bottomInset} onChange={changeTab} tabs={visibleTabs} unreadTotal={unreadTotal} />
       ) : null}
       {showAgentFab ? (
         <Pressable
@@ -2772,10 +2940,12 @@ function Sidebar({
   activeTab,
   onChange,
   onNewChat,
+  tabs: visibleTabs,
 }: {
   activeTab: Tab;
   onChange: (tab: Tab) => void;
   onNewChat: () => void;
+  tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }>;
 }) {
   const { isDarkTheme } = useAppTheme();
   return (
@@ -2784,7 +2954,7 @@ function Sidebar({
         <OrbitaLogo size={36} />
       </View>
       <View style={styles.navStack}>
-        {tabs.map((tab) => (
+        {visibleTabs.map((tab) => (
           <Pressable
             accessibilityLabel={tab.label}
             key={tab.id}
@@ -2807,17 +2977,19 @@ function BottomTabs({
   activeTab,
   bottomInset,
   onChange,
+  tabs: visibleTabs,
   unreadTotal,
 }: {
   activeTab: Tab;
   bottomInset: number;
   onChange: (tab: Tab) => void;
+  tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }>;
   unreadTotal: number;
 }) {
   const { isDarkTheme } = useAppTheme();
   return (
     <View style={[styles.bottomTabs, isDarkTheme && styles.bottomTabsDark, { paddingBottom: bottomInset + 8 }]}>
-      {tabs.map((tab) => (
+      {visibleTabs.map((tab) => (
         <Pressable accessibilityLabel={tab.label} key={tab.id} onPress={() => onChange(tab.id)} style={styles.bottomTab}>
           <View>
             <Ionicons
@@ -2854,17 +3026,36 @@ function UnreadBadge({ compact, count }: { compact?: boolean; count: number }) {
 
 function Panel({
   activeTab,
+  adminChats,
+  adminDepartments,
+  adminEmployeeName,
+  adminEmployeeRole,
+  adminLoading,
+  adminNotice,
+  adminReports,
+  adminSettings,
+  adminSelectedUserId,
+  adminSession,
+  adminSummary,
+  adminTasks,
+  adminUsers,
   contacts,
   conversations,
   isWide,
+  onCreateAdminEmployee,
   onCreateGroup,
   onOpenContact,
   onNewChat,
   onNewStatus,
   onOpenProfile,
+  onRefreshAdmin,
   onSelect,
+  onSelectAdminUser,
+  onSetAdminEmployeeName,
+  onSetAdminEmployeeRole,
   onSignOut,
   onSyncDeviceContacts,
+  onUpdateAdminTaskStatus,
   onUploadProfilePhoto,
   isSyncingDeviceContacts,
   isUploadingProfilePhoto,
@@ -2874,17 +3065,36 @@ function Panel({
   statuses,
 }: {
   activeTab: Tab;
+  adminChats: TaskManagerChatMessage[];
+  adminDepartments: TaskManagerDepartment[];
+  adminEmployeeName: string;
+  adminEmployeeRole: "admin" | "member";
+  adminLoading: boolean;
+  adminNotice: string;
+  adminReports: Awaited<ReturnType<typeof taskManagerAdminApi.taskReports>> | null;
+  adminSettings: Record<string, unknown> | null;
+  adminSelectedUserId: string;
+  adminSession: TaskManagerAdminSession | null;
+  adminSummary: TaskManagerAdminSummary | null;
+  adminTasks: TaskManagerAdminTask[];
+  adminUsers: TaskManagerAdminUser[];
   contacts: ChatListContact[];
   conversations: BackendConversation[];
   isWide: boolean;
+  onCreateAdminEmployee: () => Promise<void>;
   onCreateGroup: () => void;
   onOpenContact: (contactId: string) => void;
   onNewChat: () => void;
   onNewStatus: () => void;
   onOpenProfile: () => void;
+  onRefreshAdmin: () => void;
   onSelect: (id: string) => void;
+  onSelectAdminUser: (userId: string) => Promise<void>;
+  onSetAdminEmployeeName: (value: string) => void;
+  onSetAdminEmployeeRole: (value: "admin" | "member") => void;
   onSignOut: () => void;
   onSyncDeviceContacts: () => void;
+  onUpdateAdminTaskStatus: (taskId: string, status: TaskManagerAdminTask["status"]) => Promise<void>;
   onUploadProfilePhoto: () => void;
   isSyncingDeviceContacts: boolean;
   isUploadingProfilePhoto: boolean;
@@ -2902,6 +3112,32 @@ function Panel({
   }
   if (activeTab === "calls") {
     return <CallsPanel isWide={isWide} />;
+  }
+  if (activeTab === "admin") {
+    return (
+      <AdminPanelV2
+        chats={adminChats}
+        departments={adminDepartments}
+        employeeName={adminEmployeeName}
+        employeeRole={adminEmployeeRole}
+        isWide={isWide}
+        loading={adminLoading}
+        notice={adminNotice}
+        onCreateEmployee={onCreateAdminEmployee}
+        onRefresh={onRefreshAdmin}
+        onSelectUser={onSelectAdminUser}
+        onSetEmployeeName={onSetAdminEmployeeName}
+        onSetEmployeeRole={onSetAdminEmployeeRole}
+        onUpdateTaskStatus={onUpdateAdminTaskStatus}
+        reports={adminReports}
+        settings={adminSettings}
+        selectedUserId={adminSelectedUserId}
+        session={adminSession}
+        summary={adminSummary}
+        tasks={adminTasks}
+        users={adminUsers}
+      />
+    );
   }
   if (activeTab === "settings") {
     return (
@@ -2931,6 +3167,625 @@ function Panel({
       selectedId={selectedId}
     />
   );
+}
+
+function AdminPanelV2({
+  chats,
+  departments,
+  employeeName,
+  employeeRole,
+  isWide,
+  loading,
+  notice,
+  onCreateEmployee,
+  onRefresh,
+  onSelectUser,
+  onSetEmployeeName,
+  onSetEmployeeRole,
+  onUpdateTaskStatus,
+  reports,
+  settings,
+  selectedUserId,
+  session,
+  summary,
+  tasks,
+  users,
+}: {
+  chats: TaskManagerChatMessage[];
+  departments: TaskManagerDepartment[];
+  employeeName: string;
+  employeeRole: "admin" | "member";
+  isWide: boolean;
+  loading: boolean;
+  notice: string;
+  onCreateEmployee: () => Promise<void>;
+  onRefresh: () => void;
+  onSelectUser: (userId: string) => Promise<void>;
+  onSetEmployeeName: (value: string) => void;
+  onSetEmployeeRole: (value: "admin" | "member") => void;
+  onUpdateTaskStatus: (taskId: string, status: TaskManagerAdminTask["status"]) => Promise<void>;
+  reports: Awaited<ReturnType<typeof taskManagerAdminApi.taskReports>> | null;
+  settings: Record<string, unknown> | null;
+  selectedUserId: string;
+  session: TaskManagerAdminSession | null;
+  summary: TaskManagerAdminSummary | null;
+  tasks: TaskManagerAdminTask[];
+  users: TaskManagerAdminUser[];
+}) {
+  const { isDarkTheme } = useAppTheme();
+  const [section, setSection] = useState<AdminSectionId>("overview");
+  const [expandedDepartmentIds, setExpandedDepartmentIds] = useState<Record<string, boolean>>({});
+  const [departmentDetailsById, setDepartmentDetailsById] = useState<Record<string, TaskManagerDepartmentDetails>>({});
+  const [departmentLoadingById, setDepartmentLoadingById] = useState<Record<string, boolean>>({});
+  const [taskAssigneeFilter, setTaskAssigneeFilter] = useState("all");
+  const [taskAssigneeSearch, setTaskAssigneeSearch] = useState("");
+  const [taskFilterOpen, setTaskFilterOpen] = useState(false);
+  const [updatingTaskIds, setUpdatingTaskIds] = useState<Record<string, boolean>>({});
+  const [taskNotice, setTaskNotice] = useState("");
+  void employeeName;
+  void employeeRole;
+  void chats;
+  void onCreateEmployee;
+  void onSetEmployeeName;
+  void onSetEmployeeRole;
+  if (!session) {
+    return (
+      <View style={[styles.listPanel, styles.adminPanel, isWide && styles.adminPanelWide, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
+        <EmptyState icon="lock-closed-outline" title="Admin mode unavailable" copy="Only linked Task Manager admin users can open this section." />
+      </View>
+    );
+  }
+
+  const currentAdminSession = session;
+  const selectedUser = users.find((user) => user._id === selectedUserId) ?? users[0] ?? null;
+  const normalizedTaskAssigneeSearch = taskAssigneeSearch.trim().toLowerCase();
+  const filteredAssigneeOptions = users.filter((user) => {
+    if (!normalizedTaskAssigneeSearch) return true;
+    return user.name.toLowerCase().includes(normalizedTaskAssigneeSearch);
+  });
+  const visibleTasks = taskAssigneeFilter === "all"
+    ? tasks
+    : tasks.filter((task) => task.assignee_id === taskAssigneeFilter);
+  const selectedTaskAssignee = users.find((user) => user._id === taskAssigneeFilter) ?? null;
+  const openTasks = summary?.tasks.open ?? tasks.filter((task) => task.status === "open").length;
+  const inProgressTasks = summary?.tasks.in_progress ?? tasks.filter((task) => task.status === "in_progress").length;
+  const overdueTasks = summary?.tasks.overdue ?? 0;
+  const doneRate = summary?.completion_rate ?? reports?.summary.completion_rate ?? 0;
+  const activeTasks = openTasks + inProgressTasks;
+  const adminCount = users.filter((user) => user.role === "admin").length;
+  const orbitaCount = users.filter((user) => user.agent_channel === "orbita").length;
+  const recentTasks = summary?.recent_activity?.length ? summary.recent_activity : tasks.slice(0, 5);
+  const sections: Array<{ id: AdminSectionId; label: string; icon: keyof typeof Ionicons.glyphMap; count?: number | string }> = [
+    { id: "overview", label: "Overview", icon: "grid-outline" },
+    { id: "employees", label: "Employees", icon: "people-outline", count: users.length },
+    { id: "tasks", label: "Tasks", icon: "checkbox-outline", count: activeTasks },
+    { id: "reports", label: "Reports", icon: "bar-chart-outline", count: `${doneRate}%` },
+    { id: "departments", label: "Departments", icon: "business-outline", count: departments.length },
+    { id: "settings", label: "Settings", icon: "options-outline" },
+  ];
+
+  async function toggleDepartment(departmentId: string) {
+    const willExpand = !expandedDepartmentIds[departmentId];
+    setExpandedDepartmentIds((current) => ({ ...current, [departmentId]: willExpand }));
+    if (!willExpand || departmentDetailsById[departmentId] || departmentLoadingById[departmentId]) return;
+    setDepartmentLoadingById((current) => ({ ...current, [departmentId]: true }));
+    try {
+      const details = await taskManagerAdminApi.department(currentAdminSession, departmentId);
+      setDepartmentDetailsById((current) => ({ ...current, [departmentId]: details }));
+    } catch (error) {
+      setTaskNotice(error instanceof Error ? error.message : "Unable to load department members.");
+    } finally {
+      setDepartmentLoadingById((current) => ({ ...current, [departmentId]: false }));
+    }
+  }
+
+  async function updateTaskStatus(task: TaskManagerAdminTask) {
+    if (updatingTaskIds[task._id]) return;
+    const nextStatus: TaskManagerAdminTask["status"] = task.status === "done" ? "open" : "done";
+    setTaskNotice("");
+    setUpdatingTaskIds((current) => ({ ...current, [task._id]: true }));
+    try {
+      await onUpdateTaskStatus(task._id, nextStatus);
+    } catch (error) {
+      setTaskNotice(error instanceof Error ? error.message : "Unable to update task status.");
+    } finally {
+      setUpdatingTaskIds((current) => ({ ...current, [task._id]: false }));
+    }
+  }
+
+  return (
+    <View style={[styles.listPanel, styles.adminPanel, isWide && styles.adminPanelWide, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
+      <View style={[styles.adminHeader, isDarkTheme && styles.adminHeaderDark]}>
+        <View>
+          <Text style={[styles.adminEyebrow, isDarkTheme && styles.adminMutedText]}>Task Manager</Text>
+          <Text style={[styles.adminTitle, isDarkTheme && styles.chatTitleDark]}>{session.orgName}</Text>
+        </View>
+        <Pressable accessibilityLabel="Refresh admin data" onPress={onRefresh} style={[styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark]}>
+          {loading ? <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} /> : <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="refresh-outline" size={20} />}
+        </Pressable>
+      </View>
+      {notice ? <Text style={styles.errorBar}>{notice}</Text> : null}
+      <ScrollView contentContainerStyle={[styles.adminContent, isWide && styles.adminContentWide, isDarkTheme && styles.listContentDark]}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.adminSectionTabs}>
+          {sections.map((item) => (
+            <Pressable
+              key={item.id}
+              onPress={() => setSection(item.id)}
+              style={[styles.adminSectionTab, isDarkTheme && styles.adminSectionTabDark, section === item.id && styles.adminSectionTabActive]}
+            >
+              <Ionicons color={section === item.id ? "#FFFFFF" : isDarkTheme ? colors.accent : colors.primaryDark} name={item.icon} size={16} />
+              <Text style={[styles.adminSectionTabText, isDarkTheme && styles.adminMutedText, section === item.id && styles.adminSectionTabTextActive]}>{item.label}</Text>
+              {item.count !== undefined ? <Text style={[styles.adminSectionTabCount, section === item.id && styles.adminSectionTabTextActive]}>{item.count}</Text> : null}
+            </Pressable>
+          ))}
+        </ScrollView>
+
+        {section === "overview" ? (
+          <>
+            <View style={styles.adminMetricGrid}>
+              <AdminMetric label="Employees" value={summary?.employees ?? users.length} />
+              <AdminMetric label="Active" value={activeTasks} />
+              <AdminMetric label="Overdue" value={overdueTasks} tone="danger" />
+              <AdminMetric label="Done" value={`${doneRate}%`} tone="success" />
+            </View>
+            <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
+              <AdminSectionHeader title="Operations" meta="Quick scan" />
+              <View style={styles.adminOverviewGrid}>
+                <AdminCompactStat label="Admins" value={adminCount} />
+                <AdminCompactStat label="Orbita" value={orbitaCount} />
+                <AdminCompactStat label="Departments" value={departments.length} />
+                <AdminCompactStat label="Open" value={openTasks} />
+              </View>
+            </View>
+            <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
+              <AdminSectionHeader title="Recent Tasks" meta={`${recentTasks.length} latest`} />
+              {recentTasks.slice(0, 5).map((task) => (
+                <AdminTaskRow
+                  key={task._id}
+                  compact
+                  isDarkTheme={isDarkTheme}
+                  isUpdating={Boolean(updatingTaskIds[task._id])}
+                  onUpdateTaskStatus={updateTaskStatus}
+                  task={task}
+                  userName={users.find((user) => user._id === task.assignee_id)?.name}
+                />
+              ))}
+              {!recentTasks.length ? <AdminEmptyLine text="No recent tasks." /> : null}
+            </View>
+          </>
+        ) : null}
+
+        {section === "employees" ? (
+          <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
+            <AdminSectionHeader title="Employees" meta={`${users.length} people`} />
+            {users.map((user) => (
+              <Pressable
+                key={user._id}
+                onPress={() => void onSelectUser(user._id)}
+                style={[
+                  styles.adminListRow,
+                  isDarkTheme && styles.adminListRowDark,
+                  selectedUser?._id === user._id && styles.adminListRowActive,
+                  selectedUser?._id === user._id && isDarkTheme && styles.adminListRowActiveDark,
+                ]}
+              >
+                <View>
+                  <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{user.name}</Text>
+                  <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{user.role} - {user.agent_channel ?? "whatsapp"}</Text>
+                </View>
+                <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="chatbubble-ellipses-outline" size={18} />
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
+
+        {section === "tasks" ? (
+          <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
+            <AdminSectionHeader title="Tasks" meta={`${visibleTasks.length} shown, ${openTasks} open`} />
+            {taskNotice ? <Text style={styles.errorBar}>{taskNotice}</Text> : null}
+            <View style={[styles.adminFilterCard, isDarkTheme && styles.adminFilterCardDark]}>
+              <Pressable
+                accessibilityLabel="Filter tasks by employee"
+                onPress={() => setTaskFilterOpen((current) => !current)}
+                style={styles.adminFilterTrigger}
+              >
+                <View>
+                  <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>Employee filter</Text>
+                  <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>
+                    {selectedTaskAssignee?.name ?? "All employees"}
+                  </Text>
+                </View>
+                <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name={taskFilterOpen ? "chevron-up" : "chevron-down"} size={18} />
+              </Pressable>
+              {taskFilterOpen ? (
+                <View style={styles.adminFilterMenu}>
+                  <View style={[styles.searchBox, isDarkTheme && styles.searchBoxDark]}>
+                    <Ionicons color={isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted} name="search-outline" size={17} />
+                    <TextInput
+                      onChangeText={setTaskAssigneeSearch}
+                      placeholder="Search employees"
+                      placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
+                      style={[styles.searchInput, isDarkTheme && styles.searchInputDark]}
+                      value={taskAssigneeSearch}
+                    />
+                  </View>
+                  <Pressable
+                    onPress={() => {
+                      setTaskAssigneeFilter("all");
+                      setTaskFilterOpen(false);
+                    }}
+                    style={[
+                      styles.adminFilterOption,
+                      isDarkTheme && styles.adminFilterOptionDark,
+                      taskAssigneeFilter === "all" && styles.adminFilterOptionActive,
+                      taskAssigneeFilter === "all" && isDarkTheme && styles.adminFilterOptionActiveDark,
+                    ]}
+                  >
+                    <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>All employees</Text>
+                    <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{tasks.length} tasks</Text>
+                  </Pressable>
+                  {filteredAssigneeOptions.map((user) => {
+                    const taskCount = tasks.filter((task) => task.assignee_id === user._id).length;
+                    return (
+                      <Pressable
+                        key={user._id}
+                        onPress={() => {
+                          setTaskAssigneeFilter(user._id);
+                          setTaskFilterOpen(false);
+                        }}
+                        style={[
+                          styles.adminFilterOption,
+                          isDarkTheme && styles.adminFilterOptionDark,
+                          taskAssigneeFilter === user._id && styles.adminFilterOptionActive,
+                          taskAssigneeFilter === user._id && isDarkTheme && styles.adminFilterOptionActiveDark,
+                        ]}
+                      >
+                        <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{user.name}</Text>
+                        <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{taskCount} tasks</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              ) : null}
+            </View>
+            {visibleTasks.slice(0, 24).map((task) => (
+              <AdminTaskRow
+                key={task._id}
+                isDarkTheme={isDarkTheme}
+                isUpdating={Boolean(updatingTaskIds[task._id])}
+                onUpdateTaskStatus={updateTaskStatus}
+                task={task}
+                userName={users.find((user) => user._id === task.assignee_id)?.name}
+              />
+            ))}
+            {!visibleTasks.length ? <AdminEmptyLine text="No tasks match this filter." /> : null}
+          </View>
+        ) : null}
+
+        {section === "reports" ? (
+          <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
+            <AdminSectionHeader title="Reports" meta="Task performance" />
+            <View style={styles.adminOverviewGrid}>
+              <AdminCompactStat label="Total" value={reports?.summary.total ?? tasks.length} />
+              <AdminCompactStat label="Done" value={reports?.summary.done ?? summary?.tasks.done ?? 0} />
+              <AdminCompactStat label="Discarded" value={reports?.summary.discarded ?? summary?.tasks.discarded ?? 0} />
+              <AdminCompactStat label="Rate" value={`${doneRate}%`} />
+            </View>
+            {(reports?.by_assignee ?? []).slice(0, 8).map((row) => {
+              const user = users.find((item) => item._id === row.user_id);
+              return (
+                <View key={row.user_id} style={[styles.adminListRow, isDarkTheme && styles.adminListRowDark]}>
+                  <View>
+                    <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{user?.name ?? row.user_id}</Text>
+                    <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{row.done} done of {row.total}</Text>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        ) : null}
+
+        {section === "departments" ? (
+          <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
+            <AdminSectionHeader title="Departments" meta={`${departments.length} groups`} />
+            <View style={styles.adminDepartmentList}>
+              {departments.map((department) => {
+                const isExpanded = Boolean(expandedDepartmentIds[department._id]);
+                const details = departmentDetailsById[department._id];
+                const isDepartmentLoading = Boolean(departmentLoadingById[department._id]);
+                return (
+                  <View key={department._id} style={[styles.adminDepartmentCard, isDarkTheme && styles.adminListRowDark]}>
+                    <Pressable
+                      onPress={() => void toggleDepartment(department._id)}
+                      style={styles.adminDepartmentTrigger}
+                    >
+                      <View>
+                        <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{department.name}</Text>
+                        <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{department.member_count ?? 0} members</Text>
+                      </View>
+                      <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name={isExpanded ? "chevron-up" : "chevron-down"} size={18} />
+                    </Pressable>
+                    {isExpanded ? (
+                      <View style={styles.adminDepartmentMembersInline}>
+                        {isDepartmentLoading ? <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} /> : null}
+                        {details?.members.map((member) => (
+                          <Pressable key={member.user_id} onPress={() => void onSelectUser(member.user_id)} style={[styles.adminChatRow, isDarkTheme && styles.adminChatRowDark]}>
+                            <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{member.name}</Text>
+                            <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>
+                              {[member.role, ...(member.roles ?? [])].filter(Boolean).join(" - ") || "member"}
+                            </Text>
+                          </Pressable>
+                        ))}
+                        {!isDepartmentLoading && details && !details.members.length ? <AdminEmptyLine text="No employees are assigned to this department." /> : null}
+                      </View>
+                    ) : null}
+                  </View>
+                );
+              })}
+            </View>
+            {!departments.length ? <AdminEmptyLine text="No departments yet." /> : null}
+          </View>
+        ) : null}
+
+        {section === "settings" ? (
+          <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
+            <AdminSectionHeader title="Settings" meta="Organization controls" />
+            {[
+              ["Agent", settings?.agent_name],
+              ["Mode", settings?.mode],
+              ["AI", settings?.ai_enabled === false ? "off" : "on"],
+              ["Primary color", settings?.primary_color],
+            ].map(([label, value]) => (
+              <View key={String(label)} style={[styles.adminListRow, isDarkTheme && styles.adminListRowDark]}>
+                <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{String(label)}</Text>
+                <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{String(value ?? "-")}</Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+      </ScrollView>
+    </View>
+  );
+}
+
+function AdminPanel({
+  chats,
+  departments,
+  employeeName,
+  employeeRole,
+  isWide,
+  loading,
+  notice,
+  onCreateEmployee,
+  onRefresh,
+  onSelectUser,
+  onSetEmployeeName,
+  onSetEmployeeRole,
+  onUpdateTaskStatus,
+  reports,
+  selectedUserId,
+  session,
+  summary,
+  tasks,
+  users,
+}: {
+  chats: TaskManagerChatMessage[];
+  departments: TaskManagerDepartment[];
+  employeeName: string;
+  employeeRole: "admin" | "member";
+  isWide: boolean;
+  loading: boolean;
+  notice: string;
+  onCreateEmployee: () => Promise<void>;
+  onRefresh: () => void;
+  onSelectUser: (userId: string) => Promise<void>;
+  onSetEmployeeName: (value: string) => void;
+  onSetEmployeeRole: (value: "admin" | "member") => void;
+  onUpdateTaskStatus: (taskId: string, status: TaskManagerAdminTask["status"]) => Promise<void>;
+  reports: Awaited<ReturnType<typeof taskManagerAdminApi.taskReports>> | null;
+  selectedUserId: string;
+  session: TaskManagerAdminSession | null;
+  summary: TaskManagerAdminSummary | null;
+  tasks: TaskManagerAdminTask[];
+  users: TaskManagerAdminUser[];
+}) {
+  const { isDarkTheme } = useAppTheme();
+  if (!session) {
+    return (
+      <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
+        <EmptyState icon="lock-closed-outline" title="Admin mode unavailable" copy="Only linked Task Manager admin users can open this section." />
+      </View>
+    );
+  }
+
+  const selectedUser = users.find((user) => user._id === selectedUserId) ?? users[0] ?? null;
+
+  return (
+    <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
+      <View style={[styles.adminHeader, isDarkTheme && styles.adminHeaderDark]}>
+        <View>
+          <Text style={[styles.adminEyebrow, isDarkTheme && styles.adminMutedText]}>Task Manager</Text>
+          <Text style={[styles.adminTitle, isDarkTheme && styles.chatTitleDark]}>{session.orgName}</Text>
+        </View>
+        <Pressable accessibilityLabel="Refresh admin data" onPress={onRefresh} style={[styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark]}>
+          {loading ? <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} /> : <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="refresh-outline" size={20} />}
+        </Pressable>
+      </View>
+      {notice ? <Text style={styles.errorBar}>{notice}</Text> : null}
+      <ScrollView contentContainerStyle={[styles.adminContent, isDarkTheme && styles.listContentDark]}>
+        <View style={styles.adminMetricGrid}>
+          <AdminMetric label="Employees" value={summary?.employees ?? users.length} />
+          <AdminMetric label="Open" value={summary?.tasks.open ?? 0} />
+          <AdminMetric label="Overdue" value={summary?.tasks.overdue ?? 0} tone="danger" />
+          <AdminMetric label="Done" value={`${summary?.completion_rate ?? reports?.summary.completion_rate ?? 0}%`} tone="success" />
+        </View>
+
+        <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
+          <Text style={[styles.adminSectionTitle, isDarkTheme && styles.chatTitleDark]}>Employees</Text>
+          <View style={styles.adminFormRow}>
+            <TextInput
+              onChangeText={onSetEmployeeName}
+              placeholder="Employee name"
+              placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
+              style={[styles.adminInput, isDarkTheme && styles.searchInputDark]}
+              value={employeeName}
+            />
+            <View style={styles.roleToggle}>
+              {TASK_MANAGER_EMPLOYEE_ROLES.map((role) => (
+                <Pressable
+                  accessibilityLabel={`Set role ${role}`}
+                  key={role}
+                  onPress={() => onSetEmployeeRole(role)}
+                  style={[styles.roleToggleButton, employeeRole === role && styles.roleToggleButtonActive]}
+                >
+                  <Text style={[styles.roleToggleText, employeeRole === role && styles.roleToggleTextActive]}>{role}</Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+          <Pressable accessibilityLabel="Add employee" onPress={() => void onCreateEmployee()} style={styles.adminPrimaryButton}>
+            <Ionicons color="#FFFFFF" name="person-add-outline" size={17} />
+            <Text style={styles.adminPrimaryButtonText}>Add employee</Text>
+          </Pressable>
+          {users.map((user) => (
+            <Pressable key={user._id} onPress={() => void onSelectUser(user._id)} style={[styles.adminListRow, selectedUser?._id === user._id && styles.adminListRowActive]}>
+              <View>
+                <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{user.name}</Text>
+                <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{user.role} · {user.agent_channel ?? "whatsapp"}</Text>
+              </View>
+              <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="chatbubble-ellipses-outline" size={18} />
+            </Pressable>
+          ))}
+        </View>
+
+        <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
+          <Text style={[styles.adminSectionTitle, isDarkTheme && styles.chatTitleDark]}>Tasks</Text>
+          {tasks.slice(0, 12).map((task) => (
+            <View key={task._id} style={styles.adminTaskRow}>
+              <View style={styles.adminTaskText}>
+                <Text numberOfLines={1} style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{task.title}</Text>
+                <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{task.status}</Text>
+              </View>
+              <Pressable onPress={() => void onUpdateTaskStatus(task._id, task.status === "done" ? "open" : "done")} style={styles.adminTaskButton}>
+                <Ionicons color={task.status === "done" ? colors.primaryDark : "#FFFFFF"} name={task.status === "done" ? "refresh-outline" : "checkmark"} size={16} />
+              </Pressable>
+            </View>
+          ))}
+          {!tasks.length ? <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>No tasks yet.</Text> : null}
+        </View>
+
+        <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
+          <Text style={[styles.adminSectionTitle, isDarkTheme && styles.chatTitleDark]}>Employee Chats</Text>
+          <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{selectedUser ? selectedUser.name : "Select an employee"}</Text>
+          {chats.slice(0, 8).map((chat) => (
+            <View key={chat._id} style={styles.adminChatRow}>
+              <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{chat.direction === "in" ? "Employee" : "Agent"}</Text>
+              <Text numberOfLines={2} style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{chat.text ?? `(${chat.kind})`}</Text>
+            </View>
+          ))}
+        </View>
+
+        <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
+          <Text style={[styles.adminSectionTitle, isDarkTheme && styles.chatTitleDark]}>Departments</Text>
+          {departments.map((department) => (
+            <View key={department._id} style={styles.adminListRow}>
+              <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{department.name}</Text>
+              <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{department.member_count ?? 0} members</Text>
+            </View>
+          ))}
+          {!departments.length ? <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>No departments yet.</Text> : null}
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+function AdminMetric({ label, value, tone }: { label: string; value: number | string; tone?: "danger" | "success" }) {
+  const { isDarkTheme } = useAppTheme();
+  const color = tone === "danger" ? "#EF4444" : tone === "success" ? "#10B981" : isDarkTheme ? colors.accent : colors.primaryDark;
+  return (
+    <View style={[styles.adminMetricCard, isDarkTheme && styles.adminSectionDark]}>
+      <Text style={[styles.adminMetricLabel, isDarkTheme && styles.adminMutedText]}>{label}</Text>
+      <Text style={[styles.adminMetricValue, { color }]}>{value}</Text>
+    </View>
+  );
+}
+
+function AdminSectionHeader({ meta, title }: { meta?: string; title: string }) {
+  const { isDarkTheme } = useAppTheme();
+  return (
+    <View style={styles.adminSectionHeader}>
+      <Text style={[styles.adminSectionTitle, isDarkTheme && styles.chatTitleDark]}>{title}</Text>
+      {meta ? <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{meta}</Text> : null}
+    </View>
+  );
+}
+
+function AdminCompactStat({ label, value }: { label: string; value: number | string }) {
+  const { isDarkTheme } = useAppTheme();
+  return (
+    <View style={[styles.adminCompactStat, isDarkTheme && styles.adminSectionDark]}>
+      <Text style={[styles.adminMetricValue, isDarkTheme && { color: colors.accent }]}>{value}</Text>
+      <Text style={[styles.adminMetricLabel, isDarkTheme && styles.adminMutedText]}>{label}</Text>
+    </View>
+  );
+}
+
+function AdminTaskRow({
+  compact,
+  isDarkTheme,
+  isUpdating,
+  onUpdateTaskStatus,
+  task,
+  userName,
+}: {
+  compact?: boolean;
+  isDarkTheme: boolean;
+  isUpdating?: boolean;
+  onUpdateTaskStatus: (task: TaskManagerAdminTask) => Promise<void>;
+  task: TaskManagerAdminTask;
+  userName?: string;
+}) {
+  const isDone = task.status === "done";
+  const statusTone = isDone
+    ? styles.adminStatusDone
+    : task.status === "open"
+      ? styles.adminStatusOpen
+      : task.status === "discarded"
+        ? styles.adminStatusDiscarded
+        : styles.adminStatusProgress;
+  return (
+    <View style={[styles.adminTaskRow, compact && styles.adminTaskRowCompact]}>
+      <View style={styles.adminTaskText}>
+        <Text numberOfLines={1} style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{task.title}</Text>
+        <View style={styles.adminTaskMetaLine}>
+          <View style={[styles.adminStatusPill, statusTone]}>
+            <View style={[styles.adminStatusDot, isDone && styles.adminStatusDotDone]}>
+              {isDone ? <Ionicons color="#FFFFFF" name="checkmark" size={9} /> : null}
+            </View>
+            <Text style={[styles.adminStatusText, isDone && styles.adminStatusTextDone]}>{task.status.replace("_", " ")}</Text>
+          </View>
+          {userName ? <Text numberOfLines={1} style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{userName}</Text> : null}
+        </View>
+      </View>
+      <Pressable
+        disabled={isUpdating}
+        onPress={() => void onUpdateTaskStatus(task)}
+        style={[styles.adminTaskButton, isDone && styles.adminTaskButtonDone, isUpdating && styles.adminTaskButtonDisabled]}
+      >
+        {isUpdating ? (
+          <ActivityIndicator color={isDone ? colors.primaryDark : "#FFFFFF"} />
+        ) : (
+          <Ionicons color={isDone ? colors.primaryDark : "#FFFFFF"} name={isDone ? "refresh-outline" : "checkmark"} size={16} />
+        )}
+      </Pressable>
+    </View>
+  );
+}
+
+function AdminEmptyLine({ text }: { text: string }) {
+  const { isDarkTheme } = useAppTheme();
+  return <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{text}</Text>;
 }
 
 function ChatsPanel({
@@ -4045,8 +4900,9 @@ function SettingsPanel({
 }
 
 function DesktopEmpty() {
+  const { isDarkTheme } = useAppTheme();
   return (
-    <View style={styles.desktopEmpty}>
+    <View style={[styles.desktopEmpty, isDarkTheme && styles.desktopEmptyDark]}>
       <EmptyState icon="planet-outline" title="Orbita for web" copy="Select a conversation or create a new chat." />
     </View>
   );
@@ -4935,6 +5791,8 @@ const styles = StyleSheet.create({
     shadowColor: "#000000",
     shadowOpacity: 0.25,
   },
+  adminPanel: { flexShrink: 0 },
+  adminPanelWide: { flex: 1, width: "100%", maxWidth: "100%" },
   mobilePanel: { flex: 1, width: "100%", borderRadius: 0, borderLeftWidth: 0, borderRightWidth: 0, borderTopWidth: 0 },
   panelTitle: {
     minHeight: 58,
@@ -5015,6 +5873,249 @@ const styles = StyleSheet.create({
   bottomTabLabelActiveDark: { color: colors.accent },
   listContent: { padding: 12, gap: 10 },
   listContentDark: { backgroundColor: "#151A2A" },
+  adminHeader: {
+    minHeight: 76,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.line,
+    backgroundColor: colors.surface,
+  },
+  adminHeaderDark: { borderBottomColor: "rgba(255,255,255,0.10)", backgroundColor: "#171E31" },
+  adminEyebrow: { color: colors.muted, fontSize: 11, fontWeight: "900", textTransform: "uppercase" },
+  adminMutedText: { color: "rgba(255,255,255,0.58)" },
+  adminTitle: { color: colors.ink, fontSize: 20, fontWeight: "900" },
+  adminContent: { padding: 12, gap: 12 },
+  adminContentWide: { padding: 18, maxWidth: 1180, width: "100%", alignSelf: "flex-start" },
+  adminSectionTabs: { gap: 8, paddingRight: 12 },
+  adminSectionTab: {
+    minHeight: 38,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 11,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surface,
+  },
+  adminSectionTabDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
+  adminSectionTabActive: { borderColor: colors.primaryDark, backgroundColor: colors.primaryDark },
+  adminSectionTabText: { color: colors.primaryDark, fontSize: 12, fontWeight: "900" },
+  adminSectionTabTextActive: { color: "#FFFFFF" },
+  adminSectionTabCount: { color: colors.muted, fontSize: 11, fontWeight: "900" },
+  adminMetricGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  adminMetricCard: {
+    flexGrow: 1,
+    flexBasis: 116,
+    minHeight: 82,
+    justifyContent: "center",
+    gap: 6,
+    padding: 14,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surface,
+  },
+  adminMetricLabel: { color: colors.muted, fontSize: 12, fontWeight: "800" },
+  adminMetricValue: { color: colors.primaryDark, fontSize: 24, fontWeight: "900" },
+  adminSection: {
+    gap: 10,
+    padding: 12,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surface,
+  },
+  adminSectionDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
+  adminSectionHeader: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: 10 },
+  adminSectionTitle: { color: colors.ink, fontSize: 15, fontWeight: "900" },
+  adminOverviewGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  adminCompactStat: {
+    flexGrow: 1,
+    flexBasis: 92,
+    minHeight: 66,
+    justifyContent: "center",
+    gap: 3,
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.page,
+  },
+  adminFormRow: { gap: 10 },
+  adminInput: {
+    minHeight: 46,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: colors.line,
+    paddingHorizontal: 12,
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: "700",
+    backgroundColor: colors.page,
+  },
+  roleToggle: {
+    minHeight: 42,
+    flexDirection: "row",
+    gap: 4,
+    padding: 4,
+    borderRadius: 14,
+    backgroundColor: colors.page,
+  },
+  roleToggleButton: { flex: 1, alignItems: "center", justifyContent: "center", borderRadius: 10 },
+  roleToggleButtonActive: { backgroundColor: colors.primaryDark },
+  roleToggleText: { color: colors.muted, fontSize: 13, fontWeight: "900", textTransform: "capitalize" },
+  roleToggleTextActive: { color: "#FFFFFF" },
+  adminPrimaryButton: {
+    minHeight: 44,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderRadius: 14,
+    backgroundColor: colors.primaryDark,
+  },
+  adminPrimaryButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "900" },
+  adminListRow: {
+    minHeight: 58,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    padding: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(122,94,214,0.12)",
+    backgroundColor: "rgba(255,255,255,0.62)",
+  },
+  adminListRowDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  adminListRowActive: { borderColor: "rgba(101,81,196,0.36)", backgroundColor: colors.accentSoft },
+  adminListRowActiveDark: { borderColor: "rgba(242,244,123,0.32)", backgroundColor: "rgba(242,244,123,0.12)" },
+  adminRowTitle: { color: colors.ink, fontSize: 14, fontWeight: "900" },
+  adminRowMeta: { color: colors.muted, fontSize: 12, fontWeight: "700", marginTop: 2 },
+  adminTaskRow: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(122,94,214,0.10)",
+  },
+  adminTaskRowCompact: { minHeight: 46, paddingVertical: 6 },
+  adminTaskText: { flex: 1, minWidth: 0 },
+  adminTaskMetaLine: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 4 },
+  adminTaskButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.primaryDark,
+  },
+  adminTaskButtonDone: { backgroundColor: colors.accent },
+  adminTaskButtonDisabled: { opacity: 0.58 },
+  adminStatusPill: {
+    minHeight: 24,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  adminStatusOpen: { borderColor: "rgba(59,130,246,0.28)", backgroundColor: "rgba(59,130,246,0.12)" },
+  adminStatusProgress: { borderColor: "rgba(245,158,11,0.30)", backgroundColor: "rgba(245,158,11,0.14)" },
+  adminStatusDone: { borderColor: "rgba(16,185,129,0.32)", backgroundColor: "rgba(16,185,129,0.16)" },
+  adminStatusDiscarded: { borderColor: "rgba(239,68,68,0.30)", backgroundColor: "rgba(239,68,68,0.12)" },
+  adminStatusDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: "#3B82F6",
+  },
+  adminStatusDotDone: { alignItems: "center", justifyContent: "center", borderColor: "#10B981", backgroundColor: "#10B981" },
+  adminStatusText: { color: colors.muted, fontSize: 11, fontWeight: "900", textTransform: "capitalize" },
+  adminStatusTextDone: { color: "#047857" },
+  adminFilterCard: {
+    gap: 10,
+    padding: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(122,94,214,0.12)",
+    backgroundColor: "rgba(255,255,255,0.58)",
+  },
+  adminFilterCardDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  adminFilterTrigger: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  adminFilterMenu: { gap: 8 },
+  adminFilterOption: {
+    minHeight: 44,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "rgba(122,94,214,0.10)",
+    backgroundColor: "rgba(255,255,255,0.34)",
+  },
+  adminFilterOptionDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  adminFilterOptionActive: { borderColor: "rgba(101,81,196,0.34)", backgroundColor: colors.accentSoft },
+  adminFilterOptionActiveDark: {
+    borderColor: "rgba(242,244,123,0.34)",
+    backgroundColor: "rgba(242,244,123,0.12)",
+  },
+  adminChatRow: {
+    gap: 3,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: "rgba(122,94,214,0.08)",
+  },
+  adminChatRowDark: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.08)", borderWidth: 1 },
+  adminDepartmentList: { gap: 10 },
+  adminDepartmentCard: {
+    gap: 8,
+    padding: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(122,94,214,0.12)",
+    backgroundColor: "rgba(255,255,255,0.54)",
+  },
+  adminDepartmentTrigger: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  adminDepartmentMembersInline: { gap: 8, paddingTop: 4 },
+  adminDepartmentMembers: {
+    gap: 10,
+    padding: 10,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(122,94,214,0.12)",
+    backgroundColor: "rgba(255,255,255,0.48)",
+  },
   listFooterText: { color: colors.muted, fontSize: 12, fontWeight: "700", textAlign: "center", paddingVertical: 8 },
   listFooterTextDark: { color: "rgba(255,255,255,0.52)" },
   skeletonBlock: { backgroundColor: "#DDD7EB" },
@@ -5541,6 +6642,7 @@ const styles = StyleSheet.create({
   themeSwitchKnob: { width: 20, height: 20, borderRadius: 10, backgroundColor: "#FFFFFF" },
   themeSwitchKnobOn: { transform: [{ translateX: 20 }], backgroundColor: colors.accent },
   desktopEmpty: { flex: 1, borderRadius: radii.lg, borderColor: colors.line, borderWidth: 1, backgroundColor: colors.surface },
+  desktopEmptyDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "#151A2A" },
   emptyState: { alignItems: "center", justifyContent: "center", paddingHorizontal: 24, paddingVertical: 42, gap: 8 },
   emptyCompact: { paddingVertical: 18 },
   emptyIcon: { width: 58, height: 58, borderRadius: 29, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceBlue },

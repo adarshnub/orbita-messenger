@@ -28,7 +28,26 @@ type ApiAction =
   | "send_message"
   | "forward_messages"
   | "create_status"
-  | "list_statuses";
+  | "list_statuses"
+  | "create_taskmanager_admin_session";
+
+export type TaskManagerAdminSessionResponse =
+  | {
+      available: false;
+      reason?: string;
+    }
+  | {
+      available: true;
+      apiBaseUrl: string;
+      session: {
+        token: string;
+        expires_at: string;
+        org_id: string;
+        org_name: string;
+        user_id: string;
+        user_name: string;
+      };
+    };
 
 async function callApi<T>(action: ApiAction, payload: Record<string, unknown> = {}) {
   if (!supabase) {
@@ -52,12 +71,8 @@ async function callApi<T>(action: ApiAction, payload: Record<string, unknown> = 
 
 async function callBackendApi<T>(action: ApiAction, payload: Record<string, unknown>, token: string) {
   const body = JSON.stringify({ action, payload });
-  const primary = await backendRequest(`/api/messenger`, token, body);
-  if (!primary.response.ok && isRouteNotFound(primary.data)) {
-    const fallback = await backendRequest(`/api/messenger-api`, token, body);
-    return parseBackendResponse<T>(fallback.response, fallback.data);
-  }
-  return parseBackendResponse<T>(primary.response, primary.data);
+  const result = await backendRequest(`/api/messenger`, token, body);
+  return parseBackendResponse<T>(result.response, result.data);
 }
 
 async function backendRequest(path: string, token: string, body: string) {
@@ -102,12 +117,8 @@ function parseBackendResponse<T>(response: Response, data: unknown) {
 }
 
 async function uploadBackendMedia<T>(form: FormData, token: string, endpoint = "media") {
-  const primary = await backendUploadRequest(`/api/messenger/${endpoint}`, token, form);
-  if (!primary.response.ok && isRouteNotFound(primary.data)) {
-    const fallback = await backendUploadRequest(`/api/messenger-api/${endpoint}`, token, form);
-    return parseBackendResponse<T>(fallback.response, fallback.data);
-  }
-  return parseBackendResponse<T>(primary.response, primary.data);
+  const result = await backendUploadRequest(`/api/messenger/${endpoint}`, token, form);
+  return parseBackendResponse<T>(result.response, result.data);
 }
 
 async function backendUploadRequest(path: string, token: string, form: FormData) {
@@ -140,12 +151,6 @@ function apiError(data: unknown) {
   if (!data || typeof data !== "object" || !("error" in data)) return null;
   const error = (data as { error?: unknown }).error;
   return typeof error === "string" ? error : null;
-}
-
-function isRouteNotFound(data: unknown) {
-  const error = apiError(data);
-  if (!error) return false;
-  return error.trim().toLowerCase() === "route not found.";
 }
 
 async function getAccessToken(options: { forceRefresh?: boolean } = {}) {
@@ -202,7 +207,6 @@ function normalizeOrbitaApiBase(input: string) {
     const url = new URL(trimmed);
     const normalizedPath = url.pathname
       .replace(/\/api\/?$/i, "")
-      .replace(/\/api\/messenger-api\/?$/i, "")
       .replace(/\/api\/messenger\/?$/i, "")
       || "/";
     url.pathname = normalizedPath;
@@ -210,7 +214,6 @@ function normalizeOrbitaApiBase(input: string) {
   } catch {
     return trimmed
       .replace(/\/api\/?$/i, "")
-      .replace(/\/api\/messenger-api\/?$/i, "")
       .replace(/\/api\/messenger\/?$/i, "");
   }
 }
@@ -344,5 +347,8 @@ export const messengerApi = {
   },
   listStatuses() {
     return callApi<{ statuses: BackendStatus[] }>("list_statuses");
+  },
+  createTaskManagerAdminSession(input: { conversationId?: string } = {}) {
+    return callApi<TaskManagerAdminSessionResponse>("create_taskmanager_admin_session", input);
   },
 };

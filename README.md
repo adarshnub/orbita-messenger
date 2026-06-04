@@ -118,9 +118,9 @@ These values must match across both projects.
 
 The standalone backend in `backend/server.mjs` exposes three route groups:
 
-- `/api/messenger` and `/api/messenger-api`
+- `/api/messenger`
   Authenticated app API used by the Orbita client.
-- `/api/messenger/media` and `/api/messenger-api/media`
+- `/api/messenger/media`
   Authenticated media upload endpoints.
 - `/api/service`
   Signed server-to-server integration endpoint used by Task Manager.
