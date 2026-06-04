@@ -973,7 +973,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
 
     if (result.error) {
       if (DEV_OTP_ENABLED) {
-        setNotice(`${result.error.message} You can use ${DEV_BYPASS_OTP} for local testing.`);
+        setNotice(result.error.message);
         setOtpSent(true);
         setResendSeconds(OTP_RESEND_SECONDS);
       } else {
@@ -987,11 +987,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
     setOtp("");
     setOtpSent(true);
     setResendSeconds(OTP_RESEND_SECONDS);
-    setNotice(
-      DEV_OTP_ENABLED
-        ? `${isResend ? "New OTP sent" : "OTP sent"} to your phone. Enter the code, or use ${DEV_BYPASS_OTP} for local testing.`
-        : `${isResend ? "New OTP sent" : "OTP sent"} to your phone. Enter the code to continue.`,
-    );
+    setNotice(`${isResend ? "New OTP sent" : "OTP sent"} to your phone. Enter the code to continue.`);
   }
 
   async function verifyOtp() {
