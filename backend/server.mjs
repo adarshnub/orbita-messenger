@@ -855,6 +855,7 @@ async function insertMessageWithReceipts(conversationId, senderId, kind, payload
   const { data: message, error } = await supabase
     .from("messages")
     .insert({
+      client_message_id: options.clientMessageId ?? null,
       conversation_id: conversationId,
       sender_id: senderId,
       kind,
@@ -911,6 +912,11 @@ async function insertMessageWithReceipts(conversationId, senderId, kind, payload
   }
 
   return message;
+}
+
+async function mapMessageWithAttachments(message) {
+  const attachments = await loadAttachmentRowsForMessageIds([message.id]).then((map) => map.get(message.id) ?? []);
+  return mapMessage(message, attachments);
 }
 
 async function maybeSendTaskAcknowledgementMessage(conversationId, acknowledgerId, acknowledgementBody) {
@@ -2170,16 +2176,32 @@ async function handleAction(user, action, payload, req) {
   if (action === "send_message") {
     const conversationId = requiredString(payload, "conversationId");
     const body = optionalString(payload, "body").slice(0, 5000);
+    const clientMessageId = optionalString(payload, "clientMessageId").slice(0, 128);
     const taskManagerText = optionalString(payload, "taskManagerText").slice(0, 5000);
     const attachmentId = optionalString(payload, "attachmentId");
     await getConversation(user.id, conversationId);
+    if (clientMessageId) {
+      const { data: existingMessage, error: existingMessageError } = await supabase
+        .from("messages")
+        .select("*")
+        .eq("sender_id", user.id)
+        .eq("client_message_id", clientMessageId)
+        .maybeSingle();
+      if (existingMessageError) throw existingMessageError;
+      if (existingMessage) {
+        return {
+          message: await mapMessageWithAttachments(existingMessage),
+          taskManagerForward: { forwarded: true },
+        };
+      }
+    }
     const attachmentRow = attachmentId ? await getOwnedStagedAttachment(user.id, attachmentId) : null;
     const kind = attachmentRow
       ? messageKindFromAttachment(attachmentMetadata(attachmentRow).kind, attachmentRow.mime_type)
       : optionalString(payload, "kind") || "text";
     if (!body && !attachmentRow) throw new Error("Message body or attachment is required.");
 
-    const message = await insertMessageWithReceipts(conversationId, user.id, kind, { body });
+    const message = await insertMessageWithReceipts(conversationId, user.id, kind, { body }, { clientMessageId });
     if (attachmentRow) {
       await linkAttachmentToMessage(attachmentRow, message.id);
     }

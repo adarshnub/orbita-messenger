@@ -71,13 +71,19 @@ import {
 } from "@/lib/taskManagerAdminApi";
 import {
   applySavedContactNamesToConversations,
+  completeQueuedMessage,
+  enqueueOutgoingMessage,
+  failQueuedMessage,
+  listQueuedOutgoingMessages,
   markCachedMessageFailed,
+  markQueuedMessageSending,
   readCachedBootstrap,
   readCachedMessages,
   replaceCachedMessage,
   upsertCachedMessage,
   writeBootstrapCache,
   writeConversationMessages,
+  type QueuedOutgoingMessage,
 } from "@/lib/localChatCache";
 import { hapticMessageReceived, hapticMessageSent } from "@/lib/haptics";
 import { normalizePhone } from "@/lib/phone";
@@ -99,7 +105,7 @@ import { colors, radii, shadow } from "@/theme/colors";
 type Tab = "chats" | "status" | "contacts" | "calls" | "settings" | "admin";
 type AuthMode = "signin" | "signup";
 type AppThemeMode = "light" | "dark";
-type ChatMessage = BackendMessage & { localState?: "sending" | "failed" };
+type ChatMessage = BackendMessage & { localState?: "sending" | "queued" | "failed" };
 type TypingParticipant = {
   displayName: string;
   expiresAt: number;
@@ -414,6 +420,20 @@ function upsertMessage(messages: ChatMessage[], incoming: BackendMessage): ChatM
     : [...withoutDuplicate, incoming];
 
   return next.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}
+
+function isNetworkSendError(error: unknown) {
+  if (Platform.OS !== "web") return false;
+  if (typeof navigator !== "undefined" && !navigator.onLine) return true;
+  if (!(error instanceof Error)) return false;
+  return /abort|failed to fetch|network|timeout|load failed/i.test(error.message);
+}
+
+function createLocalMessageId() {
+  const random = typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  return `local-${random}`;
 }
 
 function OrbitaLogo({ size = 64 }: { size?: number }) {
@@ -1283,6 +1303,7 @@ function MessengerShell({ session }: { session: Session }) {
   const adminModeCheckInFlightRef = useRef(false);
   const adminSessionRef = useRef<TaskManagerAdminSession | null>(null);
   const pushTokenRef = useRef<string | null>(null);
+  const processingOutboxRef = useRef(false);
   const openingAgentFromFabRef = useRef(false);
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
   const visibleTabs = useMemo(() => (adminSession ? tabs : tabs.filter((tab) => tab.id !== "admin")), [adminSession]);
@@ -2115,6 +2136,109 @@ function MessengerShell({ session }: { session: Session }) {
     await loadBootstrap();
   }
 
+  const replaceLocalMessageWithServerMessage = useCallback((conversationId: string, localId: string, serverMessage: BackendMessage) => {
+    const currentForConversation = messagesByConversationRef.current[conversationId] ?? [];
+    const next = upsertMessage(
+      currentForConversation.filter((message) => message.id !== localId && message.id !== serverMessage.id),
+      serverMessage,
+    );
+    messagesByConversationRef.current = {
+      ...messagesByConversationRef.current,
+      [conversationId]: next,
+    };
+    if (selectedIdRef.current === conversationId) {
+      setSelectedMessages(next);
+    }
+    updateConversationPreview(serverMessage);
+  }, [updateConversationPreview]);
+
+  const updateLocalQueuedMessageState = useCallback((conversationId: string, localId: string, localState: ChatMessage["localState"]) => {
+    const currentForConversation = messagesByConversationRef.current[conversationId] ?? [];
+    const next = currentForConversation.map((message) =>
+      message.id === localId ? { ...message, localState } : message,
+    );
+    messagesByConversationRef.current = {
+      ...messagesByConversationRef.current,
+      [conversationId]: next,
+    };
+    if (selectedIdRef.current === conversationId) {
+      setSelectedMessages(next);
+    }
+  }, []);
+
+  const processQueuedOutbox = useCallback(async () => {
+    if (Platform.OS !== "web" || !profileId || processingOutboxRef.current) return;
+    if (typeof navigator !== "undefined" && !navigator.onLine) return;
+    processingOutboxRef.current = true;
+    try {
+      const queuedMessages = await listQueuedOutgoingMessages(profileId);
+      for (const queued of queuedMessages) {
+        try {
+          await markQueuedMessageSending(queued.localId);
+          updateLocalQueuedMessageState(queued.conversationId, queued.localId, "sending");
+          let attachmentId = queued.attachmentId;
+          if (!attachmentId && queued.attachment) {
+            const file = new File([queued.attachment.file], queued.attachment.name, { type: queued.attachment.mimeType });
+            const uploadResult = await messengerApi.uploadMedia({
+              durationMs: queued.attachment.durationMs,
+              file,
+              kind: queued.attachment.kind,
+            });
+            attachmentId = uploadResult.attachment.id;
+            await enqueueOutgoingMessage({
+              ...queued,
+              attachmentId,
+              attemptCount: queued.attemptCount + 1,
+              lastError: undefined,
+              status: "sending",
+            });
+          }
+          const result = await messengerApi.sendMessage({
+            attachmentId,
+            body: queued.body,
+            clientMessageId: queued.localId,
+            conversationId: queued.conversationId,
+            kind: queued.kind,
+            ...(queued.taskManagerText && queued.taskManagerText !== queued.body ? { taskManagerText: queued.taskManagerText } : {}),
+          });
+          await completeQueuedMessage(queued.localId, result.message);
+          replaceLocalMessageWithServerMessage(queued.conversationId, queued.localId, result.message);
+          void hapticMessageSent();
+          const conversation = conversationsRef.current.find((item) => item.id === queued.conversationId);
+          if (conversation && isTaskManagerAgentConversation(conversation) && result.taskManagerForward?.forwarded !== false) {
+            setAgentThinkingFor((current) => ({ ...current, [queued.conversationId]: result.message.createdAt }));
+          }
+        } catch (nextError) {
+          const reason = nextError instanceof Error ? nextError.message : "Unable to send queued message.";
+          await failQueuedMessage(queued.localId, reason);
+          updateLocalQueuedMessageState(queued.conversationId, queued.localId, "failed");
+          if (!isNetworkSendError(nextError)) {
+            setError(reason);
+          }
+          if (typeof navigator !== "undefined" && !navigator.onLine) break;
+        }
+      }
+    } finally {
+      processingOutboxRef.current = false;
+    }
+  }, [profileId, replaceLocalMessageWithServerMessage, updateLocalQueuedMessageState]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || !profileId) return undefined;
+    void processQueuedOutbox();
+    const handleOnline = () => {
+      void processQueuedOutbox();
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [processQueuedOutbox, profileId]);
+
+  useEffect(() => {
+    if (Platform.OS === "web" && profileId && appLifecycleState === "active") {
+      void processQueuedOutbox();
+    }
+  }, [appLifecycleState, processQueuedOutbox, profileId, selectedId]);
+
   async function uploadProfileAvatarFromSettings() {
     if (uploadingProfilePhoto) return;
     if (Platform.OS !== "web") {
@@ -2531,7 +2655,7 @@ function MessengerShell({ session }: { session: Session }) {
       resolvedKind = attachment.kind;
     }
 
-    const tempId = `local-${Date.now()}`;
+    const tempId = createLocalMessageId();
     const optimisticMessage: ChatMessage = {
       id: tempId,
       conversationId: selected.id,
@@ -2574,15 +2698,20 @@ function MessengerShell({ session }: { session: Session }) {
       setAgentThinkingFor((current) => ({ ...current, [selected.id]: optimisticMessage.createdAt }));
     }
 
+    let attachmentId: string | undefined;
+    let webAttachmentFile: File | undefined;
     try {
-      let attachmentId: string | undefined;
       if (attachment) {
+        if (Platform.OS === "web") {
+          const blob = await (await fetch(attachment.uri)).blob();
+          webAttachmentFile = new File([blob], attachment.name, { type: attachment.mimeType });
+        }
         const uploadResult = await messengerApi.uploadMedia({
           kind: attachment.kind,
           durationMs: attachment.durationMs,
           file:
             Platform.OS === "web"
-              ? await (await fetch(attachment.uri)).blob().then((blob) => new File([blob], attachment.name, { type: attachment.mimeType }))
+              ? webAttachmentFile!
               : {
                   uri: attachment.uri,
                   name: attachment.name,
@@ -2597,6 +2726,7 @@ function MessengerShell({ session }: { session: Session }) {
         kind: resolvedKind,
         body: text,
         attachmentId,
+        clientMessageId: tempId,
         ...(modelText && modelText !== text ? { taskManagerText: modelText } : {}),
       });
       setSelectedMessages((current) => {
@@ -2628,6 +2758,53 @@ function MessengerShell({ session }: { session: Session }) {
       scheduleBootstrapRefresh();
       scheduleMessageRefresh(selected.id);
     } catch (nextError) {
+      const shouldQueue = isNetworkSendError(nextError);
+      if (shouldQueue) {
+        let queuedAttachment: QueuedOutgoingMessage["attachment"] = null;
+        if (attachment) {
+          const file = typeof File !== "undefined" && webAttachmentFile
+            ? webAttachmentFile
+            : new File([await (await fetch(attachment.uri)).blob()], attachment.name, { type: attachment.mimeType });
+          queuedAttachment = {
+            durationMs: attachment.durationMs ?? null,
+            file,
+            kind: attachment.kind,
+            localId: attachment.localId,
+            mimeType: attachment.mimeType,
+            name: attachment.name,
+            sizeBytes: attachment.sizeBytes ?? file.size,
+          };
+        }
+        await enqueueOutgoingMessage({
+          attemptCount: 0,
+          attachment: queuedAttachment,
+          attachmentId,
+          body: text,
+          conversationId: selected.id,
+          createdAt: optimisticMessage.createdAt,
+          kind: resolvedKind,
+          lastError: nextError instanceof Error ? nextError.message : undefined,
+          localId: tempId,
+          senderId: profile.id,
+          status: "queued",
+          taskManagerText: modelText && modelText !== text ? modelText : undefined,
+          userId: profile.id,
+        });
+        const queuedMessage = { ...optimisticMessage, localState: "queued" as const };
+        void upsertCachedMessage(profile.id, queuedMessage).catch(() => undefined);
+        setSelectedMessages((current) => {
+          const next = current.map((message) =>
+            message.id === tempId ? queuedMessage : message,
+          );
+          messagesByConversationRef.current = {
+            ...messagesByConversationRef.current,
+            [selected.id]: next,
+          };
+          return next;
+        });
+        setError("Message queued. It will send when Orbita is back online.");
+        return;
+      }
       if (attachment) setComposerAttachment(attachment);
       void markCachedMessageFailed(profile.id, optimisticMessage).catch(() => undefined);
       setSelectedMessages((current) => {
@@ -4387,6 +4564,9 @@ function ChatPane({
                         <Text style={[styles.metaText, mine && styles.metaTextMine]}>{formatTime(message.createdAt)}</Text>
                         {mine && message.localState === "sending" ? (
                           <Ionicons color="rgba(255,255,255,0.72)" name="time-outline" size={13} />
+                        ) : null}
+                        {mine && message.localState === "queued" ? (
+                          <Ionicons color="rgba(255,255,255,0.72)" name="cloud-offline-outline" size={13} />
                         ) : null}
                         {mine && message.localState === "failed" ? (
                           <Ionicons color={colors.danger} name="alert-circle" size={15} />

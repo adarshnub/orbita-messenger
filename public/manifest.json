@@ -1,0 +1,32 @@
+{
+  "name": "Orbita Messenger",
+  "short_name": "Orbita",
+  "description": "Orbita Messenger for chats, groups, statuses, and Task Manager agent conversations.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#101421",
+  "theme_color": "#6551C4",
+  "categories": ["productivity", "social", "business"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/maskable-icon.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

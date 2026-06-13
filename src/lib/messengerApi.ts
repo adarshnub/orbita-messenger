@@ -264,6 +264,7 @@ export const messengerApi = {
     return callApi<{ ok: true }>("register_push_token", { pushToken });
   },
   sendMessage(input: {
+    clientMessageId?: string;
     conversationId: string;
     kind: BackendMessage["kind"];
     body: string;

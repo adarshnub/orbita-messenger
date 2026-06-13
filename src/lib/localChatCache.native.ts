@@ -8,7 +8,32 @@ import {
   BootstrapPayload,
 } from "@/features/chats/backendTypes";
 
-export type CachedChatMessage = BackendMessage & { localState?: "sending" | "failed" };
+export type LocalMessageState = "sending" | "queued" | "failed";
+export type CachedChatMessage = BackendMessage & { localState?: LocalMessageState };
+export type QueuedOutgoingAttachment = {
+  localId: string;
+  kind: BackendAttachment["kind"];
+  name: string;
+  mimeType: string;
+  sizeBytes?: number | null;
+  durationMs?: number | null;
+  file: Blob;
+};
+export type QueuedOutgoingMessage = {
+  attemptCount: number;
+  attachment?: QueuedOutgoingAttachment | null;
+  attachmentId?: string;
+  body: string;
+  conversationId: string;
+  createdAt: string;
+  kind: BackendMessage["kind"];
+  lastError?: string;
+  localId: string;
+  senderId: string;
+  status: "queued" | "sending" | "failed";
+  taskManagerText?: string;
+  userId: string;
+};
 
 const DATABASE_NAME = "orbita-chat-cache.db";
 const SCHEMA_VERSION = "1";
@@ -22,7 +47,7 @@ type PayloadRow = {
 
 type MessageRow = {
   payload: string;
-  local_state: "sending" | "failed" | null;
+  local_state: LocalMessageState | null;
 };
 
 let dbPromise: Promise<SQLiteDatabase | null> | null = null;
@@ -339,6 +364,30 @@ export async function replaceCachedMessage(userId: string, conversationId: strin
 export async function markCachedMessageFailed(userId: string, message: CachedChatMessage) {
   const failed = { ...message, localState: "failed" as const };
   await upsertCachedMessage(userId, failed);
+}
+
+export async function enqueueOutgoingMessage(_message: QueuedOutgoingMessage) {
+  return undefined;
+}
+
+export async function listQueuedOutgoingMessages(_userId: string): Promise<QueuedOutgoingMessage[]> {
+  return [];
+}
+
+export async function markQueuedMessageSending(_localId: string) {
+  return undefined;
+}
+
+export async function completeQueuedMessage(_localId: string, _serverMessage: BackendMessage) {
+  return undefined;
+}
+
+export async function failQueuedMessage(_localId: string, _reason: string) {
+  return undefined;
+}
+
+export async function deleteQueuedMessage(_localId: string) {
+  return undefined;
 }
 
 async function insertMessage(db: SQLiteDatabase, userId: string, message: CachedChatMessage) {

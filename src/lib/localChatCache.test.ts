@@ -1,12 +1,47 @@
-import { describe, expect, it } from "vitest";
+import {
+  IDBCursor,
+  IDBCursorWithValue,
+  IDBDatabase,
+  IDBFactory,
+  IDBIndex,
+  IDBKeyRange,
+  IDBObjectStore,
+  IDBOpenDBRequest,
+  IDBRequest,
+  IDBTransaction,
+  IDBVersionChangeEvent,
+  indexedDB,
+} from "fake-indexeddb";
+import { beforeAll, describe, expect, it } from "vitest";
 import {
   applySavedContactNamesToConversations,
+  completeQueuedMessage,
   deserializeCachePayload,
+  enqueueOutgoingMessage,
+  listQueuedOutgoingMessages,
+  markQueuedMessageSending,
   messagesWithLocalState,
   pruneRecentMessages,
+  readCachedMessages,
   serializeCachePayload,
+  upsertCachedMessage,
 } from "./localChatCache";
 import { BackendConversation, BackendMessage, BackendProfile } from "@/features/chats/backendTypes";
+
+beforeAll(() => {
+  Object.defineProperty(globalThis, "indexedDB", { configurable: true, value: indexedDB });
+  Object.defineProperty(globalThis, "IDBCursor", { configurable: true, value: IDBCursor });
+  Object.defineProperty(globalThis, "IDBCursorWithValue", { configurable: true, value: IDBCursorWithValue });
+  Object.defineProperty(globalThis, "IDBDatabase", { configurable: true, value: IDBDatabase });
+  Object.defineProperty(globalThis, "IDBFactory", { configurable: true, value: IDBFactory });
+  Object.defineProperty(globalThis, "IDBIndex", { configurable: true, value: IDBIndex });
+  Object.defineProperty(globalThis, "IDBKeyRange", { configurable: true, value: IDBKeyRange });
+  Object.defineProperty(globalThis, "IDBObjectStore", { configurable: true, value: IDBObjectStore });
+  Object.defineProperty(globalThis, "IDBOpenDBRequest", { configurable: true, value: IDBOpenDBRequest });
+  Object.defineProperty(globalThis, "IDBRequest", { configurable: true, value: IDBRequest });
+  Object.defineProperty(globalThis, "IDBTransaction", { configurable: true, value: IDBTransaction });
+  Object.defineProperty(globalThis, "IDBVersionChangeEvent", { configurable: true, value: IDBVersionChangeEvent });
+});
 
 function profile(input: Partial<BackendProfile> & { id: string; displayName: string }): BackendProfile {
   return {
@@ -52,9 +87,71 @@ describe("local chat cache helpers", () => {
 
   it("preserves optimistic local message state over server-shaped messages", () => {
     const server = [message("m1", "2026-01-01T00:00:00.000Z")];
-    const local = [{ ...server[0], localState: "failed" as const }];
+    const local = [{ ...server[0], localState: "queued" as const }];
 
-    expect(messagesWithLocalState(server, local)[0].localState).toBe("failed");
+    expect(messagesWithLocalState(server, local)[0].localState).toBe("queued");
+  });
+
+  it("persists and orders queued outgoing messages", async () => {
+    await enqueueOutgoingMessage({
+      attemptCount: 0,
+      body: "second",
+      conversationId: "c1",
+      createdAt: "2026-01-01T00:00:02.000Z",
+      kind: "text",
+      localId: "local-second",
+      senderId: "u1",
+      status: "queued",
+      userId: "queue-user",
+    });
+    await enqueueOutgoingMessage({
+      attemptCount: 0,
+      body: "first",
+      conversationId: "c1",
+      createdAt: "2026-01-01T00:00:01.000Z",
+      kind: "text",
+      localId: "local-first",
+      senderId: "u1",
+      status: "queued",
+      userId: "queue-user",
+    });
+
+    const queued = await listQueuedOutgoingMessages("queue-user");
+    expect(queued.map((item) => item.localId)).toEqual(["local-first", "local-second"]);
+  });
+
+  it("transitions queued messages through sending and completion", async () => {
+    const local = {
+      ...message("local-complete", "2026-01-01T00:00:00.000Z"),
+      localState: "queued" as const,
+      senderId: "u1",
+    };
+    const server = {
+      ...message("server-complete", "2026-01-01T00:00:03.000Z"),
+      body: local.body,
+      senderId: "u1",
+    };
+    await upsertCachedMessage("complete-user", local);
+    await enqueueOutgoingMessage({
+      attemptCount: 0,
+      body: local.body,
+      conversationId: local.conversationId,
+      createdAt: local.createdAt,
+      kind: local.kind,
+      localId: local.id,
+      senderId: local.senderId,
+      status: "queued",
+      userId: "complete-user",
+    });
+
+    await markQueuedMessageSending(local.id);
+    expect((await listQueuedOutgoingMessages("complete-user"))[0].status).toBe("sending");
+
+    await completeQueuedMessage(local.id, server);
+    expect(await listQueuedOutgoingMessages("complete-user")).toEqual([]);
+    expect((await readCachedMessages("complete-user", local.conversationId)).map((item) => item.id)).toEqual([
+      server.id,
+    ]);
   });
 
   it("prioritizes the viewer's saved contact name for direct conversations", () => {
