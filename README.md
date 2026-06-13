@@ -26,7 +26,7 @@ Orbita Messenger is an Expo React Native app for Android, iOS, and web with a Wh
    npm run web
    ```
 
-4. Start the standalone backend in a second terminal:
+4. Start the standalone backend in a second terminal
 
    ```bash
    npm run backend
