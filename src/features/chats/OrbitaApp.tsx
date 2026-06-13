@@ -147,6 +147,7 @@ const TYPING_IDLE_MS = 1_900;
 const TYPING_EXPIRE_MS = 4_800;
 const AGENT_THINKING_POLL_MS = 3_500;
 const AGENT_THINKING_TIMEOUT_MS = 45_000;
+const AGENT_FOLLOW_LATEST_MS = 90_000;
 const CHAT_PAGE_SIZE = 24;
 const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: "chats", label: "Chats", icon: "chatbubbles-outline" },
@@ -4050,6 +4051,7 @@ function ChatPane({
   const contentHeightRef = useRef(0);
   const isNearLatestRef = useRef(true);
   const lastOlderTriggerAtRef = useRef(0);
+  const followAgentExchangeUntilRef = useRef(0);
   const preserveOffsetOnNextSizeChangeRef = useRef(false);
   const previousLastMessageIdRef = useRef("");
   const previousMessageCountRef = useRef(0);
@@ -4058,8 +4060,15 @@ function ChatPane({
   const isAgentConversation = isTaskManagerAgentConversation(conversation);
 
   const scrollToLatest = useCallback((animated = true) => {
-    requestAnimationFrame(() => {
+    const scroll = () => {
       scrollRef.current?.scrollToEnd({ animated });
+    };
+    requestAnimationFrame(() => {
+      scroll();
+      requestAnimationFrame(scroll);
+      if (Platform.OS === "web") {
+        window.setTimeout(scroll, 80);
+      }
     });
   }, []);
 
@@ -4119,9 +4128,26 @@ function ChatPane({
     previousLastMessageIdRef.current = lastMessageId;
     if (!lastMessageId || previousLastMessageId === lastMessageId || loadingOlder) return;
     const lastMessage = messages[messages.length - 1];
-    const shouldFollowLatest = lastMessage?.senderId === currentUserId || isNearLatestRef.current;
+    const now = Date.now();
+    if (isAgentConversation && lastMessage?.senderId === currentUserId) {
+      followAgentExchangeUntilRef.current = now + AGENT_FOLLOW_LATEST_MS;
+    }
+    const isActiveAgentExchange =
+      isAgentConversation &&
+      lastMessage?.senderId !== currentUserId &&
+      followAgentExchangeUntilRef.current > now;
+    const shouldFollowLatest =
+      lastMessage?.senderId === currentUserId ||
+      isNearLatestRef.current ||
+      isActiveAgentExchange;
     if (shouldFollowLatest) scrollToLatest();
-  }, [currentUserId, lastMessageId, loadingOlder, messages, scrollToLatest]);
+  }, [currentUserId, isAgentConversation, lastMessageId, loadingOlder, messages, scrollToLatest]);
+
+  useEffect(() => {
+    if (agentThinking && !loadingOlder && !messagesLoading) {
+      scrollToLatest();
+    }
+  }, [agentThinking, loadingOlder, messagesLoading, scrollToLatest]);
 
   useEffect(() => {
     const previousCount = previousMessageCountRef.current;
@@ -4156,6 +4182,7 @@ function ChatPane({
     isNearLatestRef.current = true;
     waitingForOlderLoadRef.current = false;
     previousMessageCountRef.current = 0;
+    followAgentExchangeUntilRef.current = 0;
     setQuickPromptOpen(false);
   }, [conversation.id]);
 
@@ -4306,6 +4333,9 @@ function ChatPane({
         onContentSizeChange={handleContentSizeChange}
         onLayout={() => scrollToLatest(false)}
         onScroll={handleMessageScroll}
+        onScrollBeginDrag={() => {
+          followAgentExchangeUntilRef.current = 0;
+        }}
         scrollEventThrottle={80}
         ref={scrollRef}
       >
