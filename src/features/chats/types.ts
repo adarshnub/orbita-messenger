@@ -27,7 +27,7 @@ export type Message = {
 export type Conversation = {
   id: string;
   title: string;
-  kind: "direct" | "group";
+  kind: "direct" | "group" | "taskmanager";
   participantIds: string[];
   adminIds?: string[];
   avatarColor: string;

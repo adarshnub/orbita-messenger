@@ -10,7 +10,7 @@ export type BackendProfile = {
 
 export type BackendConversation = {
   id: string;
-  kind: "direct" | "group";
+  kind: "direct" | "group" | "taskmanager";
   title: string;
   avatarUrl: string | null;
   inviteCode: string | null;

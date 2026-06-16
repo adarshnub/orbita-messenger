@@ -1384,7 +1384,7 @@ async function loadConversations(userId) {
         title:
           conversation.kind === "direct"
             ? directPeer?.displayName ?? "Direct chat"
-            : conversation.title ?? "Group",
+            : conversation.title ?? (conversation.kind === "group" ? "Group" : directPeer?.displayName ?? "Task Manager"),
         avatarUrl: conversation.avatar_url,
         inviteCode: conversation.invite_code,
         createdAt: conversation.created_at,
@@ -1503,6 +1503,30 @@ async function createDirectConversation(userId, otherUserId) {
 
   const created = (await loadConversations(userId)).find((item) => item.id === conversation.id);
   if (!created) throw new Error("Unable to load created conversation.");
+  return created;
+}
+
+async function createTaskmanagerConversation(agentProfileId, orbitaUserId, title) {
+  const cleanTitle = typeof title === "string" && title.trim() ? title.trim().slice(0, 120) : "Task Manager";
+  const { data: conversation, error } = await supabase
+    .from("conversations")
+    .insert({ kind: "taskmanager", created_by: agentProfileId, title: cleanTitle })
+    .select()
+    .single();
+  if (error) throw error;
+
+  const { error: participantError } = await supabase.from("conversation_participants").insert([
+    { conversation_id: conversation.id, user_id: agentProfileId, role: "owner" },
+    { conversation_id: conversation.id, user_id: orbitaUserId, role: "member" },
+  ]);
+  if (participantError) throw participantError;
+
+  await createRealtimeEvents([orbitaUserId], "direct_conversation_created", conversation.id, {
+    createdBy: agentProfileId,
+  });
+
+  const created = (await loadConversations(orbitaUserId)).find((item) => item.id === conversation.id);
+  if (!created) throw new Error("Unable to load created Task Manager conversation.");
   return created;
 }
 
@@ -1636,20 +1660,27 @@ async function forwardTaskmanagerInbound(
       return { forwarded: false, reason: "Conversation is not linked to Task Manager." };
     }
 
-    const { data: fallbackLink, error: fallbackError } = await supabase
+    const { data: fallbackLinks, error: fallbackError } = await supabase
       .from("taskmanager_agent_links")
       .select("*")
       .eq("orbita_user_id", senderId)
       .eq("agent_profile_id", agentParticipant.user_id)
       .eq("enabled", true)
       .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .limit(2);
     if (fallbackError) throw fallbackError;
 
-    if (!fallbackLink) {
+    if (!(fallbackLinks ?? []).length) {
       return { forwarded: false, reason: "Conversation is not linked to Task Manager." };
     }
+    if ((fallbackLinks ?? []).length > 1) {
+      return {
+        forwarded: false,
+        reason: "Conversation is ambiguous because this Orbita user is linked to multiple Task Manager employees.",
+      };
+    }
+
+    const [fallbackLink] = fallbackLinks;
 
     const { data: reboundLink, error: reboundError } = await supabase
       .from("taskmanager_agent_links")
@@ -1716,62 +1747,6 @@ async function handleServiceAction(action, payload) {
 
     const agentProfileId = await ensureTaskmanagerAgentProfile(taskmanagerOrgId, agentDisplayName);
 
-    // Prefer a single canonical link for the same Org + Orbita profile + Agent profile.
-    // This prevents duplicate direct conversations from drifting over time.
-    const { data: siblingLinks, error: siblingLinksError } = await supabase
-      .from("taskmanager_agent_links")
-      .select("*")
-      .eq("taskmanager_org_id", taskmanagerOrgId)
-      .eq("orbita_user_id", orbitaProfile.id)
-      .eq("agent_profile_id", agentProfileId)
-      .order("updated_at", { ascending: false });
-    if (siblingLinksError) throw siblingLinksError;
-
-    if ((siblingLinks ?? []).length) {
-      const links = siblingLinks ?? [];
-      const primaryLink =
-        links.find((row) => row.enabled && row.taskmanager_user_id === taskmanagerUserId) ??
-        links.find((row) => row.enabled) ??
-        links[0];
-
-      const { data: normalizedLink, error: normalizeError } = await supabase
-        .from("taskmanager_agent_links")
-        .update({
-          taskmanager_user_id: taskmanagerUserId,
-          enabled: true,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", primaryLink.id)
-        .select("*")
-        .single();
-      if (normalizeError) throw normalizeError;
-
-      const duplicateIds = links.map((row) => row.id).filter((id) => id !== primaryLink.id);
-      if (duplicateIds.length) {
-        const { error: disableError } = await supabase
-          .from("taskmanager_agent_links")
-          .update({
-            enabled: false,
-            updated_at: new Date().toISOString(),
-          })
-          .in("id", duplicateIds);
-        if (disableError) throw disableError;
-      }
-
-      await ensureConversationParticipants(normalizedLink.conversation_id, [
-        { user_id: agentProfileId, role: "owner" },
-        { user_id: orbitaProfile.id, role: "member" },
-      ]);
-
-      return {
-        orbitaProfileId: normalizedLink.orbita_user_id,
-        conversationId: normalizedLink.conversation_id,
-        channel: TASK_MANAGER_ORBITA_CHANNEL,
-        connection: TASK_MANAGER_ORBITA_CHANNEL,
-        userConnection: TASK_MANAGER_ORBITA_CHANNEL,
-      };
-    }
-
     const { data: existing, error: existingError } = await supabase
       .from("taskmanager_agent_links")
       .select("*")
@@ -1789,43 +1764,7 @@ async function handleServiceAction(action, payload) {
       };
     }
 
-    const conversation = await createDirectConversation(agentProfileId, orbitaProfile.id);
-
-    const { data: conversationLink, error: conversationLinkError } = await supabase
-      .from("taskmanager_agent_links")
-      .select("*")
-      .eq("conversation_id", conversation.id)
-      .maybeSingle();
-    if (conversationLinkError) throw conversationLinkError;
-    if (conversationLink) {
-      const belongsToSameOrbitaUser =
-        conversationLink.taskmanager_org_id === taskmanagerOrgId &&
-        conversationLink.orbita_user_id === orbitaProfile.id &&
-        conversationLink.agent_profile_id === agentProfileId;
-      if (!belongsToSameOrbitaUser) {
-        throw new Error("This Orbita conversation is already linked to another Task Manager employee.");
-      }
-
-      const { data: reassignedLink, error: reassignError } = await supabase
-        .from("taskmanager_agent_links")
-        .update({
-          taskmanager_user_id: taskmanagerUserId,
-          enabled: true,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", conversationLink.id)
-        .select()
-        .single();
-      if (reassignError) throw reassignError;
-
-      return {
-        orbitaProfileId: reassignedLink.orbita_user_id,
-        conversationId: reassignedLink.conversation_id,
-        channel: TASK_MANAGER_ORBITA_CHANNEL,
-        connection: TASK_MANAGER_ORBITA_CHANNEL,
-        userConnection: TASK_MANAGER_ORBITA_CHANNEL,
-      };
-    }
+    const conversation = await createTaskmanagerConversation(agentProfileId, orbitaProfile.id, agentDisplayName);
 
     const { data: link, error: linkError } = await supabase
       .from("taskmanager_agent_links")
