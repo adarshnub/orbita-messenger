@@ -1530,6 +1530,66 @@ async function createTaskmanagerConversation(agentProfileId, orbitaUserId, title
   return created;
 }
 
+function normalizeTaskmanagerAgentDisplayName(displayName) {
+  return typeof displayName === "string" && displayName.trim()
+    ? displayName.trim().slice(0, 80)
+    : "Task Manager Agent";
+}
+
+async function updateTaskmanagerAgentPresentation(taskmanagerOrgId, displayName) {
+  const cleanTitle = normalizeTaskmanagerAgentDisplayName(displayName);
+  const { data: links, error: linksError } = await supabase
+    .from("taskmanager_agent_links")
+    .select("agent_profile_id, conversation_id, orbita_user_id")
+    .eq("taskmanager_org_id", taskmanagerOrgId);
+  if (linksError) throw linksError;
+
+  const agentProfileIds = [...new Set((links ?? []).map((link) => link.agent_profile_id).filter(Boolean))];
+  const conversationIds = [...new Set((links ?? []).map((link) => link.conversation_id).filter(Boolean))];
+  const now = new Date().toISOString();
+
+  if (agentProfileIds.length) {
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .update({
+        display_name: cleanTitle,
+        about: "Task Manager agent",
+        is_online: true,
+        last_seen_at: now,
+        updated_at: now,
+      })
+      .in("id", agentProfileIds);
+    if (profileError) throw profileError;
+  }
+
+  if (conversationIds.length) {
+    const { error: conversationError } = await supabase
+      .from("conversations")
+      .update({ title: cleanTitle, updated_at: now })
+      .in("id", conversationIds);
+    if (conversationError) throw conversationError;
+  }
+
+  const eventRows = (links ?? [])
+    .filter((link) => link.orbita_user_id && link.conversation_id)
+    .map((link) => ({
+      target_user_id: link.orbita_user_id,
+      conversation_id: link.conversation_id,
+      kind: "taskmanager_agent_updated",
+      payload: { displayName: cleanTitle },
+    }));
+  if (eventRows.length) {
+    const { error: eventError } = await supabase.from("realtime_events").insert(eventRows);
+    if (eventError) throw eventError;
+  }
+
+  return {
+    agentProfileIds,
+    conversationIds,
+    displayName: cleanTitle,
+  };
+}
+
 async function loadConversationParticipants(conversationId) {
   const { data, error } = await supabase
     .from("conversation_participants")
@@ -1578,7 +1638,10 @@ async function ensureTaskmanagerAgentProfile(taskmanagerOrgId, displayName) {
     .limit(1)
     .maybeSingle();
   if (linkError) throw linkError;
-  if (existingLink?.agent_profile_id) return existingLink.agent_profile_id;
+  if (existingLink?.agent_profile_id) {
+    await updateTaskmanagerAgentPresentation(taskmanagerOrgId, displayName);
+    return existingLink.agent_profile_id;
+  }
 
   const safeOrg = taskmanagerOrgId.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
   const email = `orbita-agent+${safeOrg}@taskmanager.local`;
@@ -1735,7 +1798,7 @@ async function handleServiceAction(action, payload) {
     const taskmanagerOrgId = requiredString(payload, "taskmanagerOrgId");
     const taskmanagerUserId = requiredString(payload, "taskmanagerUserId");
     const phone = normalizePhone(requiredString(payload, "phone"));
-    const agentDisplayName = (optionalString(payload, "agentDisplayName") || "Task Manager Agent").slice(0, 80);
+    const agentDisplayName = normalizeTaskmanagerAgentDisplayName(optionalString(payload, "agentDisplayName"));
 
     const { data: orbitaProfile, error: profileError } = await supabase
       .from("profiles")
@@ -1790,6 +1853,17 @@ async function handleServiceAction(action, payload) {
       channel: TASK_MANAGER_ORBITA_CHANNEL,
       connection: TASK_MANAGER_ORBITA_CHANNEL,
       userConnection: TASK_MANAGER_ORBITA_CHANNEL,
+    };
+  }
+
+  if (action === "update_taskmanager_agent_name") {
+    const taskmanagerOrgId = requiredString(payload, "taskmanagerOrgId");
+    const agentDisplayName = normalizeTaskmanagerAgentDisplayName(requiredString(payload, "agentDisplayName"));
+    const result = await updateTaskmanagerAgentPresentation(taskmanagerOrgId, agentDisplayName);
+    return {
+      displayName: result.displayName,
+      updatedAgentProfiles: result.agentProfileIds.length,
+      updatedConversations: result.conversationIds.length,
     };
   }
 
