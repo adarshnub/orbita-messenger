@@ -1343,9 +1343,26 @@ async function loadConversations(userId) {
     .order("updated_at", { ascending: false });
   if (error) throw error;
 
+  const { data: linkedRows, error: linkedRowsError } = await supabase
+    .from("taskmanager_agent_links")
+    .select("conversation_id")
+    .in("conversation_id", ids)
+    .eq("enabled", true);
+  if (linkedRowsError) throw linkedRowsError;
+  const taskmanagerConversationIds = new Set((linkedRows ?? []).map((row) => row.conversation_id));
+  const { data: userLinkedRows, error: userLinkedRowsError } = await supabase
+    .from("taskmanager_agent_links")
+    .select("agent_profile_id")
+    .eq("orbita_user_id", userId)
+    .eq("enabled", true);
+  if (userLinkedRowsError) throw userLinkedRowsError;
+  const linkedAgentProfileIds = new Set((userLinkedRows ?? []).map((row) => row.agent_profile_id).filter(Boolean));
+
   const contactNicknames = await loadContactNicknames(userId);
   const loaded = await Promise.all(
     (conversations ?? []).map(async (conversation) => {
+      const isTaskmanagerConversation = taskmanagerConversationIds.has(conversation.id);
+      const displayKind = isTaskmanagerConversation ? "taskmanager" : conversation.kind;
       const { data: participants, error: participantError } = await supabase
         .from("conversation_participants")
         .select("role, profiles(*)")
@@ -1380,11 +1397,11 @@ async function loadConversations(userId) {
 
       return {
         id: conversation.id,
-        kind: conversation.kind,
+        kind: displayKind,
         title:
-          conversation.kind === "direct"
+          displayKind === "direct"
             ? directPeer?.displayName ?? "Direct chat"
-            : conversation.title ?? (conversation.kind === "group" ? "Group" : directPeer?.displayName ?? "Task Manager"),
+            : conversation.title ?? (displayKind === "group" ? "Group" : directPeer?.displayName ?? "Task Manager"),
         avatarUrl: conversation.avatar_url,
         inviteCode: conversation.invite_code,
         createdAt: conversation.created_at,
@@ -1398,6 +1415,12 @@ async function loadConversations(userId) {
 
   const bestDirectByPeer = new Map();
   return loaded.filter((conversation) => {
+    if (conversation.kind === "direct") {
+      const peer = conversation.participants.find((participant) => participant.id !== userId);
+      if (peer?.about?.trim().toLowerCase() === "task manager agent" && linkedAgentProfileIds.has(peer.id)) {
+        return false;
+      }
+    }
     if (conversation.kind !== "direct") return true;
     const peer = conversation.participants.find((participant) => participant.id !== userId);
     if (!peer) return true;

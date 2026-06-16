@@ -2379,14 +2379,14 @@ function MessengerShell({ session }: { session: Session }) {
     };
   }, [openConversationFromNotification]);
 
-  const existingDirectByContactId = useMemo(() => {
-    const directMap = new Map<string, BackendConversation>();
+  const existingConversationByContactId = useMemo(() => {
+    const conversationMap = new Map<string, BackendConversation>();
     conversations.forEach((conversation) => {
-      if (conversation.kind !== "direct") return;
+      if (conversation.kind !== "direct" && conversation.kind !== "taskmanager") return;
       const peer = conversation.participants.find((participant) => participant.id !== profileId);
-      if (peer) directMap.set(peer.id, conversation);
+      if (peer) conversationMap.set(peer.id, conversation);
     });
-    return directMap;
+    return conversationMap;
   }, [conversations, profileId]);
   const contactsWithDefaultAgent = useMemo(() => {
     const byId = new Map(contacts.map((contact) => [contact.id, contact]));
@@ -2438,7 +2438,7 @@ function MessengerShell({ session }: { session: Session }) {
       }));
 
     const extraContactTargets = contacts
-      .filter((contact) => !existingDirectByContactId.has(contact.id))
+      .filter((contact) => !existingConversationByContactId.has(contact.id))
       .map((contact) => ({
         avatarUrl: contact.avatarUrl,
         id: contact.id,
@@ -2449,15 +2449,15 @@ function MessengerShell({ session }: { session: Session }) {
       }));
 
     return [...conversationTargets, ...extraContactTargets];
-  }, [contacts, conversations, existingDirectByContactId, selectedId]);
+  }, [contacts, conversations, existingConversationByContactId, selectedId]);
 
   const chatListContacts = useMemo<ChatListContact[]>(
     () =>
       contactsWithDefaultAgent.map((contact) => ({
         ...contact,
-        existingConversationId: existingDirectByContactId.get(contact.id)?.id,
+        existingConversationId: existingConversationByContactId.get(contact.id)?.id,
       })),
-    [contactsWithDefaultAgent, existingDirectByContactId],
+    [contactsWithDefaultAgent, existingConversationByContactId],
   );
   const showAgentFab = !selected;
 
@@ -2488,7 +2488,7 @@ function MessengerShell({ session }: { session: Session }) {
 
   async function openContactConversation(otherUserId: string) {
     await run(async () => {
-      const existingConversationId = existingDirectByContactId.get(otherUserId)?.id;
+      const existingConversationId = existingConversationByContactId.get(otherUserId)?.id;
       if (existingConversationId) {
         selectConversation(existingConversationId);
         return;
