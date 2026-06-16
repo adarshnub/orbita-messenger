@@ -807,6 +807,58 @@ async function uploadMediaAttachment(userId, form) {
   };
 }
 
+async function createServiceAttachment(ownerId, input) {
+  if (!isRecord(input)) return null;
+  const dataBase64 = typeof input.dataBase64 === "string" ? input.dataBase64 : "";
+  if (!dataBase64) return null;
+
+  const mimeType =
+    typeof input.mimeType === "string" && input.mimeType.trim()
+      ? input.mimeType.trim()
+      : "application/octet-stream";
+  const requestedKind = typeof input.kind === "string" ? input.kind : "";
+  const kind = messageKindFromAttachment(requestedKind, mimeType);
+  const filename = sanitizeFilename(
+    typeof input.filename === "string" && input.filename.trim()
+      ? input.filename
+      : `${kind}-${Date.now()}`,
+  );
+  const buffer = Buffer.from(dataBase64, "base64");
+  if (!buffer.byteLength) throw new Error("Attachment body is empty.");
+
+  const bucket = storageBucketForMessageKind(kind);
+  const objectPath = `${ownerId}/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${filename}`;
+  const { error: uploadError } = await supabase.storage.from(bucket).upload(objectPath, buffer, {
+    contentType: mimeType,
+    upsert: false,
+  });
+  if (uploadError) throw uploadError;
+
+  const { data, error } = await supabase
+    .from("media_attachments")
+    .insert({
+      owner_id: ownerId,
+      bucket,
+      object_path: objectPath,
+      mime_type: mimeType,
+      byte_size: buffer.byteLength,
+      encrypted_metadata: {
+        filename,
+        durationMs: typeof input.durationMs === "number" && input.durationMs > 0 ? Math.round(input.durationMs) : null,
+        kind,
+        source: "taskmanager",
+        status: "staged",
+      },
+    })
+    .select("*")
+    .single();
+  if (error) {
+    await supabase.storage.from(bucket).remove([objectPath]).catch(() => undefined);
+    throw error;
+  }
+  return data;
+}
+
 async function uploadProfileAvatar(userId, form) {
   const file = form.get("file");
   if (!file || typeof file.arrayBuffer !== "function") {
@@ -1895,6 +1947,7 @@ async function handleServiceAction(action, payload) {
     const taskmanagerUserId = requiredString(payload, "taskmanagerUserId");
     const conversationId = requiredString(payload, "conversationId");
     const body = requiredString(payload, "body").slice(0, 5000);
+    const attachmentInput = isRecord(payload.attachment) ? payload.attachment : null;
     const requesterTaskmanagerUserId = optionalString(payload, "requesterTaskmanagerUserId");
 
     const { data: link, error } = await supabase
@@ -1953,16 +2006,24 @@ async function handleServiceAction(action, payload) {
       requesterTaskmanagerUserId: requesterTaskmanagerUserId || null,
     });
 
-    const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, "text", messagePayload, {
+    const attachmentRow = attachmentInput ? await createServiceAttachment(link.agent_profile_id, attachmentInput) : null;
+    const kind = attachmentRow
+      ? messageKindFromAttachment(attachmentMetadata(attachmentRow).kind, attachmentRow.mime_type)
+      : "text";
+    const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, kind, messagePayload, {
       awaitPush: true,
       pushSource: "send_agent_message",
     });
+    const linkedAttachment = attachmentRow ? await linkAttachmentToMessage(attachmentRow, message.id) : null;
+    const mappedAttachments = linkedAttachment
+      ? [mapAttachment(linkedAttachment, await signedAttachmentUrl(linkedAttachment, 12 * 60 * 60))]
+      : [];
     pushLog("service.send_agent_message_inserted", {
       conversationId,
       messageId: message.id,
       taskmanagerUserId,
     });
-    return { message: mapMessage(message, []) };
+    return { message: mapMessage(message, mappedAttachments) };
   }
 
   if (action === "taskmanager_admin_status_changed") {
