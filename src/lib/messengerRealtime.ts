@@ -152,6 +152,7 @@ function mapRealtimeMessage(row: unknown): BackendMessage | null {
   return {
     attachments: [],
     body,
+    clientMessageId: typeof value.client_message_id === "string" ? value.client_message_id : null,
     conversationId: value.conversation_id,
     createdAt: value.created_at,
     forwardedFrom,

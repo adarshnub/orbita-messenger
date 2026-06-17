@@ -438,15 +438,34 @@ function mergeMessages(incoming: BackendMessage[], local: ChatMessage[]) {
   return stable;
 }
 
+function mergeMessagePayload(existing: ChatMessage, incoming: BackendMessage): BackendMessage {
+  return {
+    ...incoming,
+    attachments: incoming.attachments.length ? incoming.attachments : existing.attachments,
+    clientMessageId: incoming.clientMessageId ?? existing.clientMessageId ?? null,
+    forwardedFrom: incoming.forwardedFrom ?? existing.forwardedFrom ?? null,
+    status: incoming.status ?? existing.status,
+  };
+}
+
 function upsertMessage(messages: ChatMessage[], incoming: BackendMessage): ChatMessage[] {
-  const withoutDuplicate = messages.filter((message) => message.id !== incoming.id);
+  const existingById = messages.find((message) => message.id === incoming.id);
+  if (existingById) {
+    const mergedIncoming = mergeMessagePayload(existingById, incoming);
+    return messages
+      .map((message) => (message.id === incoming.id ? mergedIncoming : message))
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+  }
+
+  const withoutDuplicate = messages;
   const matchingLocal = withoutDuplicate.find((message) => {
     if (!message.localState) return false;
     return isSameLocalAndServerMessage(message, incoming);
   });
+  const mergedIncoming = matchingLocal ? mergeMessagePayload(matchingLocal, incoming) : incoming;
   const next = matchingLocal
-    ? withoutDuplicate.map((message) => (message.id === matchingLocal.id ? incoming : message))
-    : [...withoutDuplicate, incoming];
+    ? withoutDuplicate.map((message) => (message.id === matchingLocal.id ? mergedIncoming : message))
+    : [...withoutDuplicate, mergedIncoming];
 
   return next.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 }
@@ -1709,6 +1728,7 @@ function MessengerShell({ session }: { session: Session }) {
     const activeConversationId = selectedIdRef.current;
     const currentForConversation = messagesByConversationRef.current[message.conversationId] ?? [];
     const nextMessages = upsertMessage(currentForConversation, message);
+    const displayMessage = nextMessages.find((item) => item.id === message.id || item.clientMessageId === message.clientMessageId) ?? message;
     rememberMessages(message.conversationId, nextMessages);
 
     if (activeConversationId === message.conversationId) {
@@ -1725,8 +1745,8 @@ function MessengerShell({ session }: { session: Session }) {
         const shouldIncrementUnread = message.senderId !== profileId && activeConversationId !== message.conversationId;
         return {
           ...conversation,
-          lastMessage: message,
-          updatedAt: message.createdAt,
+          lastMessage: displayMessage,
+          updatedAt: displayMessage.createdAt,
           unreadCount: shouldIncrementUnread ? conversation.unreadCount + 1 : conversation.unreadCount,
         };
       }),
