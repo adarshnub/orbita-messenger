@@ -1951,20 +1951,47 @@ async function handleServiceAction(action, payload) {
     const attachmentInput = isRecord(payload.attachment) ? payload.attachment : null;
     const requesterTaskmanagerUserId = optionalString(payload, "requesterTaskmanagerUserId");
 
-    const { data: link, error } = await supabase
+    const { data: exactLink, error: exactLinkError } = await supabase
       .from("taskmanager_agent_links")
       .select("*")
       .eq("taskmanager_org_id", taskmanagerOrgId)
       .eq("taskmanager_user_id", taskmanagerUserId)
       .eq("conversation_id", conversationId)
       .eq("enabled", true)
-      .single();
-    if (error) throw error;
+      .maybeSingle();
+    if (exactLinkError) throw exactLinkError;
+
+    let link = exactLink;
+    if (!link) {
+      const { data: fallbackLinks, error: fallbackLinkError } = await supabase
+        .from("taskmanager_agent_links")
+        .select("*")
+        .eq("taskmanager_org_id", taskmanagerOrgId)
+        .eq("taskmanager_user_id", taskmanagerUserId)
+        .eq("enabled", true)
+        .order("updated_at", { ascending: false })
+        .limit(2);
+      if (fallbackLinkError) throw fallbackLinkError;
+      if (!(fallbackLinks ?? []).length) {
+        throw new Error("Recipient is not linked to Orbita for this Task Manager organization.");
+      }
+      if ((fallbackLinks ?? []).length > 1) {
+        throw new Error("Recipient has multiple active Orbita links. Ask admin to relink the employee.");
+      }
+      link = fallbackLinks[0];
+      pushLog("service.send_agent_message_recovered_stale_link", {
+        requestedConversationId: conversationId,
+        recoveredConversationId: link.conversation_id,
+        taskmanagerOrgId,
+        taskmanagerUserId,
+      });
+    }
+    const deliveryConversationId = link.conversation_id || conversationId;
 
     // Some older links may point to conversations missing one side due to
     // partial setup from previous flows. Heal membership before inserting
     // so delivery and push recipient resolution stay valid.
-    await ensureConversationParticipants(conversationId, [
+    await ensureConversationParticipants(deliveryConversationId, [
       { user_id: link.agent_profile_id, role: "owner" },
       { user_id: link.orbita_user_id, role: "member" },
     ]);
@@ -2011,7 +2038,7 @@ async function handleServiceAction(action, payload) {
     const kind = attachmentRow
       ? messageKindFromAttachment(attachmentMetadata(attachmentRow).kind, attachmentRow.mime_type)
       : "text";
-    const message = await insertMessageWithReceipts(conversationId, link.agent_profile_id, kind, messagePayload, {
+    const message = await insertMessageWithReceipts(deliveryConversationId, link.agent_profile_id, kind, messagePayload, {
       awaitPush: true,
       pushSource: "send_agent_message",
     });
@@ -2020,7 +2047,7 @@ async function handleServiceAction(action, payload) {
       ? [mapAttachment(linkedAttachment, await signedAttachmentUrl(linkedAttachment, 12 * 60 * 60))]
       : [];
     pushLog("service.send_agent_message_inserted", {
-      conversationId,
+      conversationId: deliveryConversationId,
       messageId: message.id,
       taskmanagerUserId,
     });
