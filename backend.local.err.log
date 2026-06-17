@@ -1,0 +1,64 @@
+TypeError: fetch failed
+    at node:internal/deps/undici/undici:13502:13
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async _handleRequest (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\lib\fetch.js:117:18)
+    at async _request (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\lib\fetch.js:107:18)
+    at async SupabaseAuthClient._getUser (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\GoTrueClient.js:2483:24)
+    at async SupabaseAuthClient.getUser (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\GoTrueClient.js:2469:20)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:153:31) {
+  [cause]: Error: getaddrinfo ENOTFOUND vobpuwlippeeaxurwetk.supabase.co
+      at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:120:26) {
+    errno: -3008,
+    code: 'ENOTFOUND',
+    syscall: 'getaddrinfo',
+    hostname: 'vobpuwlippeeaxurwetk.supabase.co'
+  }
+}
+TypeError: fetch failed
+    at node:internal/deps/undici/undici:13502:13
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async _handleRequest (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\lib\fetch.js:117:18)
+    at async _request (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\lib\fetch.js:107:18)
+    at async SupabaseAuthClient._getUser (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\GoTrueClient.js:2483:24)
+    at async SupabaseAuthClient.getUser (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\GoTrueClient.js:2469:20)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:153:31) {
+  [cause]: Error: getaddrinfo ENOTFOUND vobpuwlippeeaxurwetk.supabase.co
+      at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:120:26) {
+    errno: -3008,
+    code: 'ENOTFOUND',
+    syscall: 'getaddrinfo',
+    hostname: 'vobpuwlippeeaxurwetk.supabase.co'
+  }
+}
+TypeError: fetch failed
+    at node:internal/deps/undici/undici:13502:13
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async _handleRequest (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\lib\fetch.js:117:18)
+    at async _request (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\lib\fetch.js:107:18)
+    at async SupabaseAuthClient._getUser (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\GoTrueClient.js:2483:24)
+    at async SupabaseAuthClient.getUser (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\GoTrueClient.js:2469:20)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:153:31) {
+  [cause]: Error: getaddrinfo ENOTFOUND vobpuwlippeeaxurwetk.supabase.co
+      at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:120:26) {
+    errno: -3008,
+    code: 'ENOTFOUND',
+    syscall: 'getaddrinfo',
+    hostname: 'vobpuwlippeeaxurwetk.supabase.co'
+  }
+}
+TypeError: fetch failed
+    at node:internal/deps/undici/undici:13502:13
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async _handleRequest (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\lib\fetch.js:117:18)
+    at async _request (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\lib\fetch.js:107:18)
+    at async SupabaseAuthClient._getUser (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\GoTrueClient.js:2483:24)
+    at async SupabaseAuthClient.getUser (C:\Users\adars\Documents\GitHub\orbita-messenger\node_modules\@supabase\auth-js\dist\main\GoTrueClient.js:2469:20)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:153:31) {
+  [cause]: Error: getaddrinfo ENOTFOUND vobpuwlippeeaxurwetk.supabase.co
+      at GetAddrInfoReqWrap.onlookupall [as oncomplete] (node:dns:120:26) {
+    errno: -3008,
+    code: 'ENOTFOUND',
+    syscall: 'getaddrinfo',
+    hostname: 'vobpuwlippeeaxurwetk.supabase.co'
+  }
+}

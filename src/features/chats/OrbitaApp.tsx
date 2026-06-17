@@ -206,9 +206,9 @@ type AppThemeContextValue = {
 };
 
 const AppThemeContext = createContext<AppThemeContextValue>({
-  isDarkTheme: true,
+  isDarkTheme: false,
   setThemeMode: () => undefined,
-  themeMode: "dark",
+  themeMode: "light",
   toggleTheme: () => undefined,
 });
 
@@ -217,7 +217,7 @@ function useAppTheme() {
 }
 
 function usePersistedTheme() {
-  const [themeMode, setThemeModeState] = useState<AppThemeMode>("dark");
+  const [themeMode, setThemeModeState] = useState<AppThemeMode>("light");
   const isDarkTheme = themeMode === "dark";
 
   useEffect(() => {

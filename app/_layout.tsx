@@ -14,7 +14,7 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <Stack screenOptions={{ headerShown: false }} />
-      <StatusBar backgroundColor="#101421" style="light" translucent={false} />
+      <StatusBar backgroundColor="#F0EFF4" style="dark" translucent={false} />
     </SafeAreaProvider>
   );
 }
