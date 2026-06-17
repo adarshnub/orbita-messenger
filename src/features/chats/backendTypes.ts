@@ -33,6 +33,7 @@ export type BackendAttachment = {
 
 export type BackendMessage = {
   id: string;
+  clientMessageId?: string | null;
   conversationId: string;
   senderId: string;
   kind: "text" | "image" | "video" | "document" | "audio" | "voice";

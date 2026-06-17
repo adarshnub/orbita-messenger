@@ -284,8 +284,45 @@ function messageSignature(message: Pick<BackendMessage, "senderId" | "body" | "k
   return `${message.senderId}::${message.kind}::${message.body.trim().toLowerCase()}::${attachmentKey}`;
 }
 
+function isSameLocalAndServerMessage(localMessage: ChatMessage, serverMessage: BackendMessage) {
+  if (
+    localMessage.localState &&
+    serverMessage.clientMessageId &&
+    localMessage.id === serverMessage.clientMessageId
+  ) {
+    return true;
+  }
+  if (localMessage.senderId !== serverMessage.senderId) return false;
+  if (messageSignature(localMessage) !== messageSignature(serverMessage)) return false;
+  return Math.abs(Date.parse(localMessage.createdAt) - Date.parse(serverMessage.createdAt)) <= MESSAGE_RECONCILE_WINDOW_MS;
+}
+
 function isTaskManagerAgentConversation(conversation: BackendConversation) {
   return conversation.participants.some((participant) => participant.about?.trim().toLowerCase() === "task manager agent");
+}
+
+function isAgentProgressMessage(message: Pick<BackendMessage, "attachments" | "body">) {
+  if (message.attachments?.length) return false;
+  const normalized = message.body
+    .trim()
+    .toLowerCase()
+    .replace(/\u2026/g, "...")
+    .replace(/\s+/g, " ");
+  if (!normalized || normalized.length > 80) return false;
+  const compact = normalized.replace(/[.!?\s]+$/g, "");
+  return (
+    [
+      "on it",
+      "working on it",
+      "working on that",
+      "processing",
+      "give me a moment",
+      "one moment",
+      "just a moment",
+      "let me check",
+    ].includes(compact) ||
+    /^(got it|sure|okay|ok)[, -]+(one moment|checking|let me check)$/.test(compact)
+  );
 }
 
 function userFacingTaskManagerError(reason?: string) {
@@ -393,13 +430,7 @@ function mergeMessages(incoming: BackendMessage[], local: ChatMessage[]) {
 
   pending.forEach((pendingMessage) => {
     if (stableById.has(pendingMessage.id)) return;
-    const pendingTime = Date.parse(pendingMessage.createdAt);
-    const match = stable.some((serverMessage) => {
-      const sameSenderAndBody = messageSignature(serverMessage) === messageSignature(pendingMessage);
-      if (!sameSenderAndBody) return false;
-      const serverTime = Date.parse(serverMessage.createdAt);
-      return Math.abs(serverTime - pendingTime) <= MESSAGE_RECONCILE_WINDOW_MS;
-    });
+    const match = stable.some((serverMessage) => isSameLocalAndServerMessage(pendingMessage, serverMessage));
     if (!match) stable.push(pendingMessage);
   });
 
@@ -411,9 +442,7 @@ function upsertMessage(messages: ChatMessage[], incoming: BackendMessage): ChatM
   const withoutDuplicate = messages.filter((message) => message.id !== incoming.id);
   const matchingLocal = withoutDuplicate.find((message) => {
     if (!message.localState) return false;
-    if (message.senderId !== incoming.senderId) return false;
-    if (messageSignature(message) !== messageSignature(incoming)) return false;
-    return Math.abs(Date.parse(message.createdAt) - Date.parse(incoming.createdAt)) <= MESSAGE_RECONCILE_WINDOW_MS;
+    return isSameLocalAndServerMessage(message, incoming);
   });
   const next = matchingLocal
     ? withoutDuplicate.map((message) => (message.id === matchingLocal.id ? incoming : message))
@@ -1706,7 +1735,11 @@ function MessengerShell({ session }: { session: Session }) {
     if (message.senderId !== profileId && agentThinkingForRef.current[message.conversationId]) {
       setAgentThinkingFor((currentThinking) => {
         const next = { ...currentThinking };
-        delete next[message.conversationId];
+        if (isAgentProgressMessage(message)) {
+          next[message.conversationId] = message.createdAt;
+        } else {
+          delete next[message.conversationId];
+        }
         return next;
       });
     }
@@ -1752,15 +1785,25 @@ function MessengerShell({ session }: { session: Session }) {
       const thinkingSince = agentThinkingForRef.current[conversationId];
       if (thinkingSince) {
         const since = Date.parse(thinkingSince);
-        const gotAgentReply = merged.some(
+        const agentMessagesSince = merged.filter(
           (message) => message.senderId !== profileId && Date.parse(message.createdAt) >= since,
         );
+        const gotAgentReply = agentMessagesSince.some((message) => !isAgentProgressMessage(message));
         if (gotAgentReply) {
           setAgentThinkingFor((currentThinking) => {
             const next = { ...currentThinking };
             delete next[conversationId];
             return next;
           });
+        } else {
+          const latestProgress = [...agentMessagesSince].reverse().find(isAgentProgressMessage);
+          if (latestProgress && latestProgress.createdAt !== thinkingSince) {
+            setAgentThinkingFor((currentThinking) =>
+              currentThinking[conversationId]
+                ? { ...currentThinking, [conversationId]: latestProgress.createdAt }
+                : currentThinking,
+            );
+          }
         }
       }
       void writeConversationMessages(session.user.id, conversationId, merged).catch(() => undefined);
@@ -2658,6 +2701,7 @@ function MessengerShell({ session }: { session: Session }) {
     const tempId = createLocalMessageId();
     const optimisticMessage: ChatMessage = {
       id: tempId,
+      clientMessageId: tempId,
       conversationId: selected.id,
       senderId: profile.id,
       kind: resolvedKind,

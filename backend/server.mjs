@@ -428,6 +428,7 @@ function mapMessage(row, attachments = []) {
   const payload = messagePayload(row);
   return {
     id: row.id,
+    clientMessageId: row.client_message_id ?? null,
     conversationId: row.conversation_id,
     senderId: row.sender_id,
     kind: row.kind,
