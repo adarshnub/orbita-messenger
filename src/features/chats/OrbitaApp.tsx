@@ -752,13 +752,19 @@ function MessageListSkeleton() {
 function MessageBody({ mine, text }: { mine: boolean; text: string }) {
   const { isDarkTheme } = useAppTheme();
   return (
-    <Text style={[styles.messageText, isDarkTheme && !mine && styles.messageTextDark, mine && styles.messageTextMine]}>
-      {renderMessageInline(text, mine, "message")}
+    <Text
+      style={[
+        styles.messageText,
+        isDarkTheme && !mine && styles.messageTextDark,
+        mine && (isDarkTheme ? styles.messageTextMineDark : styles.messageTextMine),
+      ]}
+    >
+      {renderMessageInline(text, mine, isDarkTheme, "message")}
     </Text>
   );
 }
 
-function renderMessageInline(text: string, mine: boolean, keyPrefix: string): ReactNode[] {
+function renderMessageInline(text: string, mine: boolean, isDarkTheme: boolean, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const tokenPattern = /\[([^\]]+)\]\(((?:https?:\/\/|www\.)[^)\s]+)\)|((?:https?:\/\/|www\.)[^\s<]+)/gi;
   let cursor = 0;
@@ -766,7 +772,7 @@ function renderMessageInline(text: string, mine: boolean, keyPrefix: string): Re
 
   while ((match = tokenPattern.exec(text))) {
     if (match.index > cursor) {
-      nodes.push(...renderMessageFormatting(text.slice(cursor, match.index), mine, `${keyPrefix}-text-${cursor}`));
+      nodes.push(...renderMessageFormatting(text.slice(cursor, match.index), mine, isDarkTheme, `${keyPrefix}-text-${cursor}`));
     }
 
     const label = match[1] || match[3] || "";
@@ -777,7 +783,7 @@ function renderMessageInline(text: string, mine: boolean, keyPrefix: string): Re
         accessibilityRole="link"
         key={`${keyPrefix}-link-${match.index}`}
         onPress={() => openMessageUrl(cleanUrl)}
-        style={[styles.messageLink, mine && styles.messageLinkMine]}
+        style={[styles.messageLink, mine && (isDarkTheme ? styles.messageLinkMineDark : styles.messageLinkMine)]}
       >
         {label === rawUrl ? cleanUrl : label}
       </Text>,
@@ -787,13 +793,13 @@ function renderMessageInline(text: string, mine: boolean, keyPrefix: string): Re
   }
 
   if (cursor < text.length) {
-    nodes.push(...renderMessageFormatting(text.slice(cursor), mine, `${keyPrefix}-text-${cursor}`));
+    nodes.push(...renderMessageFormatting(text.slice(cursor), mine, isDarkTheme, `${keyPrefix}-text-${cursor}`));
   }
 
   return nodes;
 }
 
-function renderMessageFormatting(text: string, mine: boolean, keyPrefix: string): ReactNode[] {
+function renderMessageFormatting(text: string, mine: boolean, isDarkTheme: boolean, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const formatPattern = /(`([^`]+)`)|(\*\*([^*]+)\*\*)|(__([^_]+)__)|(\*([^*\n]+)\*)|(_([^_\n]+)_)/g;
   let cursor = 0;
@@ -807,7 +813,7 @@ function renderMessageFormatting(text: string, mine: boolean, keyPrefix: string)
     const emphasis = match[8] || match[10];
     if (code) {
       nodes.push(
-        <Text key={`${keyPrefix}-code-${match.index}`} style={[styles.messageCode, mine && styles.messageCodeMine]}>
+        <Text key={`${keyPrefix}-code-${match.index}`} style={[styles.messageCode, mine && (isDarkTheme ? styles.messageCodeMineDark : styles.messageCodeMine)]}>
           {code}
         </Text>,
       );
@@ -989,6 +995,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
   const [phone, setPhone] = useState("");
   const [otp, setOtp] = useState("");
   const [otpSent, setOtpSent] = useState(false);
+  const [otpFallbackActive, setOtpFallbackActive] = useState(false);
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
   const [resendSeconds, setResendSeconds] = useState(0);
@@ -1005,6 +1012,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
     setAuthMode(nextMode);
     setOtp("");
     setOtpSent(false);
+    setOtpFallbackActive(false);
     setNotice("");
     setResendSeconds(0);
   }
@@ -1012,6 +1020,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
   function editLoginDetails() {
     setOtp("");
     setOtpSent(false);
+    setOtpFallbackActive(false);
     setNotice("");
     setResendSeconds(0);
   }
@@ -1042,10 +1051,16 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
 
     if (result.error) {
       if (DEV_OTP_ENABLED) {
-        setNotice(result.error.message);
+        setPhone(normalizedPhone);
+        setDisplayName(normalizedName);
+        setOtp("");
         setOtpSent(true);
-        setResendSeconds(OTP_RESEND_SECONDS);
+        setOtpFallbackActive(true);
+        setResendSeconds(0);
+        setNotice(`SMS OTP failed: ${result.error.message}. Dev OTP is enabled for this build; enter ${DEV_BYPASS_OTP} to continue while the SMS provider is fixed.`);
       } else {
+        setOtpSent(false);
+        setOtpFallbackActive(false);
         setNotice(result.error.message);
       }
       return;
@@ -1055,6 +1070,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
     setDisplayName(normalizedName);
     setOtp("");
     setOtpSent(true);
+    setOtpFallbackActive(false);
     setResendSeconds(OTP_RESEND_SECONDS);
     setNotice(`${isResend ? "New OTP sent" : "OTP sent"} to your phone. Enter the code to continue.`);
   }
@@ -1094,14 +1110,16 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
       ? "Create your Orbita"
       : "Welcome back";
   const authCopy = otpSent
-    ? `We sent a one-time code to ${phone || "your phone"}.`
+    ? otpFallbackActive
+      ? `SMS delivery failed for ${phone || "your phone"}. Use the development code or retry SMS after fixing the provider.`
+      : `We sent a one-time code to ${phone || "your phone"}.`
     : authMode === "signup"
       ? "Build your AI-ready messaging profile with a verified phone number."
       : "Sign in with your phone OTP to continue your encrypted workspace.";
   const primaryLabel = otpSent ? "Verify and continue" : authMode === "signup" ? "Create account" : "Send phone OTP";
-  const resendLabel = resendSeconds > 0 ? `Resend in ${resendSeconds}s` : "Resend OTP";
+  const resendLabel = otpFallbackActive ? "Retry SMS OTP" : resendSeconds > 0 ? `Resend in ${resendSeconds}s` : "Resend OTP";
   const authIconColor = isDarkTheme ? colors.accent : colors.primaryDark;
-  const authPlaceholderColor = isDarkTheme ? "rgba(255,255,255,0.52)" : "rgba(23,18,36,0.42)";
+  const authPlaceholderColor = isDarkTheme ? "rgba(255,255,255,0.52)" : "rgba(17,27,33,0.42)";
   const isAuthWide = Platform.OS === "web" && width >= 980;
 
   return (
@@ -4611,13 +4629,14 @@ function ChatPane({
                       style={[
                         styles.bubble,
                         mine ? styles.mineBubble : styles.theirBubble,
+                        isDarkTheme && mine && styles.mineBubbleDark,
                         isDarkTheme && !mine && styles.theirBubbleDark,
                       ]}
                     >
                       {message.forwardedFrom ? (
                         <View style={styles.forwardedRow}>
-                          <Ionicons color={mine ? "rgba(255,255,255,0.78)" : colors.primaryDark} name="arrow-redo-outline" size={13} />
-                          <Text style={[styles.forwardedText, mine && styles.forwardedTextMine]}>
+                          <Ionicons color={mine ? (isDarkTheme ? "rgba(233,237,239,0.78)" : colors.primaryDark) : colors.primaryDark} name="arrow-redo-outline" size={13} />
+                          <Text style={[styles.forwardedText, mine && (isDarkTheme ? styles.forwardedTextMineDark : styles.forwardedTextMine)]}>
                             Forwarded from {message.forwardedFrom.senderName}
                           </Text>
                         </View>
@@ -4625,18 +4644,18 @@ function ChatPane({
                       {message.attachments[0] ? <MessageAttachmentCard attachment={message.attachments[0]} mine={mine} /> : null}
                       {message.body ? <MessageBody mine={mine} text={message.body} /> : null}
                       <View style={styles.messageMeta}>
-                        <Text style={[styles.metaText, mine && styles.metaTextMine]}>{formatTime(message.createdAt)}</Text>
+                        <Text style={[styles.metaText, mine && (isDarkTheme ? styles.metaTextMineDark : styles.metaTextMine)]}>{formatTime(message.createdAt)}</Text>
                         {mine && message.localState === "sending" ? (
-                          <Ionicons color="rgba(255,255,255,0.72)" name="time-outline" size={13} />
+                          <Ionicons color={isDarkTheme ? "rgba(233,237,239,0.72)" : colors.faint} name="time-outline" size={13} />
                         ) : null}
                         {mine && message.localState === "queued" ? (
-                          <Ionicons color="rgba(255,255,255,0.72)" name="cloud-offline-outline" size={13} />
+                          <Ionicons color={isDarkTheme ? "rgba(233,237,239,0.72)" : colors.faint} name="cloud-offline-outline" size={13} />
                         ) : null}
                         {mine && message.localState === "failed" ? (
                           <Ionicons color={colors.danger} name="alert-circle" size={15} />
                         ) : null}
                         {mine && !message.localState ? (
-                          <Ionicons color={colors.primarySoft} name="checkmark-done" size={15} />
+                          <Ionicons color={isDarkTheme ? "#53BDEB" : colors.primaryDark} name="checkmark-done" size={15} />
                         ) : null}
                       </View>
                     </Pressable>
@@ -4876,11 +4895,13 @@ function MessageAttachmentCard({
   attachment: BackendAttachment;
   mine: boolean;
 }) {
+  const { isDarkTheme } = useAppTheme();
+
   if (attachment.kind === "image") {
     return (
       <Pressable onPress={() => openMessageUrl(attachment.url)} style={styles.imageAttachment}>
         <Image source={{ uri: attachment.url }} style={styles.imageAttachmentMedia} />
-        <Text numberOfLines={1} style={[styles.attachmentCaption, mine && styles.attachmentCaptionMine]}>
+        <Text numberOfLines={1} style={[styles.attachmentCaption, mine && (isDarkTheme ? styles.attachmentCaptionMineDark : styles.attachmentCaptionMine)]}>
           {attachment.filename}
         </Text>
       </Pressable>
@@ -4892,19 +4913,19 @@ function MessageAttachmentCard({
   }
 
   return (
-    <Pressable onPress={() => openMessageUrl(attachment.url)} style={[styles.documentAttachment, mine && styles.documentAttachmentMine]}>
-      <View style={[styles.documentAttachmentIcon, mine && styles.documentAttachmentIconMine]}>
-        <Ionicons color={mine ? "#FFFFFF" : colors.primaryDark} name="document-text-outline" size={20} />
+    <Pressable onPress={() => openMessageUrl(attachment.url)} style={[styles.documentAttachment, mine && (isDarkTheme ? styles.documentAttachmentMineDark : styles.documentAttachmentMine)]}>
+      <View style={[styles.documentAttachmentIcon, mine && (isDarkTheme ? styles.documentAttachmentIconMineDark : styles.documentAttachmentIconMine)]}>
+        <Ionicons color={mine ? (isDarkTheme ? "#E9EDEF" : colors.primaryDark) : colors.primaryDark} name="document-text-outline" size={20} />
       </View>
       <View style={styles.chatRowBody}>
-        <Text numberOfLines={1} style={[styles.documentAttachmentTitle, mine && styles.documentAttachmentTitleMine]}>
+        <Text numberOfLines={1} style={[styles.documentAttachmentTitle, mine && (isDarkTheme ? styles.documentAttachmentTitleMineDark : styles.documentAttachmentTitleMine)]}>
           {attachment.filename}
         </Text>
-        <Text style={[styles.documentAttachmentMeta, mine && styles.documentAttachmentMetaMine]}>
+        <Text style={[styles.documentAttachmentMeta, mine && (isDarkTheme ? styles.documentAttachmentMetaMineDark : styles.documentAttachmentMetaMine)]}>
           {formatBytes(attachment.sizeBytes)}
         </Text>
       </View>
-      <Ionicons color={mine ? "rgba(255,255,255,0.8)" : colors.primaryDark} name="open-outline" size={18} />
+      <Ionicons color={mine ? (isDarkTheme ? "rgba(233,237,239,0.8)" : colors.primaryDark) : colors.primaryDark} name="open-outline" size={18} />
     </Pressable>
   );
 }
@@ -4916,6 +4937,7 @@ function AudioAttachmentCard({
   attachment: BackendAttachment;
   mine: boolean;
 }) {
+  const { isDarkTheme } = useAppTheme();
   const player = useAudioPlayer(attachment.url);
   const status = useAudioPlayerStatus(player);
   const bars = useMemo(() => waveformBars(attachment.filename || attachment.id), [attachment.filename, attachment.id]);
@@ -4924,7 +4946,7 @@ function AudioAttachmentCard({
     : formatDurationMs(attachment.durationMs);
 
   return (
-    <View style={[styles.audioAttachment, mine && styles.audioAttachmentMine]}>
+    <View style={[styles.audioAttachment, mine && (isDarkTheme ? styles.audioAttachmentMineDark : styles.audioAttachmentMine)]}>
       <Pressable
         onPress={() => {
           if (status.playing) {
@@ -4936,9 +4958,9 @@ function AudioAttachmentCard({
           }
           player.play();
         }}
-        style={[styles.audioPlayButton, mine && styles.audioPlayButtonMine]}
+        style={[styles.audioPlayButton, mine && (isDarkTheme ? styles.audioPlayButtonMineDark : styles.audioPlayButtonMine)]}
       >
-        <Ionicons color={mine ? colors.primaryDark : "#FFFFFF"} name={status.playing ? "pause" : "play"} size={17} />
+        <Ionicons color={mine ? (isDarkTheme ? "#E9EDEF" : colors.primaryDark) : "#FFFFFF"} name={status.playing ? "pause" : "play"} size={17} />
       </Pressable>
       <View style={styles.chatRowBody}>
         <View style={styles.audioWaveRow}>
@@ -4954,18 +4976,22 @@ function AudioAttachmentCard({
                     height: bar,
                     backgroundColor: mine
                       ? isPlayed
-                        ? "#FFFFFF"
-                        : "rgba(255,255,255,0.45)"
+                        ? isDarkTheme
+                          ? "#E9EDEF"
+                          : colors.primaryDark
+                        : isDarkTheme
+                          ? "rgba(233,237,239,0.45)"
+                          : "rgba(17,27,33,0.35)"
                       : isPlayed
                         ? colors.primaryDark
-                        : "#C7C0E5",
+                        : "#D1D7DB",
                   },
                 ]}
               />
             );
           })}
         </View>
-        <Text style={[styles.audioDuration, mine && styles.audioDurationMine]}>{durationLabel}</Text>
+        <Text style={[styles.audioDuration, mine && (isDarkTheme ? styles.audioDurationMineDark : styles.audioDurationMine)]}>{durationLabel}</Text>
       </View>
     </View>
   );
@@ -5653,19 +5679,19 @@ function ModalActions({
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.page },
-  safeDark: { backgroundColor: "#101421" },
+  safeDark: { backgroundColor: "#111B21" },
   loadingScreen: { flex: 1, alignItems: "center", justifyContent: "center", gap: 14 },
-  loadingScreenDark: { backgroundColor: "#101421" },
+  loadingScreenDark: { backgroundColor: "#111B21" },
   loadingLabel: { color: colors.muted, fontSize: 14, fontWeight: "700" },
   loadingLabelDark: { color: "rgba(255,255,255,0.70)" },
   logoFrame: {
     overflow: "hidden",
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#15172A",
+    backgroundColor: "#111B21",
     borderWidth: 1,
-    borderColor: "rgba(242,244,123,0.38)",
-    shadowColor: "#33D6FF",
+    borderColor: "rgba(6,207,156,0.38)",
+    shadowColor: "#53BDEB",
     shadowOpacity: 0.26,
     shadowRadius: 20,
     shadowOffset: { width: 0, height: 8 },
@@ -5673,13 +5699,13 @@ const styles = StyleSheet.create({
   },
   logoCore: {
     position: "absolute",
-    backgroundColor: "rgba(122,94,214,0.72)",
+    backgroundColor: "rgba(0,168,132,0.72)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.22)",
   },
   logoNode: { position: "absolute", backgroundColor: colors.accent },
   logoNodeTop: { top: "17%", right: "24%" },
-  logoNodeLeft: { left: "20%", bottom: "24%", backgroundColor: "#55D6FF" },
+  logoNodeLeft: { left: "20%", bottom: "24%", backgroundColor: "#53BDEB" },
   logoNodeRight: { right: "18%", bottom: "20%", backgroundColor: "#FFFFFF" },
   logoSignal: {
     position: "absolute",
@@ -5691,10 +5717,10 @@ const styles = StyleSheet.create({
     position: "absolute",
     width: 9,
     borderRadius: 999,
-    backgroundColor: "rgba(242,244,123,0.55)",
+    backgroundColor: "rgba(6,207,156,0.55)",
   },
   brandRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  brandTitle: { color: colors.ink, fontSize: 25, fontWeight: "900" },
+  brandTitle: { color: colors.ink, fontSize: 25, fontWeight: "700" },
   brandTitleCompact: { fontSize: 21 },
   brandTagline: { color: colors.muted, fontSize: 12, fontWeight: "700", marginTop: 1 },
   brandTitleInverse: { color: "#FFFFFF" },
@@ -5708,16 +5734,16 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: Platform.select({ web: 48, default: 22 }),
     paddingVertical: Platform.select({ web: 42, default: 22 }),
-    backgroundColor: "#101421",
+    backgroundColor: "#111B21",
     overflow: "hidden",
   },
-  loginScreenLight: { backgroundColor: "#F4F7FA" },
+  loginScreenLight: { backgroundColor: "#F0F2F5" },
   loginBackdropGrid: {
     ...StyleSheet.absoluteFillObject,
     opacity: 0.22,
-    backgroundColor: "#161C2D",
+    backgroundColor: "#111B21",
   },
-  loginBackdropGridLight: { opacity: 1, backgroundColor: "#F4F7FA" },
+  loginBackdropGridLight: { opacity: 1, backgroundColor: "#F0F2F5" },
   loginGlow: {
     position: "absolute",
     width: 330,
@@ -5727,7 +5753,7 @@ const styles = StyleSheet.create({
     borderRadius: 165,
     backgroundColor: "rgba(85,214,255,0.16)",
   },
-  loginGlowLight: { backgroundColor: "rgba(122,94,214,0.14)" },
+  loginGlowLight: { backgroundColor: "rgba(0,168,132,0.14)" },
   authSignalScene: {
     position: "absolute",
     top: 36,
@@ -5756,7 +5782,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   authSignalCoreLight: {
-    borderColor: "rgba(101,81,196,0.14)",
+    borderColor: "rgba(0,128,105,0.14)",
     backgroundColor: "rgba(255,255,255,0.74)",
   },
   authScanLine: {
@@ -5765,20 +5791,20 @@ const styles = StyleSheet.create({
     right: 18,
     height: 2,
     borderRadius: 999,
-    backgroundColor: "rgba(242,244,123,0.62)",
+    backgroundColor: "rgba(6,207,156,0.62)",
   },
-  authScanLineLight: { backgroundColor: "rgba(101,81,196,0.34)" },
+  authScanLineLight: { backgroundColor: "rgba(0,128,105,0.34)" },
   authNode: {
     position: "absolute",
     width: 9,
     height: 9,
     borderRadius: 999,
-    backgroundColor: "#55D6FF",
+    backgroundColor: "#53BDEB",
   },
-  authNodeLight: { backgroundColor: "#6551C4" },
+  authNodeLight: { backgroundColor: "#008069" },
   authNodeOne: { left: 26, top: 38 },
   authNodeTwo: { right: 32, top: 60, backgroundColor: colors.accent },
-  authNodeTwoLight: { backgroundColor: "#55D6FF" },
+  authNodeTwoLight: { backgroundColor: "#53BDEB" },
   authNodeThree: { left: 44, bottom: 38, backgroundColor: "#FFFFFF" },
   authNodeThreeLight: { backgroundColor: colors.primaryDark },
   authTrace: {
@@ -5787,7 +5813,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.22)",
   },
-  authTraceLight: { backgroundColor: "rgba(101,81,196,0.18)" },
+  authTraceLight: { backgroundColor: "rgba(0,128,105,0.18)" },
   authTraceOne: { width: 112, top: 44, left: 34, transform: [{ rotate: "10deg" }] },
   authTraceTwo: { width: 104, top: 82, right: 34, transform: [{ rotate: "-18deg" }] },
   authTraceThree: { width: 92, bottom: 52, left: 50, transform: [{ rotate: "-8deg" }] },
@@ -5831,7 +5857,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.08)",
   },
   authThemeButtonLight: {
-    borderColor: "rgba(101,81,196,0.14)",
+    borderColor: "rgba(0,128,105,0.14)",
     backgroundColor: "rgba(255,255,255,0.78)",
   },
   loginBadge: {
@@ -5849,15 +5875,15 @@ const styles = StyleSheet.create({
   },
   loginBadgeLight: {
     backgroundColor: "rgba(255,255,255,0.82)",
-    borderColor: "rgba(101,81,196,0.16)",
+    borderColor: "rgba(0,128,105,0.16)",
   },
-  loginBadgeText: { color: "rgba(255,255,255,0.82)", fontSize: 12, fontWeight: "800" },
+  loginBadgeText: { color: "rgba(255,255,255,0.82)", fontSize: 12, fontWeight: "600" },
   loginBadgeTextLight: { color: colors.primaryDark },
   loginTitle: {
     color: "#FFFFFF",
     fontSize: 38,
     lineHeight: 43,
-    fontWeight: "900",
+    fontWeight: "700",
     maxWidth: 420,
   },
   loginTitleWide: { fontSize: 44, lineHeight: 50, maxWidth: 500 },
@@ -5882,9 +5908,9 @@ const styles = StyleSheet.create({
     padding: 18,
   },
   loginFormLight: {
-    borderColor: "rgba(101,81,196,0.14)",
+    borderColor: "rgba(0,128,105,0.14)",
     backgroundColor: "rgba(255,255,255,0.88)",
-    shadowColor: "#6551C4",
+    shadowColor: "#008069",
     shadowOpacity: 0.10,
     shadowRadius: 22,
     shadowOffset: { width: 0, height: 10 },
@@ -5903,7 +5929,7 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   authVisualPanelLight: {
-    borderColor: "rgba(101,81,196,0.14)",
+    borderColor: "rgba(0,128,105,0.14)",
     backgroundColor: "rgba(255,255,255,0.62)",
   },
   authVisualHalo: {
@@ -5913,14 +5939,14 @@ const styles = StyleSheet.create({
     borderRadius: 195,
     backgroundColor: "rgba(85,214,255,0.12)",
   },
-  authVisualHaloLight: { backgroundColor: "rgba(122,94,214,0.10)" },
+  authVisualHaloLight: { backgroundColor: "rgba(0,168,132,0.10)" },
   authVisualRail: {
     position: "absolute",
     height: 2,
     borderRadius: 999,
     backgroundColor: "rgba(255,255,255,0.20)",
   },
-  authVisualRailLight: { backgroundColor: "rgba(101,81,196,0.18)" },
+  authVisualRailLight: { backgroundColor: "rgba(0,128,105,0.18)" },
   authVisualRailTop: { width: 260, top: 106, right: 44, transform: [{ rotate: "7deg" }] },
   authVisualRailMiddle: { width: 330, top: 246, left: 54, transform: [{ rotate: "-4deg" }] },
   authVisualRailBottom: { width: 230, bottom: 106, right: 74, transform: [{ rotate: "-11deg" }] },
@@ -5932,11 +5958,11 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     backgroundColor: "rgba(0,0,0,0.18)",
   },
-  authModeSwitchLight: { backgroundColor: "#E9EDF4" },
+  authModeSwitchLight: { backgroundColor: "#E9EDEF" },
   authModeButton: { flex: 1, alignItems: "center", justifyContent: "center", borderRadius: 12 },
   authModeButtonActive: { backgroundColor: "#FFFFFF" },
   authModeButtonActiveLight: { backgroundColor: colors.primaryDark },
-  authModeText: { color: "rgba(255,255,255,0.62)", fontSize: 14, fontWeight: "900" },
+  authModeText: { color: "rgba(255,255,255,0.62)", fontSize: 14, fontWeight: "700" },
   authModeTextLight: { color: colors.muted },
   authModeTextActive: { color: colors.ink },
   authModeTextActiveLight: { color: "#FFFFFF" },
@@ -5949,11 +5975,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.14)",
     paddingHorizontal: 14,
-    backgroundColor: "rgba(10,14,26,0.64)",
+    backgroundColor: "rgba(11,20,26,0.64)",
   },
   inputShellLight: {
-    borderColor: "rgba(101,81,196,0.14)",
-    backgroundColor: "#F7F8FB",
+    borderColor: "rgba(0,128,105,0.14)",
+    backgroundColor: "#F0F2F5",
   },
   loginInput: {
     flex: 1,
@@ -5967,7 +5993,7 @@ const styles = StyleSheet.create({
   otpInput: { letterSpacing: 4 },
   otpActionRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 12 },
   textActionButton: { minHeight: 34, justifyContent: "center" },
-  textAction: { color: colors.accent, fontSize: 13, fontWeight: "900" },
+  textAction: { color: colors.accent, fontSize: 13, fontWeight: "700" },
   textActionLight: { color: colors.primaryDark },
   textActionDisabled: { color: "rgba(255,255,255,0.38)" },
   textActionDisabledLight: { color: colors.faint },
@@ -5978,18 +6004,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     flexDirection: "row",
     gap: 8,
-    backgroundColor: "#6D5CF6",
+    backgroundColor: "#00A884",
   },
-  loginButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "900" },
+  loginButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "700" },
   buttonDisabled: { opacity: 0.55 },
-  loginNoticeText: { color: colors.accent, fontSize: 13, fontWeight: "800", lineHeight: 18 },
+  loginNoticeText: { color: colors.accent, fontSize: 13, fontWeight: "600", lineHeight: 18 },
   loginNoticeTextLight: { color: colors.primaryDark },
   loginHintText: { color: "rgba(255,255,255,0.58)", fontSize: 12, lineHeight: 18 },
   loginHintTextLight: { color: colors.muted },
   noticeText: { color: colors.primaryDark, fontSize: 13, fontWeight: "700" },
   hintText: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   appFrame: { flex: 1, flexDirection: "row", backgroundColor: colors.page },
-  appFrameDark: { backgroundColor: "#101421" },
+  appFrameDark: { backgroundColor: "#111B21" },
   sidebar: {
     width: Platform.select({ web: 104, default: 82 }),
     backgroundColor: colors.primaryDark,
@@ -6000,7 +6026,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 18,
   },
-  sidebarDark: { backgroundColor: "#101421", borderRightColor: "rgba(255,255,255,0.10)" },
+  sidebarDark: { backgroundColor: "#111B21", borderRightColor: "rgba(255,255,255,0.10)" },
   brandMark: {
     width: 48,
     height: 48,
@@ -6024,7 +6050,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
   },
   workspace: { flex: 1, minWidth: 0 },
-  workspaceDark: { backgroundColor: "#101421" },
+  workspaceDark: { backgroundColor: "#111B21" },
   header: {
     minHeight: 74,
     paddingHorizontal: 18,
@@ -6036,14 +6062,14 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     backgroundColor: "rgba(255,255,255,0.92)",
   },
-  headerDark: { borderBottomColor: "rgba(255,255,255,0.10)", backgroundColor: "#101421" },
+  headerDark: { borderBottomColor: "rgba(255,255,255,0.10)", backgroundColor: "#202C33" },
   headerMobile: { minHeight: 62, paddingHorizontal: 16 },
   headerActions: { flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 0 },
   errorBar: { color: colors.danger, backgroundColor: "#FFF3F3", paddingHorizontal: 14, paddingVertical: 8 },
   content: { flex: 1, flexDirection: "row", padding: 18, gap: 18 },
-  contentDark: { backgroundColor: "#101421" },
+  contentDark: { backgroundColor: "#111B21" },
   contentMobile: { padding: 0, paddingBottom: 72, backgroundColor: colors.page },
-  contentMobileDark: { backgroundColor: "#101421" },
+  contentMobileDark: { backgroundColor: "#111B21" },
   contentMobileChat: { paddingBottom: 0, flexDirection: "column", gap: 0, width: "100%" },
   listPanel: {
     width: Platform.select({ web: 390, default: 330 }),
@@ -6057,7 +6083,7 @@ const styles = StyleSheet.create({
   },
   listPanelDark: {
     borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "#151A2A",
+    backgroundColor: "#202C33",
     shadowColor: "#000000",
     shadowOpacity: 0.25,
   },
@@ -6072,8 +6098,8 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     backgroundColor: colors.primaryDark,
   },
-  panelTitleDark: { backgroundColor: "#171E31", borderBottomColor: "rgba(242,244,123,0.12)", borderBottomWidth: 1 },
-  panelHeading: { color: "#FFFFFF", fontSize: 22, fontWeight: "900", letterSpacing: 0.2 },
+  panelTitleDark: { backgroundColor: "#202C33", borderBottomColor: "rgba(6,207,156,0.12)", borderBottomWidth: 1 },
+  panelHeading: { color: "#FFFFFF", fontSize: 22, fontWeight: "700", letterSpacing: 0.2 },
   chatSearchHeader: {
     minHeight: 70,
     paddingHorizontal: 12,
@@ -6085,7 +6111,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     backgroundColor: colors.surface,
   },
-  chatSearchHeaderDark: { backgroundColor: "#171E31", borderBottomColor: "rgba(242,244,123,0.12)" },
+  chatSearchHeaderDark: { backgroundColor: "#202C33", borderBottomColor: "rgba(6,207,156,0.12)" },
   searchBox: {
     flex: 1,
     minHeight: 44,
@@ -6107,9 +6133,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: colors.primarySoft,
     borderWidth: 1,
-    borderColor: "rgba(101,81,196,0.14)",
+    borderColor: "rgba(0,128,105,0.14)",
   },
-  searchAddButtonDark: { backgroundColor: "rgba(242,244,123,0.12)", borderColor: "rgba(242,244,123,0.20)" },
+  searchAddButtonDark: { backgroundColor: "rgba(6,207,156,0.12)", borderColor: "rgba(6,207,156,0.20)" },
   iconButton: {
     width: 40,
     height: 40,
@@ -6118,7 +6144,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: colors.primarySoft,
     borderWidth: 1,
-    borderColor: "rgba(101,81,196,0.12)",
+    borderColor: "rgba(0,128,105,0.12)",
   },
   iconButtonDark: { backgroundColor: "rgba(255,255,255,0.10)", borderColor: "rgba(255,255,255,0.12)" },
   bottomTabs: {
@@ -6135,14 +6161,14 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     backgroundColor: colors.surface,
   },
-  bottomTabsDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#101421" },
+  bottomTabsDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#202C33" },
   bottomTab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 2 },
-  bottomTabLabel: { color: colors.muted, fontSize: 10, fontWeight: "800" },
+  bottomTabLabel: { color: colors.muted, fontSize: 10, fontWeight: "600" },
   bottomTabLabelDark: { color: "rgba(255,255,255,0.58)" },
   bottomTabLabelActive: { color: colors.primaryDark },
   bottomTabLabelActiveDark: { color: colors.accent },
   listContent: { padding: 12, gap: 10 },
-  listContentDark: { backgroundColor: "#151A2A" },
+  listContentDark: { backgroundColor: "#202C33" },
   adminHeader: {
     minHeight: 76,
     paddingHorizontal: 16,
@@ -6155,10 +6181,10 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.line,
     backgroundColor: colors.surface,
   },
-  adminHeaderDark: { borderBottomColor: "rgba(255,255,255,0.10)", backgroundColor: "#171E31" },
-  adminEyebrow: { color: colors.muted, fontSize: 11, fontWeight: "900", textTransform: "uppercase" },
+  adminHeaderDark: { borderBottomColor: "rgba(255,255,255,0.10)", backgroundColor: "#202C33" },
+  adminEyebrow: { color: colors.muted, fontSize: 11, fontWeight: "700", textTransform: "uppercase" },
   adminMutedText: { color: "rgba(255,255,255,0.58)" },
-  adminTitle: { color: colors.ink, fontSize: 20, fontWeight: "900" },
+  adminTitle: { color: colors.ink, fontSize: 20, fontWeight: "700" },
   adminContent: { padding: 12, gap: 12 },
   adminContentWide: { padding: 18, maxWidth: 1180, width: "100%", alignSelf: "flex-start" },
   adminSectionTabs: { gap: 8, paddingRight: 12 },
@@ -6175,9 +6201,9 @@ const styles = StyleSheet.create({
   },
   adminSectionTabDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
   adminSectionTabActive: { borderColor: colors.primaryDark, backgroundColor: colors.primaryDark },
-  adminSectionTabText: { color: colors.primaryDark, fontSize: 12, fontWeight: "900" },
+  adminSectionTabText: { color: colors.primaryDark, fontSize: 12, fontWeight: "700" },
   adminSectionTabTextActive: { color: "#FFFFFF" },
-  adminSectionTabCount: { color: colors.muted, fontSize: 11, fontWeight: "900" },
+  adminSectionTabCount: { color: colors.muted, fontSize: 11, fontWeight: "700" },
   adminMetricGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   adminMetricCard: {
     flexGrow: 1,
@@ -6191,8 +6217,8 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
     backgroundColor: colors.surface,
   },
-  adminMetricLabel: { color: colors.muted, fontSize: 12, fontWeight: "800" },
-  adminMetricValue: { color: colors.primaryDark, fontSize: 24, fontWeight: "900" },
+  adminMetricLabel: { color: colors.muted, fontSize: 12, fontWeight: "600" },
+  adminMetricValue: { color: colors.primaryDark, fontSize: 24, fontWeight: "700" },
   adminSection: {
     gap: 10,
     padding: 12,
@@ -6203,7 +6229,7 @@ const styles = StyleSheet.create({
   },
   adminSectionDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
   adminSectionHeader: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", gap: 10 },
-  adminSectionTitle: { color: colors.ink, fontSize: 15, fontWeight: "900" },
+  adminSectionTitle: { color: colors.ink, fontSize: 15, fontWeight: "700" },
   adminOverviewGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   adminCompactStat: {
     flexGrow: 1,
@@ -6239,7 +6265,7 @@ const styles = StyleSheet.create({
   },
   roleToggleButton: { flex: 1, alignItems: "center", justifyContent: "center", borderRadius: 10 },
   roleToggleButtonActive: { backgroundColor: colors.primaryDark },
-  roleToggleText: { color: colors.muted, fontSize: 13, fontWeight: "900", textTransform: "capitalize" },
+  roleToggleText: { color: colors.muted, fontSize: 13, fontWeight: "700", textTransform: "capitalize" },
   roleToggleTextActive: { color: "#FFFFFF" },
   adminPrimaryButton: {
     minHeight: 44,
@@ -6250,7 +6276,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     backgroundColor: colors.primaryDark,
   },
-  adminPrimaryButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "900" },
+  adminPrimaryButtonText: { color: "#FFFFFF", fontSize: 14, fontWeight: "700" },
   adminListRow: {
     minHeight: 58,
     flexDirection: "row",
@@ -6260,16 +6286,16 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(122,94,214,0.12)",
+    borderColor: "rgba(0,168,132,0.12)",
     backgroundColor: "rgba(255,255,255,0.62)",
   },
   adminListRowDark: {
     borderColor: "rgba(255,255,255,0.10)",
     backgroundColor: "rgba(255,255,255,0.06)",
   },
-  adminListRowActive: { borderColor: "rgba(101,81,196,0.36)", backgroundColor: colors.accentSoft },
-  adminListRowActiveDark: { borderColor: "rgba(242,244,123,0.32)", backgroundColor: "rgba(242,244,123,0.12)" },
-  adminRowTitle: { color: colors.ink, fontSize: 14, fontWeight: "900" },
+  adminListRowActive: { borderColor: "rgba(0,128,105,0.36)", backgroundColor: colors.accentSoft },
+  adminListRowActiveDark: { borderColor: "rgba(6,207,156,0.32)", backgroundColor: "rgba(6,207,156,0.12)" },
+  adminRowTitle: { color: colors.ink, fontSize: 14, fontWeight: "700" },
   adminRowMeta: { color: colors.muted, fontSize: 12, fontWeight: "700", marginTop: 2 },
   adminTaskRow: {
     minHeight: 54,
@@ -6278,7 +6304,7 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(122,94,214,0.10)",
+    borderBottomColor: "rgba(0,168,132,0.10)",
   },
   adminTaskRowCompact: { minHeight: 46, paddingVertical: 6 },
   adminTaskText: { flex: 1, minWidth: 0 },
@@ -6314,14 +6340,14 @@ const styles = StyleSheet.create({
     borderColor: "#3B82F6",
   },
   adminStatusDotDone: { alignItems: "center", justifyContent: "center", borderColor: "#10B981", backgroundColor: "#10B981" },
-  adminStatusText: { color: colors.muted, fontSize: 11, fontWeight: "900", textTransform: "capitalize" },
+  adminStatusText: { color: colors.muted, fontSize: 11, fontWeight: "700", textTransform: "capitalize" },
   adminStatusTextDone: { color: "#047857" },
   adminFilterCard: {
     gap: 10,
     padding: 10,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(122,94,214,0.12)",
+    borderColor: "rgba(0,168,132,0.12)",
     backgroundColor: "rgba(255,255,255,0.58)",
   },
   adminFilterCardDark: {
@@ -6342,23 +6368,23 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "rgba(122,94,214,0.10)",
+    borderColor: "rgba(0,168,132,0.10)",
     backgroundColor: "rgba(255,255,255,0.34)",
   },
   adminFilterOptionDark: {
     borderColor: "rgba(255,255,255,0.10)",
     backgroundColor: "rgba(255,255,255,0.06)",
   },
-  adminFilterOptionActive: { borderColor: "rgba(101,81,196,0.34)", backgroundColor: colors.accentSoft },
+  adminFilterOptionActive: { borderColor: "rgba(0,128,105,0.34)", backgroundColor: colors.accentSoft },
   adminFilterOptionActiveDark: {
-    borderColor: "rgba(242,244,123,0.34)",
-    backgroundColor: "rgba(242,244,123,0.12)",
+    borderColor: "rgba(6,207,156,0.34)",
+    backgroundColor: "rgba(6,207,156,0.12)",
   },
   adminChatRow: {
     gap: 3,
     padding: 10,
     borderRadius: 12,
-    backgroundColor: "rgba(122,94,214,0.08)",
+    backgroundColor: "rgba(0,168,132,0.08)",
   },
   adminChatRowDark: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.08)", borderWidth: 1 },
   adminDepartmentList: { gap: 10 },
@@ -6367,7 +6393,7 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(122,94,214,0.12)",
+    borderColor: "rgba(0,168,132,0.12)",
     backgroundColor: "rgba(255,255,255,0.54)",
   },
   adminDepartmentTrigger: {
@@ -6383,12 +6409,12 @@ const styles = StyleSheet.create({
     padding: 10,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "rgba(122,94,214,0.12)",
+    borderColor: "rgba(0,168,132,0.12)",
     backgroundColor: "rgba(255,255,255,0.48)",
   },
   listFooterText: { color: colors.muted, fontSize: 12, fontWeight: "700", textAlign: "center", paddingVertical: 8 },
   listFooterTextDark: { color: "rgba(255,255,255,0.52)" },
-  skeletonBlock: { backgroundColor: "#DDD7EB" },
+  skeletonBlock: { backgroundColor: "#DADDE0" },
   skeletonBlockDark: { backgroundColor: "rgba(255,255,255,0.16)" },
   skeletonLogo: { width: 48, height: 48, borderRadius: 16, backgroundColor: "rgba(255,255,255,0.35)" },
   skeletonBrand: { width: 116, height: 22, borderRadius: 8 },
@@ -6409,9 +6435,9 @@ const styles = StyleSheet.create({
   skeletonStatusText: { width: "88%", height: 56, borderRadius: 12 },
   skeletonBubble: { gap: 9, padding: 12, borderRadius: 16 },
   skeletonBubbleIncoming: { backgroundColor: "rgba(255,255,255,0.82)", borderTopLeftRadius: 4 },
-  skeletonBubbleOutgoing: { alignSelf: "flex-end", backgroundColor: "rgba(101,81,196,0.30)", borderTopRightRadius: 4 },
-  skeletonBubbleIncomingDark: { backgroundColor: "#1B2235", borderColor: "rgba(255,255,255,0.08)", borderWidth: 1 },
-  skeletonBubbleOutgoingDark: { backgroundColor: "rgba(122,94,214,0.44)" },
+  skeletonBubbleOutgoing: { alignSelf: "flex-end", backgroundColor: "rgba(0,128,105,0.30)", borderTopRightRadius: 4 },
+  skeletonBubbleIncomingDark: { backgroundColor: "#202C33", borderColor: "rgba(255,255,255,0.08)", borderWidth: 1 },
+  skeletonBubbleOutgoingDark: { backgroundColor: "rgba(0,168,132,0.44)" },
   skeletonMessageLineWide: { width: 210, maxWidth: "100%", height: 14, borderRadius: 7 },
   skeletonMessageLineMid: { width: 154, maxWidth: "85%", height: 14, borderRadius: 7 },
   skeletonMessageLineShort: { width: 92, maxWidth: "60%", height: 14, borderRadius: 7 },
@@ -6423,12 +6449,12 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: "rgba(122,94,214,0.12)",
+    borderColor: "rgba(0,168,132,0.12)",
     backgroundColor: "rgba(255,255,255,0.84)",
   },
   chatRowDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
-  chatRowActive: { backgroundColor: colors.accentSoft, borderColor: "rgba(122,94,214,0.20)" },
-  chatRowActiveDark: { backgroundColor: "rgba(242,244,123,0.12)", borderColor: "rgba(242,244,123,0.26)" },
+  chatRowActive: { backgroundColor: colors.accentSoft, borderColor: "rgba(0,168,132,0.20)" },
+  chatRowActiveDark: { backgroundColor: "rgba(6,207,156,0.12)", borderColor: "rgba(6,207,156,0.26)" },
   contactRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -6444,13 +6470,13 @@ const styles = StyleSheet.create({
   botAvatarPulse: {
     position: "absolute",
     borderWidth: 2,
-    borderColor: "rgba(101,81,196,0.38)",
-    backgroundColor: "rgba(101,81,196,0.08)",
+    borderColor: "rgba(0,128,105,0.38)",
+    backgroundColor: "rgba(0,128,105,0.08)",
   },
   botAvatarRing: {
     position: "absolute",
     borderWidth: 1.5,
-    borderColor: "rgba(242,244,123,0.75)",
+    borderColor: "rgba(6,207,156,0.75)",
     backgroundColor: "transparent",
   },
   avatar: { alignItems: "center", justifyContent: "center", backgroundColor: colors.primary },
@@ -6460,9 +6486,9 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F5F7FF",
+    backgroundColor: "#F0F2F5",
     borderWidth: 1,
-    borderColor: "rgba(101,81,196,0.22)",
+    borderColor: "rgba(0,128,105,0.22)",
     position: "relative",
     gap: 4,
   },
@@ -6477,7 +6503,7 @@ const styles = StyleSheet.create({
     width: 14,
     height: 3,
     borderRadius: 3,
-    backgroundColor: "rgba(101,81,196,0.72)",
+    backgroundColor: "rgba(0,128,105,0.72)",
   },
   botAvatarChip: {
     position: "absolute",
@@ -6490,23 +6516,23 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: colors.accent,
     borderWidth: 1,
-    borderColor: "rgba(101,81,196,0.28)",
+    borderColor: "rgba(0,128,105,0.28)",
   },
   avatarImage: { resizeMode: "cover" },
-  avatarText: { color: "#FFFFFF", fontWeight: "900" },
+  avatarText: { color: "#FFFFFF", fontWeight: "700" },
   chatRowBody: { flex: 1, minWidth: 0 },
   chatListRowBody: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 10 },
   chatListTextColumn: { flex: 1, minWidth: 0 },
   chatListMetaColumn: { width: 58, alignItems: "flex-end", justifyContent: "center", gap: 7, flexShrink: 0 },
   row: { flexDirection: "row", alignItems: "center", gap: 12 },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  chatTitle: { color: colors.ink, fontSize: 16, fontWeight: "900", maxWidth: "100%" },
+  chatTitle: { color: colors.ink, fontSize: 16, fontWeight: "700", maxWidth: "100%" },
   chatTitleDark: { color: "#FFFFFF" },
   chatTime: { color: colors.faint, fontSize: 12, fontWeight: "700", textAlign: "right" },
   chatTimeDark: { color: "rgba(255,255,255,0.48)" },
   chatPreview: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   chatPreviewDark: { color: "rgba(255,255,255,0.62)" },
-  chatPreviewUnread: { color: colors.ink, fontWeight: "800" },
+  chatPreviewUnread: { color: colors.ink, fontWeight: "600" },
   chatPreviewUnreadDark: { color: "#FFFFFF" },
   unreadBadge: {
     minWidth: 22,
@@ -6526,7 +6552,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 5,
   },
-  unreadBadgeText: { color: "#FFFFFF", fontSize: 11, fontWeight: "900" },
+  unreadBadgeText: { color: "#FFFFFF", fontSize: 11, fontWeight: "700" },
   chatPane: {
     flex: 1,
     minWidth: 0,
@@ -6539,7 +6565,7 @@ const styles = StyleSheet.create({
   },
   chatPaneDark: {
     borderColor: "rgba(255,255,255,0.10)",
-    backgroundColor: "#101421",
+    backgroundColor: "#0B141A",
     shadowColor: "#000000",
   },
   chatPaneMobile: { width: "100%", maxWidth: "100%", borderRadius: 0, borderWidth: 0 },
@@ -6554,14 +6580,14 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primaryDark,
     gap: 10,
   },
-  chatHeaderDark: { backgroundColor: "#171E31", borderBottomColor: "rgba(242,244,123,0.12)" },
+  chatHeaderDark: { backgroundColor: "#202C33", borderBottomColor: "rgba(6,207,156,0.12)" },
   chatHeaderMain: { flex: 1, minWidth: 0 },
   chatHeaderActions: { flexShrink: 0 },
-  chatHeaderTitle: { color: "#FFFFFF", fontSize: 17, fontWeight: "900" },
+  chatHeaderTitle: { color: "#FFFFFF", fontSize: 17, fontWeight: "700" },
   chatHeaderSub: { color: "rgba(255,255,255,0.76)", fontSize: 12 },
-  chatHeaderSubTyping: { color: "#FFFFFF", fontWeight: "800" },
+  chatHeaderSubTyping: { color: "#FFFFFF", fontWeight: "600" },
   messageList: { flexGrow: 1, padding: 18, gap: 12, backgroundColor: colors.page },
-  messageListDark: { backgroundColor: "#101421" },
+  messageListDark: { backgroundColor: "#0B141A" },
   olderMessagesLoader: {
     alignSelf: "center",
     width: 34,
@@ -6573,7 +6599,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line,
   },
-  olderMessagesLoaderDark: { backgroundColor: "#1B2235", borderColor: "rgba(255,255,255,0.10)" },
+  olderMessagesLoaderDark: { backgroundColor: "#202C33", borderColor: "rgba(255,255,255,0.10)" },
   messageWithDate: { gap: 12 },
   datePill: {
     alignSelf: "center",
@@ -6581,33 +6607,37 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     paddingHorizontal: 13,
     borderRadius: radii.pill,
-    backgroundColor: "rgba(23,18,36,0.10)",
+    backgroundColor: "rgba(17,27,33,0.10)",
   },
   datePillDark: { backgroundColor: "rgba(255,255,255,0.12)" },
-  datePillText: { color: colors.muted, fontSize: 12, fontWeight: "900" },
+  datePillText: { color: colors.muted, fontSize: 12, fontWeight: "700" },
   datePillTextDark: { color: "rgba(255,255,255,0.70)" },
   messageWrap: { width: "78%", maxWidth: "78%", minWidth: 0, flexShrink: 1 },
   messageWrapAudio: { width: "90%", maxWidth: "90%" },
   messageMine: { alignSelf: "flex-end" },
   messageTheirs: { alignSelf: "flex-start" },
-  senderName: { color: colors.primaryDark, fontSize: 12, fontWeight: "800", marginBottom: 4, marginLeft: 8 },
+  senderName: { color: colors.primaryDark, fontSize: 12, fontWeight: "600", marginBottom: 4, marginLeft: 8 },
   bubble: { alignSelf: "flex-start", maxWidth: "100%", padding: 11, borderRadius: 14, gap: 6 },
   mineBubble: { alignSelf: "flex-end", backgroundColor: colors.bubbleMine, borderTopRightRadius: 4 },
-  theirBubble: { backgroundColor: colors.bubbleTheirs, borderTopLeftRadius: 4, borderColor: "rgba(229,224,238,0.72)", borderWidth: 1 },
-  theirBubbleDark: { backgroundColor: "#1B2235", borderColor: "rgba(255,255,255,0.10)" },
+  mineBubbleDark: { backgroundColor: "#005C4B" },
+  theirBubble: { backgroundColor: colors.bubbleTheirs, borderTopLeftRadius: 4, borderColor: "rgba(233,237,239,0.72)", borderWidth: 1 },
+  theirBubbleDark: { backgroundColor: "#202C33", borderColor: "rgba(255,255,255,0.10)" },
   forwardedRow: { flexDirection: "row", alignItems: "center", gap: 6 },
-  forwardedText: { color: colors.primaryDark, fontSize: 11, fontWeight: "800" },
-  forwardedTextMine: { color: "rgba(255,255,255,0.82)" },
+  forwardedText: { color: colors.primaryDark, fontSize: 11, fontWeight: "600" },
+  forwardedTextMine: { color: colors.primaryDark },
+  forwardedTextMineDark: { color: "rgba(233,237,239,0.82)" },
   thinkingBubble: { flexDirection: "row", alignItems: "center", gap: 8 },
   thinkingText: { color: colors.muted, fontSize: 13, fontWeight: "700" },
   thinkingTextDark: { color: "rgba(255,255,255,0.62)" },
   messageText: { flexShrink: 1, color: colors.ink, fontSize: 15, lineHeight: 21 },
   messageTextDark: { color: "#FFFFFF" },
-  messageTextMine: { color: "#FFFFFF" },
-  messageStrong: { fontWeight: "900" },
+  messageTextMine: { color: colors.ink },
+  messageTextMineDark: { color: "#E9EDEF" },
+  messageStrong: { fontWeight: "700" },
   messageEmphasis: { fontStyle: "italic" },
-  messageLink: { color: colors.primaryDark, fontWeight: "900", textDecorationLine: "underline" },
-  messageLinkMine: { color: colors.accentSoft },
+  messageLink: { color: colors.primaryDark, fontWeight: "700", textDecorationLine: "underline" },
+  messageLinkMine: { color: colors.primaryDark },
+  messageLinkMineDark: { color: "#53BDEB" },
   messageCode: {
     paddingHorizontal: 5,
     borderRadius: 5,
@@ -6616,14 +6646,17 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primarySoft,
     fontFamily: Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" }),
   },
-  messageCodeMine: { color: "#FFFFFF", backgroundColor: "rgba(255,255,255,0.18)" },
+  messageCodeMine: { color: colors.ink, backgroundColor: "rgba(17,27,33,0.08)" },
+  messageCodeMineDark: { color: "#E9EDEF", backgroundColor: "rgba(255,255,255,0.18)" },
   messageMeta: { alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 4 },
   metaText: { color: colors.faint, fontSize: 10 },
-  metaTextMine: { color: "rgba(255,255,255,0.72)" },
+  metaTextMine: { color: colors.faint },
+  metaTextMineDark: { color: "rgba(233,237,239,0.72)" },
   imageAttachment: { gap: 8, marginBottom: 2 },
-  imageAttachmentMedia: { width: 184, height: 156, borderRadius: 12, backgroundColor: "#E6E0F8" },
+  imageAttachmentMedia: { width: 184, height: 156, borderRadius: 12, backgroundColor: "#E9EDEF" },
   attachmentCaption: { color: colors.muted, fontSize: 12, fontWeight: "700" },
-  attachmentCaptionMine: { color: "rgba(255,255,255,0.78)" },
+  attachmentCaptionMine: { color: colors.muted },
+  attachmentCaptionMineDark: { color: "rgba(233,237,239,0.78)" },
   documentAttachment: {
     flexDirection: "row",
     alignItems: "center",
@@ -6632,20 +6665,24 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: colors.surfaceBlue,
   },
-  documentAttachmentMine: { backgroundColor: "rgba(255,255,255,0.14)" },
+  documentAttachmentMine: { backgroundColor: "rgba(17,27,33,0.06)" },
+  documentAttachmentMineDark: { backgroundColor: "rgba(255,255,255,0.14)" },
   documentAttachmentIcon: {
     width: 36,
     height: 36,
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(101,81,196,0.12)",
+    backgroundColor: "rgba(0,128,105,0.12)",
   },
-  documentAttachmentIconMine: { backgroundColor: "rgba(255,255,255,0.16)" },
-  documentAttachmentTitle: { color: colors.ink, fontSize: 13, fontWeight: "800" },
-  documentAttachmentTitleMine: { color: "#FFFFFF" },
+  documentAttachmentIconMine: { backgroundColor: "rgba(17,27,33,0.08)" },
+  documentAttachmentIconMineDark: { backgroundColor: "rgba(255,255,255,0.16)" },
+  documentAttachmentTitle: { color: colors.ink, fontSize: 13, fontWeight: "600" },
+  documentAttachmentTitleMine: { color: colors.ink },
+  documentAttachmentTitleMineDark: { color: "#E9EDEF" },
   documentAttachmentMeta: { color: colors.muted, fontSize: 11, marginTop: 2 },
-  documentAttachmentMetaMine: { color: "rgba(255,255,255,0.72)" },
+  documentAttachmentMetaMine: { color: colors.muted },
+  documentAttachmentMetaMineDark: { color: "rgba(233,237,239,0.72)" },
   audioAttachment: {
     flexDirection: "row",
     alignItems: "center",
@@ -6656,7 +6693,8 @@ const styles = StyleSheet.create({
     minWidth: 240,
     width: "100%",
   },
-  audioAttachmentMine: { backgroundColor: "rgba(255,255,255,0.14)" },
+  audioAttachmentMine: { backgroundColor: "rgba(17,27,33,0.06)" },
+  audioAttachmentMineDark: { backgroundColor: "rgba(255,255,255,0.14)" },
   audioPlayButton: {
     width: 34,
     height: 34,
@@ -6665,11 +6703,13 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: colors.primaryDark,
   },
-  audioPlayButtonMine: { backgroundColor: "#FFFFFF" },
+  audioPlayButtonMine: { backgroundColor: "rgba(255,255,255,0.82)" },
+  audioPlayButtonMineDark: { backgroundColor: "rgba(255,255,255,0.16)" },
   audioWaveRow: { flexDirection: "row", alignItems: "center", gap: 3, minHeight: 26, flexWrap: "nowrap", overflow: "hidden" },
   audioWaveBar: { width: 4, borderRadius: 999, flexShrink: 0 },
   audioDuration: { color: colors.muted, fontSize: 11, marginTop: 4 },
-  audioDurationMine: { color: "rgba(255,255,255,0.78)" },
+  audioDurationMine: { color: colors.muted },
+  audioDurationMineDark: { color: "rgba(233,237,239,0.78)" },
   composer: {
     paddingHorizontal: 10,
     paddingTop: 10,
@@ -6681,7 +6721,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     backgroundColor: colors.surface,
   },
-  composerDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#101421" },
+  composerDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#202C33" },
   quickPromptDock: {
     position: "relative",
     alignSelf: "flex-end",
@@ -6701,8 +6741,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 1,
-    borderColor: "rgba(101,81,196,0.20)",
-    backgroundColor: "#F2EEF9",
+    borderColor: "rgba(0,128,105,0.20)",
+    backgroundColor: "#F0F2F5",
   },
   quickPromptButtonDark: {
     borderColor: "rgba(255,255,255,0.20)",
@@ -6727,11 +6767,11 @@ const styles = StyleSheet.create({
   },
   quickPromptMenuDark: {
     borderColor: "rgba(255,255,255,0.12)",
-    backgroundColor: "#182034",
+    backgroundColor: "#202C33",
   },
   quickPromptMenuTitle: {
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "600",
     color: colors.muted,
     paddingHorizontal: 2,
   },
@@ -6740,7 +6780,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 9,
-    backgroundColor: "#F6F4FA",
+    backgroundColor: "#F0F2F5",
   },
   quickPromptItemDark: {
     backgroundColor: "rgba(255,255,255,0.08)",
@@ -6757,7 +6797,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F1EDF9",
+    backgroundColor: "#F0F2F5",
   },
   composerAccessoryButtonDark: { backgroundColor: "rgba(255,255,255,0.10)" },
   composerBody: { flex: 1, gap: 8 },
@@ -6769,7 +6809,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     color: colors.ink,
-    backgroundColor: "#F6F4FA",
+    backgroundColor: "#F0F2F5",
   },
   composerInputDark: { color: "#FFFFFF", backgroundColor: "rgba(255,255,255,0.08)" },
   composerInputWithAttachment: { minHeight: 40 },
@@ -6779,20 +6819,20 @@ const styles = StyleSheet.create({
     gap: 10,
     padding: 10,
     borderRadius: 16,
-    backgroundColor: "#F6F4FA",
+    backgroundColor: "#F0F2F5",
   },
   composerAttachmentDark: { backgroundColor: "rgba(255,255,255,0.08)" },
-  composerAttachmentImage: { width: 42, height: 42, borderRadius: 12, backgroundColor: "#E6E0F8" },
+  composerAttachmentImage: { width: 42, height: 42, borderRadius: 12, backgroundColor: "#E9EDEF" },
   composerAttachmentIcon: {
     width: 42,
     height: 42,
     borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(101,81,196,0.12)",
+    backgroundColor: "rgba(0,128,105,0.12)",
   },
-  composerAttachmentIconDark: { backgroundColor: "rgba(242,244,123,0.12)" },
-  composerAttachmentTitle: { color: colors.ink, fontSize: 13, fontWeight: "800" },
+  composerAttachmentIconDark: { backgroundColor: "rgba(6,207,156,0.12)" },
+  composerAttachmentTitle: { color: colors.ink, fontSize: 13, fontWeight: "600" },
   composerAttachmentTitleDark: { color: "#FFFFFF" },
   composerAttachmentMeta: { color: colors.muted, fontSize: 11, marginTop: 3 },
   composerAttachmentMetaDark: { color: "rgba(255,255,255,0.62)" },
@@ -6802,7 +6842,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(23,18,36,0.06)",
+    backgroundColor: "rgba(17,27,33,0.06)",
   },
   sendButton: {
     width: 44,
@@ -6815,11 +6855,11 @@ const styles = StyleSheet.create({
   cameraQuickButton: {
     backgroundColor: colors.primarySoft,
     borderWidth: 1,
-    borderColor: "rgba(101,81,196,0.14)",
+    borderColor: "rgba(0,128,105,0.14)",
   },
   cameraQuickButtonDark: {
-    backgroundColor: "rgba(242,244,123,0.12)",
-    borderColor: "rgba(242,244,123,0.20)",
+    backgroundColor: "rgba(6,207,156,0.12)",
+    borderColor: "rgba(6,207,156,0.20)",
   },
   statusComposer: {
     flexDirection: "row",
@@ -6844,8 +6884,8 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.surfaceBlue,
   },
-  quickActionDark: { backgroundColor: "rgba(242,244,123,0.10)" },
-  quickActionText: { color: colors.primaryDark, fontWeight: "900" },
+  quickActionDark: { backgroundColor: "rgba(6,207,156,0.10)" },
+  quickActionText: { color: colors.primaryDark, fontWeight: "700" },
   quickActionTextDark: { color: colors.accent },
   settingsContent: { paddingBottom: 18, backgroundColor: colors.surface },
   profileCard: { margin: 14, padding: 14, borderRadius: radii.md, flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: colors.surfaceBlue },
@@ -6865,12 +6905,12 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primaryDark,
   },
   profileAvatarBadgeDark: {
-    borderColor: "rgba(242,244,123,0.36)",
+    borderColor: "rgba(6,207,156,0.36)",
     backgroundColor: colors.accent,
   },
   profileAvatarHint: { marginTop: 4, color: colors.primaryDark, fontSize: 11, fontWeight: "700" },
   profileAvatarHintDark: { color: colors.accent },
-  profileName: { color: colors.ink, fontSize: 20, fontWeight: "900" },
+  profileName: { color: colors.ink, fontSize: 20, fontWeight: "700" },
   profileNameDark: { color: "#FFFFFF" },
   settingRow: {
     marginHorizontal: 14,
@@ -6896,28 +6936,28 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
     color: colors.primaryDark,
     fontSize: 12,
-    fontWeight: "800",
+    fontWeight: "600",
     backgroundColor: colors.accentSoft,
   },
-  settingsNoticeDark: { color: colors.accent, backgroundColor: "rgba(242,244,123,0.12)" },
+  settingsNoticeDark: { color: colors.accent, backgroundColor: "rgba(6,207,156,0.12)" },
   themeSwitch: {
     width: 46,
     height: 26,
     borderRadius: 13,
     justifyContent: "center",
     padding: 3,
-    backgroundColor: "#D8D0EB",
+    backgroundColor: "#D1D7DB",
   },
-  themeSwitchOn: { backgroundColor: "rgba(242,244,123,0.28)" },
+  themeSwitchOn: { backgroundColor: "rgba(6,207,156,0.28)" },
   themeSwitchKnob: { width: 20, height: 20, borderRadius: 10, backgroundColor: "#FFFFFF" },
   themeSwitchKnobOn: { transform: [{ translateX: 20 }], backgroundColor: colors.accent },
   desktopEmpty: { flex: 1, borderRadius: radii.lg, borderColor: colors.line, borderWidth: 1, backgroundColor: colors.surface },
-  desktopEmptyDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "#151A2A" },
+  desktopEmptyDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "#202C33" },
   emptyState: { alignItems: "center", justifyContent: "center", paddingHorizontal: 24, paddingVertical: 42, gap: 8 },
   emptyCompact: { paddingVertical: 18 },
   emptyIcon: { width: 58, height: 58, borderRadius: 29, alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceBlue },
   emptyIconDark: { backgroundColor: "rgba(255,255,255,0.08)" },
-  emptyTitle: { color: colors.ink, fontSize: 17, fontWeight: "900", textAlign: "center" },
+  emptyTitle: { color: colors.ink, fontSize: 17, fontWeight: "700", textAlign: "center" },
   emptyTitleDark: { color: "#FFFFFF" },
   emptyCopy: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: "center" },
   emptyCopyDark: { color: "rgba(255,255,255,0.62)" },
@@ -6926,17 +6966,17 @@ const styles = StyleSheet.create({
     marginVertical: 8,
     borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: "rgba(101,81,196,0.18)",
+    borderColor: "rgba(0,128,105,0.18)",
     backgroundColor: colors.surfaceBlue,
     paddingHorizontal: 14,
     paddingVertical: 12,
     gap: 6,
   },
   agentWelcomeCardDark: {
-    borderColor: "rgba(242,244,123,0.22)",
+    borderColor: "rgba(6,207,156,0.22)",
     backgroundColor: "rgba(255,255,255,0.06)",
   },
-  agentWelcomeTitle: { color: colors.ink, fontSize: 14, fontWeight: "900" },
+  agentWelcomeTitle: { color: colors.ink, fontSize: 14, fontWeight: "700" },
   agentWelcomeTitleDark: { color: "#FFFFFF" },
   agentWelcomeBody: { color: colors.muted, fontSize: 13, lineHeight: 18 },
   agentWelcomeBodyDark: { color: "rgba(255,255,255,0.70)" },
@@ -6951,19 +6991,19 @@ const styles = StyleSheet.create({
     gap: 7,
     backgroundColor: colors.primaryDark,
     borderWidth: 1,
-    borderColor: "rgba(101,81,196,0.35)",
+    borderColor: "rgba(0,128,105,0.35)",
     ...shadow,
     zIndex: 130,
     elevation: 12,
   },
   agentFabDark: {
     backgroundColor: colors.accent,
-    borderColor: "rgba(242,244,123,0.55)",
+    borderColor: "rgba(6,207,156,0.55)",
   },
   agentFabText: {
     color: "#FFFFFF",
     fontSize: 12,
-    fontWeight: "900",
+    fontWeight: "700",
   },
   agentFabTextDark: {
     color: colors.primaryDark,
@@ -6972,7 +7012,7 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(16, 32, 51, 0.24)",
+    backgroundColor: "rgba(17, 27, 33, 0.24)",
   },
   modalBackdrop: { flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.overlay, padding: 18 },
   modalBackdropKeyboardOpen: { justifyContent: "flex-start", paddingTop: 18 },
@@ -6987,7 +7027,7 @@ const styles = StyleSheet.create({
     gap: 14,
     overflow: "hidden",
   },
-  modalTitle: { color: colors.ink, fontSize: 22, fontWeight: "900" },
+  modalTitle: { color: colors.ink, fontSize: 22, fontWeight: "700" },
   modalInput: {
     minHeight: 46,
     borderRadius: radii.sm,
@@ -7038,7 +7078,7 @@ const styles = StyleSheet.create({
     borderRadius: 21,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(101,81,196,0.12)",
+    backgroundColor: "rgba(0,128,105,0.12)",
   },
   forwardPreviewCard: {
     padding: 12,
@@ -7056,12 +7096,12 @@ const styles = StyleSheet.create({
     paddingVertical: 22,
     gap: 18,
   },
-  voiceComposerTitle: { color: colors.ink, fontSize: 22, fontWeight: "900", textAlign: "center" },
+  voiceComposerTitle: { color: colors.ink, fontSize: 22, fontWeight: "700", textAlign: "center" },
   voiceWaveCard: {
     borderRadius: 22,
     paddingHorizontal: 16,
     paddingVertical: 18,
-    backgroundColor: "#FBFAFF",
+    backgroundColor: "#F0F2F5",
     alignItems: "center",
     gap: 10,
   },
@@ -7075,7 +7115,7 @@ const styles = StyleSheet.create({
     borderRadius: 23,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#F3F0FA",
+    backgroundColor: "#F0F2F5",
   },
   voiceRecordButton: {
     width: 62,
@@ -7094,7 +7134,7 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     backgroundColor: colors.page,
   },
-  secondaryText: { color: colors.ink, fontWeight: "800" },
+  secondaryText: { color: colors.ink, fontWeight: "600" },
   primaryButton: {
     height: 42,
     paddingHorizontal: 18,
@@ -7104,5 +7144,5 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primaryDark,
   },
   fullWidthButton: { width: "100%" },
-  primaryText: { color: "#FFFFFF", fontWeight: "900" },
+  primaryText: { color: "#FFFFFF", fontWeight: "700" },
 });

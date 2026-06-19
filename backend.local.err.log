@@ -62,3 +62,41 @@ TypeError: fetch failed
     hostname: 'vobpuwlippeeaxurwetk.supabase.co'
   }
 }
+Gateway Timeout StorageApiError: Gateway Timeout
+    at file:///C:/Users/adars/Documents/GitHub/orbita-messenger/node_modules/@supabase/storage-js/dist/index.mjs:318:11
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5) {
+  __isStorageError: true,
+  namespace: 'storage',
+  status: 504,
+  statusCode: '504'
+}
+This phone number is already linked to another Orbita login. Error: This phone number is already linked to another Orbita login.
+    at ensureProfile (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1210:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async handleAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:2065:3)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:159:26)
+This phone number is already linked to another Orbita login. Error: This phone number is already linked to another Orbita login.
+    at ensureProfile (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1210:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async handleAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:2065:3)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:159:26)
+This phone number is already linked to another Orbita login. Error: This phone number is already linked to another Orbita login.
+    at ensureProfile (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1210:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async handleAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:2065:3)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:159:26)
+This phone number is already linked to another Orbita login. Error: This phone number is already linked to another Orbita login.
+    at ensureProfile (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1210:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async handleAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:2065:3)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:159:26)
+This phone number is already linked to another Orbita login. Error: This phone number is already linked to another Orbita login.
+    at ensureProfile (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1210:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async handleAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:2065:3)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:159:26)
+This phone number is already linked to another Orbita login. Error: This phone number is already linked to another Orbita login.
+    at ensureProfile (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1210:13)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async handleAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:2065:3)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:159:26)
