@@ -29,6 +29,7 @@ export type BackendAttachment = {
   sizeBytes: number;
   durationMs: number | null;
   url: string;
+  waveformSamples?: number[] | null;
 };
 
 export type BackendMessage = {

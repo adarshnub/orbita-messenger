@@ -1,0 +1,16 @@
+{
+  "name": "orbita-audio-waveform",
+  "version": "0.1.0",
+  "description": "Native PCM voice recorder and waveform extractor for Orbita Messenger",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "private": true,
+  "expo-module": {
+    "android": {
+      "gradlePath": "android/build.gradle"
+    },
+    "ios": {
+      "podspecPath": "ios/OrbitaAudioWaveform.podspec"
+    }
+  }
+}

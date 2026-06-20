@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["OrbitaAudioWaveformModule"]
+  },
+  "android": {
+    "modules": ["com.orbita.audiowaveform.OrbitaAudioWaveformModule"]
+  }
+}

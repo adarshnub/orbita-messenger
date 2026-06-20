@@ -371,6 +371,24 @@ function attachmentMetadata(row) {
   return isRecord(row.encrypted_metadata) ? row.encrypted_metadata : {};
 }
 
+function normalizeWaveformSamples(value, maxCount = 64) {
+  let source = value;
+  if (typeof source === "string") {
+    try {
+      source = JSON.parse(source);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(source)) return null;
+  const samples = source
+    .map((sample) => Number(sample))
+    .filter((sample) => Number.isFinite(sample))
+    .slice(0, maxCount)
+    .map((sample) => Math.min(1, Math.max(0.08, sample)));
+  return samples.length ? samples : null;
+}
+
 function attachmentLabel(messageKind, attachment) {
   if (!attachment) return "";
   if (messageKind === "voice" || messageKind === "audio") return "Voice note";
@@ -421,6 +439,7 @@ function mapAttachment(row, signedUrl) {
     sizeBytes: row.byte_size,
     durationMs: typeof metadata.durationMs === "number" ? metadata.durationMs : null,
     url: signedUrl,
+    waveformSamples: normalizeWaveformSamples(metadata.waveformSamples),
   };
 }
 
@@ -768,6 +787,7 @@ async function uploadMediaAttachment(userId, form) {
 
   const requestedKind = String(form.get("kind") ?? "").trim();
   const durationMs = Number(form.get("durationMs") ?? 0);
+  const waveformSamples = normalizeWaveformSamples(form.get("waveformSamples"));
   const filename = sanitizeFilename(String(form.get("filename") ?? file.name ?? requestedKind ?? "attachment"));
   const mimeType = typeof file.type === "string" && file.type ? file.type : "application/octet-stream";
   const kind = messageKindFromAttachment(requestedKind || undefined, mimeType);
@@ -792,6 +812,7 @@ async function uploadMediaAttachment(userId, form) {
       encrypted_metadata: {
         filename,
         durationMs: Number.isFinite(durationMs) && durationMs > 0 ? Math.round(durationMs) : null,
+        waveformSamples,
         kind,
         status: "staged",
       },

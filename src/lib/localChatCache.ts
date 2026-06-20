@@ -17,6 +17,7 @@ export type QueuedOutgoingAttachment = {
   mimeType: string;
   sizeBytes?: number | null;
   durationMs?: number | null;
+  waveformSamples?: number[] | null;
   file: Blob;
 };
 export type QueuedOutgoingMessage = {

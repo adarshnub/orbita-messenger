@@ -289,11 +289,13 @@ export const messengerApi = {
       | File;
     kind: BackendAttachment["kind"];
     durationMs?: number | null;
+    waveformSamples?: number[] | null;
   }) {
     const buildForm = () => {
       const next = new FormData();
       next.append("kind", input.kind);
       if (input.durationMs) next.append("durationMs", String(Math.round(input.durationMs)));
+      if (input.waveformSamples?.length) next.append("waveformSamples", JSON.stringify(input.waveformSamples));
       if (typeof File !== "undefined" && input.file instanceof File) {
         next.append("filename", input.file.name);
         next.append("file", input.file);

@@ -329,3 +329,8 @@ Orbita backend listening on http://0.0.0.0:8787
 {"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"004bd4da-b171-4c27-b05e-0b12b705f743","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
 {"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"b9565b44-8852-48f9-8f8e-12309dbcf82e","ticketIds":["019ed5a6-9389-764e-904d-6b3766d12acd"],"source":"send_agent_message"}
 {"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"b9565b44-8852-48f9-8f8e-12309dbcf82e","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
+{"event":"push.no_tokens","conversationId":"422cf17a-1786-499c-97e4-dd08eb2f4e26","messageId":"73eea958-f6c8-4af2-b249-0cdaca469006","recipients":["0d37e9a1-bcbf-4a33-8622-7f20129e732d"],"source":"message"}
+{"event":"push.no_tokens","conversationId":"422cf17a-1786-499c-97e4-dd08eb2f4e26","messageId":"fadb42e3-d6bf-4119-85b5-ffa375f555ef","recipients":["0d37e9a1-bcbf-4a33-8622-7f20129e732d"],"source":"message"}
+{"event":"push.no_tokens","conversationId":"422cf17a-1786-499c-97e4-dd08eb2f4e26","messageId":"4fe60804-a54a-4b21-885c-49ce76bde59c","recipients":["0d37e9a1-bcbf-4a33-8622-7f20129e732d"],"source":"message"}
+{"event":"push.no_tokens","conversationId":"422cf17a-1786-499c-97e4-dd08eb2f4e26","messageId":"3fa2bd8f-0304-4921-a6de-37e23837b4c1","recipients":["0d37e9a1-bcbf-4a33-8622-7f20129e732d"],"source":"message"}
+{"event":"push.no_tokens","conversationId":"422cf17a-1786-499c-97e4-dd08eb2f4e26","messageId":"12f7f68f-d65e-4b2f-b736-9edf5dc70110","recipients":["0d37e9a1-bcbf-4a33-8622-7f20129e732d"],"source":"message"}

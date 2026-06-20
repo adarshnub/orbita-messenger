@@ -1,6 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
 import {
-  createAudioPlayer,
   RecordingPresets,
   requestRecordingPermissionsAsync,
   setAudioModeAsync,
@@ -52,7 +51,6 @@ import {
   formatBytes,
   formatDurationMs,
   messagePreviewText,
-  waveformBars,
 } from "@/features/chats/messageUtils";
 import { messengerApi } from "@/lib/messengerApi";
 import {
@@ -86,6 +84,7 @@ import {
   type QueuedOutgoingMessage,
 } from "@/lib/localChatCache";
 import { hapticMessageReceived, hapticMessageSent } from "@/lib/haptics";
+import { orbitaAudioWaveform } from "orbita-audio-waveform";
 import { normalizePhone } from "@/lib/phone";
 import {
   hasSupabaseConfig,
@@ -126,6 +125,7 @@ type ComposerAttachment = {
   mimeType: string;
   sizeBytes?: number | null;
   durationMs?: number | null;
+  waveformSamples?: number[] | null;
 };
 type ForwardTarget = {
   avatarUrl?: string | null;
@@ -155,6 +155,11 @@ const AGENT_THINKING_POLL_MS = 3_500;
 const AGENT_THINKING_TIMEOUT_MS = 45_000;
 const AGENT_FOLLOW_LATEST_MS = 90_000;
 const CHAT_PAGE_SIZE = 24;
+const VOICE_WAVEFORM_BARS = 48;
+const VOICE_RECORDING_OPTIONS = {
+  ...RecordingPresets.HIGH_QUALITY,
+  isMeteringEnabled: true,
+};
 const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: "chats", label: "Chats", icon: "chatbubbles-outline" },
   { id: "admin", label: "Admin", icon: "briefcase-outline" },
@@ -256,6 +261,53 @@ function initials(name: string) {
 
 function formatTime(iso: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizeWaveSamples(samples?: number[] | null, targetCount = 22) {
+  const source = samples?.filter((sample) => Number.isFinite(sample)) ?? [];
+  if (!source.length) return [];
+
+  const resampled: number[] = [];
+  for (let index = 0; index < targetCount; index += 1) {
+    const position = (index / Math.max(1, targetCount - 1)) * (source.length - 1);
+    const lowerIndex = Math.floor(position);
+    const upperIndex = Math.min(source.length - 1, Math.ceil(position));
+    const progress = position - lowerIndex;
+    const lower = source[lowerIndex] ?? 0;
+    const upper = source[upperIndex] ?? lower;
+    resampled.push(lower + (upper - lower) * progress);
+  }
+
+  const min = Math.min(...resampled);
+  const max = Math.max(...resampled);
+  if (max - min < 0.004) return [];
+  const range = Math.max(0.015, max - min);
+  return resampled.map((sample) => clamp(0.1 + ((sample - min) / range) * 0.9, 0.08, 1));
+}
+
+function waveLevelToBarHeight(level: number, minHeight = 9, maxHeight = 30) {
+  return minHeight + Math.round(clamp(level, 0.08, 1) * (maxHeight - minHeight));
+}
+
+function mergeAttachmentWaveforms(serverMessage: BackendMessage, localMessage?: BackendMessage | null): BackendMessage {
+  if (!localMessage?.attachments?.length || !serverMessage.attachments.length) return serverMessage;
+  const localAttachment = localMessage.attachments[0];
+  const serverAttachment = serverMessage.attachments[0];
+  if (serverAttachment.waveformSamples?.length || !localAttachment.waveformSamples?.length) return serverMessage;
+  return {
+    ...serverMessage,
+    attachments: [
+      {
+        ...serverAttachment,
+        waveformSamples: localAttachment.waveformSamples,
+      },
+      ...serverMessage.attachments.slice(1),
+    ],
+  };
 }
 
 function normalizeUrl(url: string) {
@@ -2264,6 +2316,7 @@ function MessengerShell({ session }: { session: Session }) {
               durationMs: queued.attachment.durationMs,
               file,
               kind: queued.attachment.kind,
+              waveformSamples: queued.attachment.waveformSamples,
             });
             attachmentId = uploadResult.attachment.id;
             await enqueueOutgoingMessage({
@@ -2282,12 +2335,14 @@ function MessengerShell({ session }: { session: Session }) {
             kind: queued.kind,
             ...(queued.taskManagerText && queued.taskManagerText !== queued.body ? { taskManagerText: queued.taskManagerText } : {}),
           });
-          await completeQueuedMessage(queued.localId, result.message);
-          replaceLocalMessageWithServerMessage(queued.conversationId, queued.localId, result.message);
+          const queuedLocalMessage = messagesByConversationRef.current[queued.conversationId]?.find((message) => message.id === queued.localId);
+          const mergedMessage = mergeAttachmentWaveforms(result.message, queuedLocalMessage);
+          await completeQueuedMessage(queued.localId, mergedMessage);
+          replaceLocalMessageWithServerMessage(queued.conversationId, queued.localId, mergedMessage);
           void hapticMessageSent();
           const conversation = conversationsRef.current.find((item) => item.id === queued.conversationId);
           if (conversation && isTaskManagerAgentConversation(conversation) && result.taskManagerForward?.forwarded !== false) {
-            setAgentThinkingFor((current) => ({ ...current, [queued.conversationId]: result.message.createdAt }));
+            setAgentThinkingFor((current) => ({ ...current, [queued.conversationId]: mergedMessage.createdAt }));
           }
         } catch (nextError) {
           const reason = nextError instanceof Error ? nextError.message : "Unable to send queued message.";
@@ -2753,6 +2808,7 @@ function MessengerShell({ session }: { session: Session }) {
               filename: attachment.name,
               sizeBytes: attachment.sizeBytes ?? 0,
               durationMs: attachment.durationMs ?? null,
+              waveformSamples: attachment.waveformSamples ?? null,
               url: attachment.uri,
             },
           ]
@@ -2791,6 +2847,7 @@ function MessengerShell({ session }: { session: Session }) {
         const uploadResult = await messengerApi.uploadMedia({
           kind: attachment.kind,
           durationMs: attachment.durationMs,
+          waveformSamples: attachment.waveformSamples,
           file:
             Platform.OS === "web"
               ? webAttachmentFile!
@@ -2811,19 +2868,20 @@ function MessengerShell({ session }: { session: Session }) {
         clientMessageId: tempId,
         ...(modelText && modelText !== text ? { taskManagerText: modelText } : {}),
       });
+      const mergedMessage = mergeAttachmentWaveforms(result.message, optimisticMessage);
       setSelectedMessages((current) => {
         const withoutTemp = current.filter(
-          (message) => message.id !== tempId && message.id !== result.message.id,
+          (message) => message.id !== tempId && message.id !== mergedMessage.id,
         );
-        const next = [...withoutTemp, result.message];
+        const next = [...withoutTemp, mergedMessage];
         messagesByConversationRef.current = {
           ...messagesByConversationRef.current,
           [selected.id]: next,
         };
         return next;
       });
-      void replaceCachedMessage(profile.id, selected.id, tempId, result.message).catch(() => undefined);
-      updateConversationPreview(result.message);
+      void replaceCachedMessage(profile.id, selected.id, tempId, mergedMessage).catch(() => undefined);
+      updateConversationPreview(mergedMessage);
       void hapticMessageSent();
       if (isTaskManagerAgentConversation(selected)) {
         if (result.taskManagerForward?.forwarded === false) {
@@ -2834,7 +2892,7 @@ function MessengerShell({ session }: { session: Session }) {
           });
           setError(userFacingTaskManagerError(result.taskManagerForward.reason));
         } else {
-          setAgentThinkingFor((current) => ({ ...current, [selected.id]: result.message.createdAt }));
+          setAgentThinkingFor((current) => ({ ...current, [selected.id]: mergedMessage.createdAt }));
         }
       }
       scheduleBootstrapRefresh();
@@ -2855,6 +2913,7 @@ function MessengerShell({ session }: { session: Session }) {
             mimeType: attachment.mimeType,
             name: attachment.name,
             sizeBytes: attachment.sizeBytes ?? file.size,
+            waveformSamples: attachment.waveformSamples ?? null,
           };
         }
         await enqueueOutgoingMessage({
@@ -4299,12 +4358,15 @@ function ChatPane({
   const { width } = useWindowDimensions();
   const scrollRef = useRef<ScrollView | null>(null);
   const keyboardInset = useKeyboardClearance(!isWide);
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const recorderState = useAudioRecorderState(recorder, 160);
-  const previewPlayer = useMemo(() => createAudioPlayer(), []);
-  const previewStatus = useAudioPlayerStatus(previewPlayer);
-  const [voiceComposerOpen, setVoiceComposerOpen] = useState(false);
-  const [voiceAttachment, setVoiceAttachment] = useState<ComposerAttachment | null>(null);
+  const recorder = useAudioRecorder(VOICE_RECORDING_OPTIONS);
+  const recorderState = useAudioRecorderState(recorder, 60);
+  const [voiceRecorderVisible, setVoiceRecorderVisible] = useState(false);
+  const [voiceRecorderPaused, setVoiceRecorderPaused] = useState(false);
+  const [voiceRecorderBusy, setVoiceRecorderBusy] = useState(false);
+  const [voiceNativeDurationMs, setVoiceNativeDurationMs] = useState(0);
+  const [voiceWaveSamples, setVoiceWaveSamples] = useState<number[]>(() => Array(VOICE_WAVEFORM_BARS).fill(0.14));
+  const stopWebWaveAnalyserRef = useRef<(() => void) | null>(null);
+  const nativeWaveformPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [quickPromptOpen, setQuickPromptOpen] = useState(false);
   const canTriggerOlderRef = useRef(false);
   const contentHeightRef = useRef(0);
@@ -4451,18 +4513,93 @@ function ChatPane({
 
   useEffect(() => {
     return () => {
-      previewPlayer.remove();
+      stopWebWaveAnalyserRef.current?.();
+      stopNativeWaveformPolling();
     };
-  }, [previewPlayer]);
+  }, []);
 
-  useEffect(() => {
-    if (!voiceAttachment?.uri) return;
-    previewPlayer.pause();
-    previewPlayer.replace(voiceAttachment.uri);
-    void previewPlayer.seekTo(0).catch(() => undefined);
-  }, [previewPlayer, voiceAttachment]);
+  function stopNativeWaveformPolling() {
+    if (nativeWaveformPollRef.current) {
+      clearInterval(nativeWaveformPollRef.current);
+      nativeWaveformPollRef.current = null;
+    }
+  }
+
+  function startNativeWaveformPolling() {
+    if (nativeWaveformPollRef.current || Platform.OS === "web") return;
+    nativeWaveformPollRef.current = setInterval(() => {
+      void orbitaAudioWaveform.getStatusAsync().then((status) => {
+        setVoiceNativeDurationMs(status.durationMs);
+        if (status.waveformSamples.length) {
+          setVoiceWaveSamples(status.waveformSamples.slice(-VOICE_WAVEFORM_BARS));
+        }
+      }).catch(() => undefined);
+    }, 60);
+  }
+
+  function stopWebWaveAnalyser() {
+    stopWebWaveAnalyserRef.current?.();
+    stopWebWaveAnalyserRef.current = null;
+  }
+
+  async function startWebWaveAnalyser() {
+    if (Platform.OS !== "web" || stopWebWaveAnalyserRef.current) return;
+    const mediaDevices = globalThis.navigator?.mediaDevices;
+    const AudioContextConstructor =
+      globalThis.AudioContext ??
+      (globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!mediaDevices?.getUserMedia || !AudioContextConstructor) return;
+
+    try {
+      const stream = await mediaDevices.getUserMedia({ audio: true });
+      const audioContext = new AudioContextConstructor();
+      const analyser = audioContext.createAnalyser();
+      const source = audioContext.createMediaStreamSource(stream);
+      let frame = 0;
+
+      analyser.fftSize = 256;
+      analyser.smoothingTimeConstant = 0.72;
+      const data = new Uint8Array(analyser.fftSize);
+      source.connect(analyser);
+
+      const tick = () => {
+        analyser.getByteTimeDomainData(data);
+        let sum = 0;
+        for (let index = 0; index < data.length; index += 1) {
+          const centered = (data[index] - 128) / 128;
+          sum += centered * centered;
+        }
+        const rms = Math.sqrt(sum / data.length);
+        const level = clamp(0.08 + rms * 6.8, 0.08, 1);
+        setVoiceWaveSamples((samples) => [...samples.slice(1), level]);
+        frame = requestAnimationFrame(tick);
+      };
+
+      tick();
+      stopWebWaveAnalyserRef.current = () => {
+        cancelAnimationFrame(frame);
+        source.disconnect();
+        stream.getTracks().forEach((track) => track.stop());
+        void audioContext.close().catch(() => undefined);
+      };
+    } catch {
+      stopWebWaveAnalyserRef.current = null;
+    }
+  }
 
   async function startVoiceRecording() {
+    if (voiceRecorderVisible && voiceRecorderPaused) {
+      if (Platform.OS === "web") {
+        recorder.record();
+        void startWebWaveAnalyser();
+      } else {
+        await orbitaAudioWaveform.resumeRecordingAsync();
+        startNativeWaveformPolling();
+      }
+      setVoiceRecorderPaused(false);
+      return;
+    }
+    if (voiceRecorderVisible) return;
     const permission = await requestRecordingPermissionsAsync();
     if (!permission.granted) return;
     await setAudioModeAsync({
@@ -4470,51 +4607,120 @@ function ChatPane({
       playsInSilentMode: true,
       interruptionMode: "duckOthers",
     });
-    setVoiceAttachment(null);
-    setVoiceComposerOpen(true);
-    await recorder.prepareToRecordAsync();
-    recorder.record();
+    setVoiceWaveSamples(Array(VOICE_WAVEFORM_BARS).fill(0.14));
+    setVoiceNativeDurationMs(0);
+    setVoiceRecorderVisible(true);
+    setVoiceRecorderPaused(false);
+    if (Platform.OS === "web") {
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      void startWebWaveAnalyser();
+    } else {
+      await orbitaAudioWaveform.startRecordingAsync();
+      startNativeWaveformPolling();
+    }
   }
 
-  async function stopVoiceRecording() {
-    await recorder.stop();
+  async function pauseVoiceRecording() {
+    if (!voiceRecorderVisible || voiceRecorderPaused) return;
+    if (Platform.OS === "web" && !recorderState.isRecording) return;
+    if (Platform.OS === "web") {
+      recorder.pause();
+      stopWebWaveAnalyser();
+    } else {
+      await orbitaAudioWaveform.pauseRecordingAsync();
+      stopNativeWaveformPolling();
+    }
+    setVoiceRecorderPaused(true);
+  }
+
+  async function finishVoiceRecording() {
+    if (!voiceRecorderVisible || voiceRecorderBusy) return null;
+    setVoiceRecorderBusy(true);
+    let result:
+      | { durationMs: number | null; mimeType: string; uri: string; waveformSamples: number[] }
+      | null = null;
+    if (Platform.OS === "web") {
+      const durationMs = recorderState.durationMillis || null;
+      const waveformSamples = normalizeWaveSamples(voiceWaveSamples, VOICE_WAVEFORM_BARS);
+      try {
+        stopWebWaveAnalyser();
+        await recorder.stop();
+      } catch {
+        setVoiceRecorderBusy(false);
+        return null;
+      }
+      const uri = recorder.uri ?? recorderState.url;
+      result = uri
+        ? {
+            durationMs,
+            mimeType: "audio/webm",
+            uri,
+            waveformSamples,
+          }
+        : null;
+    } else {
+      try {
+        stopNativeWaveformPolling();
+        const nativeResult = await orbitaAudioWaveform.stopRecordingAsync();
+        result = {
+          durationMs: nativeResult.durationMs,
+          mimeType: nativeResult.mimeType,
+          uri: nativeResult.uri,
+          waveformSamples: normalizeWaveSamples(nativeResult.waveformSamples, VOICE_WAVEFORM_BARS),
+        };
+      } catch {
+        setVoiceRecorderBusy(false);
+        return null;
+      }
+    }
     await setAudioModeAsync({
       allowsRecording: false,
       playsInSilentMode: true,
       interruptionMode: "duckOthers",
-    });
-    const uri = recorder.uri ?? recorderState.url;
-    if (!uri) return;
-    setVoiceAttachment({
+    }).catch(() => undefined);
+    setVoiceRecorderVisible(false);
+    setVoiceRecorderPaused(false);
+    setVoiceRecorderBusy(false);
+    setVoiceNativeDurationMs(0);
+    if (!result?.uri) return null;
+    return {
       localId: `voice-${Date.now()}`,
       kind: "voice",
-      uri,
-      name: `voice-note-${Date.now()}.m4a`,
-      mimeType: Platform.OS === "web" ? "audio/webm" : "audio/mp4",
-      durationMs: recorderState.durationMillis || null,
-    });
+      uri: result.uri,
+      name: `voice-note-${Date.now()}${result.mimeType === "audio/wav" ? ".wav" : ".webm"}`,
+      mimeType: result.mimeType,
+      durationMs: result.durationMs,
+      waveformSamples: result.waveformSamples,
+    } satisfies ComposerAttachment;
   }
 
   async function discardVoiceAttachment() {
-    if (recorderState.isRecording) {
+    stopWebWaveAnalyser();
+    stopNativeWaveformPolling();
+    if (voiceRecorderVisible && Platform.OS === "web") {
       await recorder.stop().catch(() => undefined);
+    }
+    if (voiceRecorderVisible && Platform.OS !== "web") {
+      await orbitaAudioWaveform.discardRecordingAsync().catch(() => undefined);
+    }
+    if (voiceRecorderVisible) {
       await setAudioModeAsync({
         allowsRecording: false,
         playsInSilentMode: true,
         interruptionMode: "duckOthers",
       }).catch(() => undefined);
     }
-    previewPlayer.pause();
-    setVoiceAttachment(null);
-    setVoiceComposerOpen(false);
+    setVoiceRecorderVisible(false);
+    setVoiceRecorderPaused(false);
+    setVoiceRecorderBusy(false);
+    setVoiceNativeDurationMs(0);
+    setVoiceWaveSamples(Array(VOICE_WAVEFORM_BARS).fill(0.14));
   }
 
   async function sendVoiceAttachment() {
-    if (!voiceAttachment) return;
-    const pendingVoice = voiceAttachment;
-    previewPlayer.pause();
-    setVoiceAttachment(null);
-    setVoiceComposerOpen(false);
+    const pendingVoice = await finishVoiceRecording();
+    if (!pendingVoice) return;
     await onSend("voice", draft, pendingVoice);
   }
 
@@ -4524,7 +4730,7 @@ function ChatPane({
   }
 
   const composerCanSend = Boolean(draft.trim() || attachment);
-  const waveformSeed = voiceAttachment?.name || attachment?.name || conversation.id;
+  const voiceElapsedLabel = formatDurationMs(Platform.OS === "web" ? recorderState.durationMillis : voiceNativeDurationMs);
 
   const edgeSwipeResponder = useMemo(
     () =>
@@ -4687,8 +4893,8 @@ function ChatPane({
           </View>
         ) : null}
       </ScrollView>
-      <View style={[styles.composer, isDarkTheme && styles.composerDark]}>
-        {isAgentConversation ? (
+      <View style={[styles.composer, voiceRecorderVisible && styles.composerRecording, isDarkTheme && styles.composerDark]}>
+        {!voiceRecorderVisible && isAgentConversation ? (
           <View style={styles.quickPromptDock}>
             {quickPromptOpen ? (
               <View style={[styles.quickPromptMenu, isDarkTheme && styles.quickPromptMenuDark]}>
@@ -4719,131 +4925,121 @@ function ChatPane({
             </Pressable>
           </View>
         ) : null}
-        <Pressable accessibilityLabel="Add attachment" onPress={onOpenAttachmentMenu} style={[styles.composerAccessoryButton, isDarkTheme && styles.composerAccessoryButtonDark]}>
-          <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name="add" size={22} />
-        </Pressable>
-        <View style={styles.composerBody}>
-          {attachment ? (
-            <ComposerAttachmentPreview attachment={attachment} onRemove={onRemoveAttachment} />
-          ) : null}
-        <TextInput
-          blurOnSubmit={false}
-          multiline
-          onChangeText={setDraft}
-          onKeyPress={(event) => {
-            if (Platform.OS !== "web") return;
-            const webEvent = event as unknown as {
-              nativeEvent: { key?: string; shiftKey?: boolean };
-              preventDefault?: () => void;
-            };
-            if (webEvent.nativeEvent.key !== "Enter" || webEvent.nativeEvent.shiftKey) return;
-            webEvent.preventDefault?.();
-            onSend();
-          }}
-          onSubmitEditing={() => {
-            if (Platform.OS !== "web") onSend();
-          }}
-          placeholder="Message"
-          placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
-          style={[styles.composerInput, isDarkTheme && styles.composerInputDark, attachment && styles.composerInputWithAttachment]}
-          value={draft}
-        />
-        </View>
-        {composerCanSend ? (
-          <Pressable
-            accessibilityLabel="Send message"
-            disabled={!composerCanSend}
-            onPress={() => onSend()}
-            style={[styles.sendButton, !composerCanSend && styles.buttonDisabled]}
-          >
-            <Ionicons color="#FFFFFF" name="send" size={20} />
-          </Pressable>
-        ) : (
-          <View style={styles.composerQuickActions}>
+        {voiceRecorderVisible ? (
+          <View style={[styles.inlineVoiceRecorder, isDarkTheme && styles.inlineVoiceRecorderDark]}>
             <Pressable
-              accessibilityLabel="Take photo"
-              onPress={onTakePhoto}
-              style={[styles.sendButton, styles.cameraQuickButton, isDarkTheme && styles.cameraQuickButtonDark]}
+              accessibilityLabel="Delete voice recording"
+              disabled={voiceRecorderBusy}
+              onPress={() => {
+                void discardVoiceAttachment();
+              }}
+              style={[styles.voiceInlineButton, styles.voiceDeleteButton, isDarkTheme && styles.voiceDeleteButtonDark]}
             >
-              <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="camera-outline" size={20} />
+              <Ionicons color={colors.danger} name="trash-outline" size={20} />
             </Pressable>
-            <Pressable accessibilityLabel="Record voice note" onPress={startVoiceRecording} style={styles.sendButton}>
-              <Ionicons color="#FFFFFF" name="mic" size={19} />
-            </Pressable>
-          </View>
-        )}
-      </View>
-      <Modal animationType="slide" onRequestClose={discardVoiceAttachment} transparent visible={voiceComposerOpen}>
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.voiceComposerCard, keyboardInset ? { marginBottom: keyboardInset } : null]}>
-            <Text style={styles.voiceComposerTitle}>Voice Note</Text>
-            <View style={styles.voiceWaveCard}>
-              <View style={styles.voiceWaveRow}>
-                {waveformBars(waveformSeed).map((bar, index) => (
+            <View style={styles.voiceRecorderContent}>
+              <View style={styles.voiceRecorderMeta}>
+                <View style={[styles.voiceRecordingDot, voiceRecorderPaused && styles.voiceRecordingDotPaused]} />
+                <Text style={[styles.voiceRecorderTime, isDarkTheme && styles.voiceRecorderTimeDark]}>
+                  {voiceElapsedLabel}
+                </Text>
+              </View>
+              <View style={styles.voiceRecorderWaveRow}>
+                {voiceWaveSamples.map((sample, index) => (
                   <View
-                    key={`${waveformSeed}-${index}`}
+                    key={`voice-wave-${index}`}
                     style={[
-                      styles.voiceWaveBar,
+                      styles.voiceRecorderWaveBar,
                       {
-                        height: bar,
-                        backgroundColor:
-                          previewStatus.playing && voiceAttachment
-                            ? index < Math.max(1, Math.round(((previewStatus.currentTime || 0) / Math.max(previewStatus.duration || 1, 1)) * 22))
-                              ? colors.primaryDark
-                              : "#B7AEDF"
-                            : index % 2 === 0
-                              ? colors.primaryDark
-                              : "#C8C1EA",
+                        height: 5 + Math.round(sample * 28),
+                        opacity: voiceRecorderPaused ? 0.44 : 0.68 + sample * 0.32,
                       },
                     ]}
                   />
                 ))}
               </View>
-              <Text style={styles.voiceComposerTime}>
-                {voiceAttachment
-                  ? formatDurationMs(voiceAttachment.durationMs)
-                  : formatDurationMs(recorderState.durationMillis)}
-              </Text>
             </View>
-            <View style={styles.voiceComposerActions}>
-              <Pressable onPress={discardVoiceAttachment} style={styles.voiceMiniButton}>
-                <Ionicons color={colors.ink} name="close" size={20} />
-              </Pressable>
-              {voiceAttachment ? (
-                <Pressable
-                  onPress={() => {
-                    if (previewStatus.playing) {
-                      previewPlayer.pause();
-                    } else {
-                      if ((previewStatus.currentTime || 0) >= (previewStatus.duration || 0)) {
-                        void previewPlayer.seekTo(0);
-                      }
-                      previewPlayer.play();
-                    }
-                  }}
-                  style={styles.voiceRecordButton}
-                >
-                  <Ionicons color="#FFFFFF" name={previewStatus.playing ? "pause" : "play"} size={22} />
-                </Pressable>
+            <Pressable
+              accessibilityLabel={voiceRecorderPaused ? "Resume voice recording" : "Pause voice recording"}
+              disabled={voiceRecorderBusy}
+              onPress={voiceRecorderPaused ? startVoiceRecording : pauseVoiceRecording}
+              style={[styles.voiceInlineButton, isDarkTheme && styles.voiceInlineButtonDark]}
+            >
+              <Ionicons color={isDarkTheme ? "#E9EDEF" : colors.primaryDark} name={voiceRecorderPaused ? "mic" : "pause"} size={20} />
+            </Pressable>
+            <Pressable
+              accessibilityLabel="Send voice recording"
+              disabled={voiceRecorderBusy}
+              onPress={() => {
+                void sendVoiceAttachment();
+              }}
+              style={[styles.voiceSendButton, voiceRecorderBusy && styles.buttonDisabled]}
+            >
+              {voiceRecorderBusy ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
               ) : (
-                <Pressable
-                  onPress={recorderState.isRecording ? stopVoiceRecording : startVoiceRecording}
-                  style={styles.voiceRecordButton}
-                >
-                  <Ionicons color="#FFFFFF" name={recorderState.isRecording ? "stop" : "mic"} size={22} />
-                </Pressable>
+                <Ionicons color="#FFFFFF" name="send" size={19} />
               )}
-              <Pressable
-                disabled={!voiceAttachment}
-                onPress={sendVoiceAttachment}
-                style={[styles.voiceMiniButton, !voiceAttachment && styles.buttonDisabled]}
-              >
-                <Ionicons color={colors.ink} name="send-outline" size={20} />
-              </Pressable>
-            </View>
+            </Pressable>
           </View>
-        </View>
-      </Modal>
+        ) : (
+          <>
+            <Pressable accessibilityLabel="Add attachment" onPress={onOpenAttachmentMenu} style={[styles.composerAccessoryButton, isDarkTheme && styles.composerAccessoryButtonDark]}>
+              <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name="add" size={22} />
+            </Pressable>
+            <View style={styles.composerBody}>
+              {attachment ? (
+                <ComposerAttachmentPreview attachment={attachment} onRemove={onRemoveAttachment} />
+              ) : null}
+              <TextInput
+                blurOnSubmit={false}
+                multiline
+                onChangeText={setDraft}
+                onKeyPress={(event) => {
+                  if (Platform.OS !== "web") return;
+                  const webEvent = event as unknown as {
+                    nativeEvent: { key?: string; shiftKey?: boolean };
+                    preventDefault?: () => void;
+                  };
+                  if (webEvent.nativeEvent.key !== "Enter" || webEvent.nativeEvent.shiftKey) return;
+                  webEvent.preventDefault?.();
+                  onSend();
+                }}
+                onSubmitEditing={() => {
+                  if (Platform.OS !== "web") onSend();
+                }}
+                placeholder="Message"
+                placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
+                style={[styles.composerInput, isDarkTheme && styles.composerInputDark, attachment && styles.composerInputWithAttachment]}
+                value={draft}
+              />
+            </View>
+            {composerCanSend ? (
+              <Pressable
+                accessibilityLabel="Send message"
+                disabled={!composerCanSend}
+                onPress={() => onSend()}
+                style={[styles.sendButton, !composerCanSend && styles.buttonDisabled]}
+              >
+                <Ionicons color="#FFFFFF" name="send" size={20} />
+              </Pressable>
+            ) : (
+              <View style={styles.composerQuickActions}>
+                <Pressable
+                  accessibilityLabel="Take photo"
+                  onPress={onTakePhoto}
+                  style={[styles.sendButton, styles.cameraQuickButton, isDarkTheme && styles.cameraQuickButtonDark]}
+                >
+                  <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="camera-outline" size={20} />
+                </Pressable>
+                <Pressable accessibilityLabel="Record voice note" onPress={startVoiceRecording} style={styles.sendButton}>
+                  <Ionicons color="#FFFFFF" name="mic" size={19} />
+                </Pressable>
+              </View>
+            )}
+          </>
+        )}
+      </View>
     </View>
   );
 }
@@ -4940,7 +5136,8 @@ function AudioAttachmentCard({
   const { isDarkTheme } = useAppTheme();
   const player = useAudioPlayer(attachment.url);
   const status = useAudioPlayerStatus(player);
-  const bars = useMemo(() => waveformBars(attachment.filename || attachment.id), [attachment.filename, attachment.id]);
+  const bars = useMemo(() => normalizeWaveSamples(attachment.waveformSamples, 22), [attachment.waveformSamples]);
+  const hasWaveform = bars.length > 0;
   const durationLabel = status.duration
     ? formatDurationMs(status.duration * 1000)
     : formatDurationMs(attachment.durationMs);
@@ -4964,7 +5161,7 @@ function AudioAttachmentCard({
       </Pressable>
       <View style={styles.chatRowBody}>
         <View style={styles.audioWaveRow}>
-          {bars.map((bar, index) => {
+          {hasWaveform ? bars.map((bar, index) => {
             const playedRatio = status.duration ? (status.currentTime || 0) / Math.max(status.duration, 0.01) : 0;
             const isPlayed = index / bars.length <= playedRatio;
             return (
@@ -4973,7 +5170,7 @@ function AudioAttachmentCard({
                 style={[
                   styles.audioWaveBar,
                   {
-                    height: bar,
+                    height: waveLevelToBarHeight(bar, 8, 30),
                     backgroundColor: mine
                       ? isPlayed
                         ? isDarkTheme
@@ -4989,7 +5186,9 @@ function AudioAttachmentCard({
                 ]}
               />
             );
-          })}
+          }) : (
+            <View style={[styles.audioWaveMissing, mine && styles.audioWaveMissingMine, isDarkTheme && styles.audioWaveMissingDark]} />
+          )}
         </View>
         <Text style={[styles.audioDuration, mine && (isDarkTheme ? styles.audioDurationMineDark : styles.audioDurationMine)]}>{durationLabel}</Text>
       </View>
@@ -6707,6 +6906,9 @@ const styles = StyleSheet.create({
   audioPlayButtonMineDark: { backgroundColor: "rgba(255,255,255,0.16)" },
   audioWaveRow: { flexDirection: "row", alignItems: "center", gap: 3, minHeight: 26, flexWrap: "nowrap", overflow: "hidden" },
   audioWaveBar: { width: 4, borderRadius: 999, flexShrink: 0 },
+  audioWaveMissing: { flex: 1, height: 3, borderRadius: 999, backgroundColor: "#D1D7DB" },
+  audioWaveMissingMine: { backgroundColor: "rgba(17,27,33,0.28)" },
+  audioWaveMissingDark: { backgroundColor: "rgba(233,237,239,0.32)" },
   audioDuration: { color: colors.muted, fontSize: 11, marginTop: 4 },
   audioDurationMine: { color: colors.muted },
   audioDurationMineDark: { color: "rgba(233,237,239,0.78)" },
@@ -6722,6 +6924,71 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   composerDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#202C33" },
+  composerRecording: { alignItems: "center" },
+  inlineVoiceRecorder: {
+    flex: 1,
+    minHeight: 48,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    padding: 4,
+    borderRadius: 24,
+    backgroundColor: colors.surface,
+  },
+  inlineVoiceRecorderDark: { backgroundColor: "#202C33" },
+  voiceInlineButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surfaceBlue,
+  },
+  voiceInlineButtonDark: { backgroundColor: "rgba(255,255,255,0.10)" },
+  voiceDeleteButton: { backgroundColor: "#FFF0F1" },
+  voiceDeleteButtonDark: { backgroundColor: "rgba(241,92,109,0.14)" },
+  voiceRecorderContent: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 2,
+  },
+  voiceRecorderMeta: { minWidth: 54, flexDirection: "row", alignItems: "center", gap: 6 },
+  voiceRecordingDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.danger,
+  },
+  voiceRecordingDotPaused: { backgroundColor: colors.faint },
+  voiceRecorderTime: { color: colors.muted, fontSize: 12, fontWeight: "700", fontVariant: ["tabular-nums"] },
+  voiceRecorderTimeDark: { color: "#E9EDEF" },
+  voiceRecorderWaveRow: {
+    flex: 1,
+    minWidth: 0,
+    minHeight: 36,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    overflow: "hidden",
+  },
+  voiceRecorderWaveBar: {
+    width: 3,
+    maxHeight: 34,
+    borderRadius: 999,
+    backgroundColor: colors.primaryDark,
+  },
+  voiceSendButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.primaryDark,
+  },
   quickPromptDock: {
     position: "relative",
     alignSelf: "flex-end",

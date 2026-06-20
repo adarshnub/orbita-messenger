@@ -28,22 +28,6 @@ export function messagePreviewText(message: Pick<BackendMessage, "body" | "kind"
   return body || messageAttachmentLabel(message);
 }
 
-export function waveformBars(seed: string, count = 22) {
-  const source = seed || "orbita";
-  let state = 0;
-  for (let index = 0; index < source.length; index += 1) {
-    state = (state * 31 + source.charCodeAt(index)) % 2147483647;
-  }
-
-  const bars: number[] = [];
-  for (let index = 0; index < count; index += 1) {
-    state = (state * 48271) % 2147483647;
-    const normalized = state / 2147483647;
-    bars.push(10 + Math.round(normalized * 20));
-  }
-  return bars;
-}
-
 export function attachmentFromMessage(message: Pick<BackendMessage, "attachments"> | null): BackendAttachment | null {
   return message?.attachments?.[0] ?? null;
 }
