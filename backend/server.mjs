@@ -1419,19 +1419,21 @@ async function loadConversations(userId) {
 
   const { data: linkedRows, error: linkedRowsError } = await supabase
     .from("taskmanager_agent_links")
-    .select("conversation_id")
+    .select("*")
     .in("conversation_id", ids)
     .eq("enabled", true);
   if (linkedRowsError) throw linkedRowsError;
-  const taskmanagerConversationIds = new Set((linkedRows ?? []).map((row) => row.conversation_id));
-  const { data: userLinkedRows, error: userLinkedRowsError } = await supabase
-    .from("taskmanager_agent_links")
-    .select("agent_profile_id")
-    .eq("orbita_user_id", userId)
-    .eq("enabled", true);
-  if (userLinkedRowsError) throw userLinkedRowsError;
-  const linkedAgentProfileIds = new Set((userLinkedRows ?? []).map((row) => row.agent_profile_id).filter(Boolean));
-
+  const taskmanagerAgentByConversationId = new Map((linkedRows ?? []).map((row) => [row.conversation_id, row]));
+  const { data: taskThreadRows, error: taskThreadRowsError } = await supabase
+    .from("taskmanager_task_threads")
+    .select("*")
+    .in("conversation_id", ids);
+  if (taskThreadRowsError) throw taskThreadRowsError;
+  const taskThreadByConversationId = new Map((taskThreadRows ?? []).map((row) => [row.conversation_id, row]));
+  const taskmanagerConversationIds = new Set([
+    ...(linkedRows ?? []).map((row) => row.conversation_id),
+    ...taskThreadByConversationId.keys(),
+  ]);
   const contactNicknames = await loadContactNicknames(userId);
   const loaded = await Promise.all(
     (conversations ?? []).map(async (conversation) => {
@@ -1483,18 +1485,32 @@ async function loadConversations(userId) {
         participants: mappedParticipants,
         lastMessage,
         unreadCount: await unreadCountForConversation(userId, conversation.id),
+        taskManagerAgent: taskmanagerAgentByConversationId.has(conversation.id)
+          ? {
+              taskmanagerOrgId: taskmanagerAgentByConversationId.get(conversation.id).taskmanager_org_id,
+              taskmanagerUserId: taskmanagerAgentByConversationId.get(conversation.id).taskmanager_user_id,
+              agentProfileId: taskmanagerAgentByConversationId.get(conversation.id).agent_profile_id,
+            }
+          : null,
+        taskThread: taskThreadByConversationId.has(conversation.id)
+          ? {
+              taskmanagerOrgId: taskThreadByConversationId.get(conversation.id).taskmanager_org_id,
+              taskmanagerTaskId: taskThreadByConversationId.get(conversation.id).taskmanager_task_id,
+              taskNumber: taskThreadByConversationId.get(conversation.id).task_number,
+              agentProfileId: taskThreadByConversationId.get(conversation.id).agent_profile_id,
+              sourceAgentConversationId: taskThreadByConversationId.get(conversation.id).source_agent_conversation_id ?? null,
+              parentTaskId: taskThreadByConversationId.get(conversation.id).parent_task_id,
+              rootTaskId: taskThreadByConversationId.get(conversation.id).root_task_id,
+              status: taskThreadByConversationId.get(conversation.id).status,
+              title: taskThreadByConversationId.get(conversation.id).title,
+            }
+          : null,
       };
     }),
   );
 
   const bestDirectByPeer = new Map();
   return loaded.filter((conversation) => {
-    if (conversation.kind === "direct") {
-      const peer = conversation.participants.find((participant) => participant.id !== userId);
-      if (peer?.about?.trim().toLowerCase() === "task manager agent" && linkedAgentProfileIds.has(peer.id)) {
-        return false;
-      }
-    }
     if (conversation.kind !== "direct") return true;
     const peer = conversation.participants.find((participant) => participant.id !== userId);
     if (!peer) return true;
@@ -1625,6 +1641,306 @@ async function createTaskmanagerConversation(agentProfileId, orbitaUserId, title
   const created = (await loadConversations(orbitaUserId)).find((item) => item.id === conversation.id);
   if (!created) throw new Error("Unable to load created Task Manager conversation.");
   return created;
+}
+
+async function createTaskmanagerTaskConversation(agentProfileId, title) {
+  const cleanTitle = typeof title === "string" && title.trim() ? title.trim().slice(0, 120) : "Task thread";
+  const { data: conversation, error } = await supabase
+    .from("conversations")
+    .insert({ kind: "taskmanager", created_by: agentProfileId, title: cleanTitle })
+    .select()
+    .single();
+  if (error) throw error;
+  return conversation;
+}
+
+async function loadTaskmanagerLinksByUserIds(taskmanagerOrgId, taskmanagerUserIds) {
+  const uniqueIds = [...new Set(taskmanagerUserIds.filter(Boolean))];
+  if (!uniqueIds.length) return new Map();
+  const { data, error } = await supabase
+    .from("taskmanager_agent_links")
+    .select("*")
+    .eq("taskmanager_org_id", taskmanagerOrgId)
+    .eq("enabled", true)
+    .in("taskmanager_user_id", uniqueIds);
+  if (error) throw error;
+  return new Map((data ?? []).map((row) => [row.taskmanager_user_id, row]));
+}
+
+async function materializePendingTaskThreadMemberships(taskmanagerOrgId, taskmanagerUserId, orbitaUserId) {
+  const { data: pendingRows, error: pendingError } = await supabase
+    .from("taskmanager_task_thread_members")
+    .select("taskmanager_task_id, role")
+    .eq("taskmanager_org_id", taskmanagerOrgId)
+    .eq("taskmanager_user_id", taskmanagerUserId)
+    .eq("status", "pending");
+  if (pendingError) throw pendingError;
+  if (!(pendingRows ?? []).length) return { updated: 0 };
+
+  const taskIds = [...new Set(pendingRows.map((row) => row.taskmanager_task_id).filter(Boolean))];
+  const { data: threads, error: threadError } = await supabase
+    .from("taskmanager_task_threads")
+    .select("taskmanager_task_id, conversation_id")
+    .eq("taskmanager_org_id", taskmanagerOrgId)
+    .in("taskmanager_task_id", taskIds);
+  if (threadError) throw threadError;
+  const conversationByTaskId = new Map((threads ?? []).map((row) => [row.taskmanager_task_id, row.conversation_id]));
+  const now = new Date().toISOString();
+
+  for (const row of pendingRows) {
+    const conversationId = conversationByTaskId.get(row.taskmanager_task_id);
+    if (!conversationId) continue;
+    await ensureConversationParticipants(conversationId, [{ user_id: orbitaUserId, role: row.role || "member" }]);
+    await createRealtimeEvents([orbitaUserId], "group_member_added", conversationId, {
+      kind: "task_thread_member_added",
+      taskmanagerOrgId,
+      taskmanagerTaskId: row.taskmanager_task_id,
+    });
+  }
+
+  const { error: updateError } = await supabase
+    .from("taskmanager_task_thread_members")
+    .update({ orbita_user_id: orbitaUserId, status: "linked", updated_at: now })
+    .eq("taskmanager_org_id", taskmanagerOrgId)
+    .eq("taskmanager_user_id", taskmanagerUserId)
+    .eq("status", "pending");
+  if (updateError) throw updateError;
+  return { updated: pendingRows.length };
+}
+
+function formatTaskStatusLabel(status) {
+  const normalized = String(status || "open").replace(/[_-]+/g, " ").trim();
+  if (!normalized) return "Open";
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function progressLabelForTaskStatus(status, completedAt) {
+  const normalized = String(status || "").toLowerCase();
+  if (completedAt || ["done", "completed", "approved"].includes(normalized)) return "Completed";
+  if (["in_progress", "in progress", "active"].includes(normalized)) return "In progress";
+  if (["discarded", "cancelled", "canceled"].includes(normalized)) return "Closed";
+  return "Not started";
+}
+
+function formatTaskDueDate(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString().slice(0, 10);
+}
+
+function buildTaskThreadContextPayload(args) {
+  const lines = [
+    `${args.taskNumber} · ${args.title}`,
+    `Status: ${formatTaskStatusLabel(args.status)}`,
+    `Progress: ${progressLabelForTaskStatus(args.status, args.completedAt)}`,
+  ];
+  const dueDate = formatTaskDueDate(args.dueDate);
+  if (dueDate) lines.push(`Due: ${dueDate}`);
+  if (args.description) lines.push(`Details: ${args.description}`);
+  if (args.completionNote) lines.push(`Completion note: ${args.completionNote}`);
+  lines.push("This thread is linked to the task, so the agent already receives the task context.");
+  return {
+    body: lines.join("\n"),
+    system: {
+      kind: "task_thread_context",
+      taskmanagerOrgId: args.taskmanagerOrgId,
+      taskmanagerTaskId: args.taskmanagerTaskId,
+      taskNumber: args.taskNumber,
+      status: args.status,
+    },
+  };
+}
+
+async function ensureTaskThreadContextMessage(thread, payload) {
+  const clientMessageId = `task-thread-context:${thread.taskmanager_org_id}:${thread.taskmanager_task_id}`;
+  const { data: existing, error: existingError } = await supabase
+    .from("messages")
+    .select("id")
+    .eq("sender_id", thread.agent_profile_id)
+    .eq("client_message_id", clientMessageId)
+    .maybeSingle();
+  if (existingError) throw existingError;
+
+  if (existing?.id) {
+    const { error: updateError } = await supabase
+      .from("messages")
+      .update({
+        kind: "text",
+        encrypted_payload: payload,
+        deleted_at: null,
+      })
+      .eq("id", existing.id);
+    if (updateError) throw updateError;
+    return existing.id;
+  }
+
+  const message = await insertMessageWithReceipts(thread.conversation_id, thread.agent_profile_id, "text", payload, {
+    clientMessageId,
+    pushSource: "task_thread_context",
+  });
+  return message.id;
+}
+
+async function ensureTaskmanagerTaskThread(payload) {
+  const taskmanagerOrgId = requiredString(payload, "taskmanagerOrgId");
+  const taskmanagerTaskId = requiredString(payload, "taskmanagerTaskId");
+  const taskNumber = requiredString(payload, "taskNumber").slice(0, 80);
+  const title = requiredString(payload, "title").slice(0, 500);
+  const parentTaskId = optionalString(payload, "parentTaskId") || null;
+  const rootTaskId = optionalString(payload, "rootTaskId") || taskmanagerTaskId;
+  const creatorUserId = requiredString(payload, "creatorUserId");
+  const assigneeUserId = requiredString(payload, "assigneeUserId");
+  const memberUserIds = [
+    ...new Set([creatorUserId, assigneeUserId, ...stringArray(payload, "memberUserIds")].filter(Boolean)),
+  ];
+  const agentDisplayName = normalizeTaskmanagerAgentDisplayName(optionalString(payload, "agentDisplayName"));
+  const description = optionalString(payload, "description").slice(0, 1000);
+  const dueDate = optionalString(payload, "dueDate");
+  const completionNote = optionalString(payload, "completionNote").slice(0, 1000);
+  const completedAt = optionalString(payload, "completedAt");
+  const sourceAgentProfileId = optionalString(payload, "sourceAgentProfileId") || null;
+  const sourceAgentConversationId = optionalString(payload, "sourceAgentConversationId") || null;
+  const sourceAgentDisplayNameInput = optionalString(payload, "sourceAgentDisplayName");
+  const sourceAgentDisplayName = sourceAgentDisplayNameInput
+    ? normalizeTaskmanagerAgentDisplayName(sourceAgentDisplayNameInput)
+    : "";
+  const agentProfileId = sourceAgentProfileId || await ensureTaskmanagerAgentProfile(taskmanagerOrgId, agentDisplayName);
+  if (sourceAgentProfileId && sourceAgentDisplayName) {
+    await supabase
+      .from("profiles")
+      .update({
+        display_name: sourceAgentDisplayName,
+        about: "Task Manager agent",
+        is_online: true,
+        last_seen_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", sourceAgentProfileId);
+  }
+
+  const { data: existingThread, error: existingError } = await supabase
+    .from("taskmanager_task_threads")
+    .select("*")
+    .eq("taskmanager_org_id", taskmanagerOrgId)
+    .eq("taskmanager_task_id", taskmanagerTaskId)
+    .maybeSingle();
+  if (existingError) throw existingError;
+
+  const conversationTitle = `${taskNumber} ${title}`.trim().slice(0, 120);
+  const conversation = existingThread?.conversation_id
+    ? { id: existingThread.conversation_id }
+    : await createTaskmanagerTaskConversation(agentProfileId, conversationTitle);
+
+  const now = new Date().toISOString();
+  const threadPayload = {
+    taskmanager_org_id: taskmanagerOrgId,
+    taskmanager_task_id: taskmanagerTaskId,
+    task_number: taskNumber,
+    title,
+    parent_task_id: parentTaskId,
+    root_task_id: rootTaskId,
+    status: optionalString(payload, "status") || "open",
+    agent_profile_id: agentProfileId,
+    conversation_id: conversation.id,
+    source_agent_conversation_id: sourceAgentConversationId,
+    updated_at: now,
+  };
+  let threadResult = await supabase
+    .from("taskmanager_task_threads")
+    .upsert(
+      threadPayload,
+      { onConflict: "taskmanager_org_id,taskmanager_task_id" },
+    )
+    .select()
+    .single();
+  if (threadResult.error && errorMessage(threadResult.error).toLowerCase().includes("source_agent_conversation_id")) {
+    const { source_agent_conversation_id, ...fallbackThreadPayload } = threadPayload;
+    threadResult = await supabase
+      .from("taskmanager_task_threads")
+      .upsert(fallbackThreadPayload, { onConflict: "taskmanager_org_id,taskmanager_task_id" })
+      .select()
+      .single();
+  }
+  const { data: thread, error: threadError } = threadResult;
+  if (threadError) throw threadError;
+
+  const { error: conversationUpdateError } = await supabase
+    .from("conversations")
+    .update({ title: conversationTitle, updated_at: now })
+    .eq("id", thread.conversation_id);
+  if (conversationUpdateError) throw conversationUpdateError;
+
+  const linksByTaskmanagerUserId = await loadTaskmanagerLinksByUserIds(taskmanagerOrgId, memberUserIds);
+  const linkedRows = [];
+  const pendingRows = [];
+  for (const taskmanagerUserId of memberUserIds) {
+    const link = linksByTaskmanagerUserId.get(taskmanagerUserId);
+    if (link?.orbita_user_id) {
+      linkedRows.push({
+        taskmanager_org_id: taskmanagerOrgId,
+        taskmanager_task_id: taskmanagerTaskId,
+        taskmanager_user_id: taskmanagerUserId,
+        orbita_user_id: link.orbita_user_id,
+        role: taskmanagerUserId === creatorUserId ? "admin" : "member",
+        status: "linked",
+        updated_at: now,
+      });
+    } else {
+      pendingRows.push({
+        taskmanager_org_id: taskmanagerOrgId,
+        taskmanager_task_id: taskmanagerTaskId,
+        taskmanager_user_id: taskmanagerUserId,
+        orbita_user_id: null,
+        role: taskmanagerUserId === creatorUserId ? "admin" : "member",
+        status: "pending",
+        updated_at: now,
+      });
+    }
+  }
+
+  const memberRows = [...linkedRows, ...pendingRows];
+  if (memberRows.length) {
+    const { error: memberError } = await supabase
+      .from("taskmanager_task_thread_members")
+      .upsert(memberRows, { onConflict: "taskmanager_org_id,taskmanager_task_id,taskmanager_user_id" });
+    if (memberError) throw memberError;
+  }
+
+  await ensureConversationParticipants(thread.conversation_id, [
+    { user_id: agentProfileId, role: "owner" },
+    ...linkedRows.map((row) => ({ user_id: row.orbita_user_id, role: row.role })),
+  ]);
+
+  await ensureTaskThreadContextMessage(
+    thread,
+    buildTaskThreadContextPayload({
+      taskmanagerOrgId,
+      taskmanagerTaskId,
+      taskNumber,
+      title,
+      status: thread.status,
+      description,
+      dueDate,
+      completionNote,
+      completedAt,
+    }),
+  );
+
+  const targetUserIds = linkedRows.map((row) => row.orbita_user_id).filter(Boolean);
+  await createRealtimeEvents(targetUserIds, "group_member_added", thread.conversation_id, {
+    kind: "task_thread_updated",
+    taskmanagerOrgId,
+    taskmanagerTaskId,
+    taskNumber,
+  });
+
+  return {
+    conversationId: thread.conversation_id,
+    status: pendingRows.length ? "pending" : "ready",
+    linkedMembers: linkedRows.length,
+    pendingMembers: pendingRows.length,
+  };
 }
 
 function normalizeTaskmanagerAgentDisplayName(displayName) {
@@ -1781,6 +2097,39 @@ async function findAuthUserByEmail(email) {
   return null;
 }
 
+async function loadTaskThreadForwardingContext(conversationId, senderId) {
+  const { data: thread, error: threadError } = await supabase
+    .from("taskmanager_task_threads")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .maybeSingle();
+  if (threadError) throw threadError;
+  if (!thread) return null;
+  if (thread.agent_profile_id === senderId) return { skip: true, reason: "Sender is the Task Manager agent." };
+
+  const { data: member, error: memberError } = await supabase
+    .from("taskmanager_task_thread_members")
+    .select("*")
+    .eq("taskmanager_org_id", thread.taskmanager_org_id)
+    .eq("taskmanager_task_id", thread.taskmanager_task_id)
+    .eq("orbita_user_id", senderId)
+    .eq("status", "linked")
+    .maybeSingle();
+  if (memberError) throw memberError;
+  if (!member?.taskmanager_user_id) {
+    return { skip: true, reason: "Sender is not a linked Task Manager member of this task thread." };
+  }
+
+  return {
+    taskmanagerOrgId: thread.taskmanager_org_id,
+    taskmanagerUserId: member.taskmanager_user_id,
+    taskmanagerTaskId: thread.taskmanager_task_id,
+    taskNumber: thread.task_number,
+    taskTitle: thread.title,
+    taskStatus: thread.status,
+  };
+}
+
 async function forwardTaskmanagerInbound(
   conversationId,
   senderId,
@@ -1792,6 +2141,49 @@ async function forwardTaskmanagerInbound(
   const secret = process.env.TASK_MANAGER_ORBITA_SECRET;
   if (!webhookUrl || !secret) {
     return { forwarded: false, reason: "Task Manager webhook is not configured." };
+  }
+
+  const taskThreadContext = await loadTaskThreadForwardingContext(conversationId, senderId);
+  if (taskThreadContext?.skip) {
+    return { forwarded: false, reason: taskThreadContext.reason };
+  }
+  if (taskThreadContext) {
+    const raw = JSON.stringify({
+      taskmanagerOrgId: taskThreadContext.taskmanagerOrgId,
+      taskmanagerUserId: taskThreadContext.taskmanagerUserId,
+      taskmanagerTaskId: taskThreadContext.taskmanagerTaskId,
+      taskNumber: taskThreadContext.taskNumber,
+      taskTitle: taskThreadContext.taskTitle,
+      taskStatus: taskThreadContext.taskStatus,
+      channel: TASK_MANAGER_ORBITA_CHANNEL,
+      connection: TASK_MANAGER_ORBITA_CHANNEL,
+      userConnection: TASK_MANAGER_ORBITA_CHANNEL,
+      conversationId,
+      orbitaUserId: senderId,
+      messageId: message.id,
+      kind: message.kind,
+      text: taskManagerTextOverride || message.body || undefined,
+      attachment: attachments[0] ?? null,
+      attachments,
+      sentAt: message.createdAt ?? new Date().toISOString(),
+    });
+
+    const response = await fetch(webhookUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-orbita-signature": `sha256=${hmacSha256(raw, secret)}`,
+      },
+      body: raw,
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      const reason = `Task Manager Orbita webhook failed: ${response.status} ${text}`;
+      console.error(reason);
+      return { forwarded: false, reason };
+    }
+
+    return { forwarded: true };
   }
 
   const { data: link, error } = await supabase
@@ -1855,10 +2247,19 @@ async function forwardTaskmanagerInbound(
     activeLink = reboundLink;
   }
   if (activeLink.agent_profile_id === senderId) return { forwarded: false, reason: "Sender is the Task Manager agent." };
+  const { data: sourceAgentProfile, error: sourceAgentProfileError } = await supabase
+    .from("profiles")
+    .select("display_name")
+    .eq("id", activeLink.agent_profile_id)
+    .maybeSingle();
+  if (sourceAgentProfileError) throw sourceAgentProfileError;
 
   const raw = JSON.stringify({
     taskmanagerOrgId: activeLink.taskmanager_org_id,
     taskmanagerUserId: activeLink.taskmanager_user_id,
+    sourceAgentProfileId: activeLink.agent_profile_id,
+    sourceAgentConversationId: activeLink.conversation_id,
+    sourceAgentDisplayName: sourceAgentProfile?.display_name ?? "",
     channel: TASK_MANAGER_ORBITA_CHANNEL,
     connection: TASK_MANAGER_ORBITA_CHANNEL,
     userConnection: TASK_MANAGER_ORBITA_CHANNEL,
@@ -1915,6 +2316,7 @@ async function handleServiceAction(action, payload) {
       .maybeSingle();
     if (existingError) throw existingError;
     if (existing?.enabled && existing.orbita_user_id === orbitaProfile.id && existing.agent_profile_id === agentProfileId) {
+      await materializePendingTaskThreadMemberships(taskmanagerOrgId, taskmanagerUserId, orbitaProfile.id);
       return {
         orbitaProfileId: existing.orbita_user_id,
         conversationId: existing.conversation_id,
@@ -1943,6 +2345,7 @@ async function handleServiceAction(action, payload) {
       .select()
       .single();
     if (linkError) throw linkError;
+    await materializePendingTaskThreadMemberships(taskmanagerOrgId, taskmanagerUserId, orbitaProfile.id);
 
     return {
       orbitaProfileId: link.orbita_user_id,
@@ -1951,6 +2354,10 @@ async function handleServiceAction(action, payload) {
       connection: TASK_MANAGER_ORBITA_CHANNEL,
       userConnection: TASK_MANAGER_ORBITA_CHANNEL,
     };
+  }
+
+  if (action === "ensure_task_thread") {
+    return ensureTaskmanagerTaskThread(payload);
   }
 
   if (action === "update_taskmanager_agent_name") {
@@ -2072,6 +2479,77 @@ async function handleServiceAction(action, payload) {
       messageId: message.id,
       taskmanagerUserId,
     });
+    return { message: mapMessage(message, mappedAttachments) };
+  }
+
+  if (action === "send_task_thread_agent_message") {
+    const taskmanagerOrgId = requiredString(payload, "taskmanagerOrgId");
+    const taskmanagerUserId = requiredString(payload, "taskmanagerUserId");
+    const taskmanagerTaskId = requiredString(payload, "taskmanagerTaskId");
+    const body = requiredString(payload, "body").slice(0, 5000);
+    const attachmentInput = isRecord(payload.attachment) ? payload.attachment : null;
+    const requesterTaskmanagerUserId = optionalString(payload, "requesterTaskmanagerUserId");
+
+    const { data: thread, error: threadError } = await supabase
+      .from("taskmanager_task_threads")
+      .select("*")
+      .eq("taskmanager_org_id", taskmanagerOrgId)
+      .eq("taskmanager_task_id", taskmanagerTaskId)
+      .maybeSingle();
+    if (threadError) throw threadError;
+    if (!thread?.conversation_id || !thread?.agent_profile_id) {
+      throw new Error("Task thread is not available in Orbita yet.");
+    }
+
+    const { data: member, error: memberError } = await supabase
+      .from("taskmanager_task_thread_members")
+      .select("*")
+      .eq("taskmanager_org_id", taskmanagerOrgId)
+      .eq("taskmanager_task_id", taskmanagerTaskId)
+      .eq("taskmanager_user_id", taskmanagerUserId)
+      .eq("status", "linked")
+      .maybeSingle();
+    if (memberError) throw memberError;
+    if (!member?.orbita_user_id) {
+      throw new Error("Recipient is not linked to Orbita for this task thread.");
+    }
+
+    await ensureConversationParticipants(thread.conversation_id, [
+      { user_id: thread.agent_profile_id, role: "owner" },
+      { user_id: member.orbita_user_id, role: member.role || "member" },
+    ]);
+
+    const messagePayload = {
+      body,
+      system: {
+        kind: "task_thread_agent_message",
+        taskmanagerOrgId,
+        taskmanagerUserId,
+        taskmanagerTaskId,
+        taskNumber: thread.task_number,
+        requesterTaskmanagerUserId: requesterTaskmanagerUserId || "",
+      },
+    };
+
+    pushLog("service.send_task_thread_agent_message", {
+      conversationId: thread.conversation_id,
+      taskmanagerOrgId,
+      taskmanagerUserId,
+      taskmanagerTaskId,
+    });
+
+    const attachmentRow = attachmentInput ? await createServiceAttachment(thread.agent_profile_id, attachmentInput) : null;
+    const kind = attachmentRow
+      ? messageKindFromAttachment(attachmentMetadata(attachmentRow).kind, attachmentRow.mime_type)
+      : "text";
+    const message = await insertMessageWithReceipts(thread.conversation_id, thread.agent_profile_id, kind, messagePayload, {
+      awaitPush: true,
+      pushSource: "send_task_thread_agent_message",
+    });
+    const linkedAttachment = attachmentRow ? await linkAttachmentToMessage(attachmentRow, message.id) : null;
+    const mappedAttachments = linkedAttachment
+      ? [mapAttachment(linkedAttachment, await signedAttachmentUrl(linkedAttachment, 12 * 60 * 60))]
+      : [];
     return { message: mapMessage(message, mappedAttachments) };
   }
 
@@ -2282,6 +2760,64 @@ async function handleAction(user, action, payload, req) {
     await createRealtimeEvents(memberIds, "group_member_added", conversationId, { addedBy: user.id });
     const updated = (await loadConversations(user.id)).find((item) => item.id === conversationId);
     if (!updated) throw new Error("Unable to load updated group.");
+    return { conversation: updated };
+  }
+
+  if (action === "add_task_thread_members") {
+    const conversationId = requiredString(payload, "conversationId");
+    const memberIds = [...new Set(stringArray(payload, "memberIds").filter((id) => id !== user.id))];
+    if (!memberIds.length) throw new Error("Choose at least one member.");
+    await getConversation(user.id, conversationId);
+
+    const { data: thread, error: threadError } = await supabase
+      .from("taskmanager_task_threads")
+      .select("*")
+      .eq("conversation_id", conversationId)
+      .maybeSingle();
+    if (threadError) throw threadError;
+    if (!thread) throw new Error("Task thread not found.");
+
+    await ensureConversationParticipants(
+      conversationId,
+      memberIds.map((memberId) => ({ user_id: memberId, role: "member" })),
+    );
+
+    const { data: links, error: linkError } = await supabase
+      .from("taskmanager_agent_links")
+      .select("taskmanager_user_id, orbita_user_id")
+      .eq("taskmanager_org_id", thread.taskmanager_org_id)
+      .eq("enabled", true)
+      .in("orbita_user_id", memberIds);
+    if (linkError) throw linkError;
+
+    const now = new Date().toISOString();
+    const linkedRows = (links ?? [])
+      .filter((link) => link.taskmanager_user_id && link.orbita_user_id)
+      .map((link) => ({
+        taskmanager_org_id: thread.taskmanager_org_id,
+        taskmanager_task_id: thread.taskmanager_task_id,
+        taskmanager_user_id: link.taskmanager_user_id,
+        orbita_user_id: link.orbita_user_id,
+        role: "member",
+        status: "linked",
+        updated_at: now,
+      }));
+
+    if (linkedRows.length) {
+      const { error: memberError } = await supabase
+        .from("taskmanager_task_thread_members")
+        .upsert(linkedRows, { onConflict: "taskmanager_org_id,taskmanager_task_id,taskmanager_user_id" });
+      if (memberError) throw memberError;
+    }
+
+    await createRealtimeEvents(memberIds, "group_member_added", conversationId, {
+      addedBy: user.id,
+      kind: "task_thread_member_added",
+      taskmanagerOrgId: thread.taskmanager_org_id,
+      taskmanagerTaskId: thread.taskmanager_task_id,
+    });
+    const updated = (await loadConversations(user.id)).find((item) => item.id === conversationId);
+    if (!updated) throw new Error("Unable to load updated task thread.");
     return { conversation: updated };
   }
 

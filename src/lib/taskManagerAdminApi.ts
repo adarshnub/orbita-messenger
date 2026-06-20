@@ -35,6 +35,12 @@ export type TaskManagerAdminUser = {
 
 export type TaskManagerAdminTask = {
   _id: string;
+  display_number?: string | null;
+  parent_task_id?: string | null;
+  root_task_id?: string | null;
+  subtask_sequence?: number | null;
+  orbita_thread_status?: "ready" | "pending" | "failed";
+  thread_member_ids?: string[];
   title: string;
   status: "open" | "in_progress" | "done" | "discarded";
   assignee_id: string;
@@ -185,6 +191,28 @@ export const taskManagerAdminApi = {
   },
   tasks(session: TaskManagerAdminSession) {
     return adminFetch<TaskManagerAdminTask[]>(session, `/orbita/admin/orgs/${session.orgId}/tasks`);
+  },
+  createSubtask(
+    session: TaskManagerAdminSession,
+    taskId: string,
+    body: {
+      assignee_id: string;
+      title: string;
+      description?: string | null;
+      due_date?: string | null;
+      thread_member_ids?: string[];
+    },
+  ) {
+    return adminFetch<TaskManagerAdminTask>(session, `/orbita/admin/orgs/${session.orgId}/tasks/${taskId}/subtasks`, {
+      method: "POST",
+      body,
+    });
+  },
+  addTaskThreadMembers(session: TaskManagerAdminSession, taskId: string, userIds: string[]) {
+    return adminFetch<TaskManagerAdminTask>(session, `/orbita/admin/orgs/${session.orgId}/tasks/${taskId}/thread/members`, {
+      method: "POST",
+      body: { user_ids: userIds },
+    });
   },
   updateTaskStatus(session: TaskManagerAdminSession, taskId: string, status: TaskManagerAdminTask["status"]) {
     return adminFetch<TaskManagerAdminTask>(session, `/orbita/admin/orgs/${session.orgId}/tasks/${taskId}/status`, {

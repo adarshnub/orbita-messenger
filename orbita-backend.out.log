@@ -1,0 +1,11 @@
+Orbita backend listening on http://0.0.0.0:8787
+{"event":"push.no_recipients","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"a6d0e6a0-7e3a-46de-be5a-d3cdb83e2f6d","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+{"event":"service.send_agent_message","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","taskmanagerOrgId":"org_83e774793b304e10b49b96f8041fd1f7","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"2408d8f5-430f-42c7-9d68-8f134f8584dc","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"2408d8f5-430f-42c7-9d68-8f134f8584dc","ticketIds":["019ee5c2-69e4-7667-8446-095727f93232"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"2408d8f5-430f-42c7-9d68-8f134f8584dc","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
+{"event":"push.sending","conversationId":"b1081f7d-b859-41e5-9124-f11fa8af3c22","messageId":"755d61dd-8522-4b22-841d-3cb69550803e","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"task_thread_context"}
+{"event":"push.ticket_ok","conversationId":"b1081f7d-b859-41e5-9124-f11fa8af3c22","messageId":"755d61dd-8522-4b22-841d-3cb69550803e","ticketIds":["019ee5c2-77da-71c9-9f9f-81ab48884413"],"source":"task_thread_context"}
+{"event":"service.send_task_thread_agent_message","conversationId":"7a4a76c4-2a13-4b84-acd4-298906761718","taskmanagerOrgId":"org_83e774793b304e10b49b96f8041fd1f7","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8","taskmanagerTaskId":"tsk_9c18176056e2451499072c5f4f935e83"}
+{"event":"push.sending","conversationId":"7a4a76c4-2a13-4b84-acd4-298906761718","messageId":"a5d0d72a-aba7-4cb4-b4c2-98db0ced8fcd","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"send_task_thread_agent_message"}
+{"event":"push.ticket_ok","conversationId":"7a4a76c4-2a13-4b84-acd4-298906761718","messageId":"a5d0d72a-aba7-4cb4-b4c2-98db0ced8fcd","ticketIds":["019ee5c2-9c26-71e0-bbfa-bb6487f2fe5b"],"source":"send_task_thread_agent_message"}

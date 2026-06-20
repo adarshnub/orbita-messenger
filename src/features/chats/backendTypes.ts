@@ -19,6 +19,22 @@ export type BackendConversation = {
   participants: Array<BackendProfile & { role: "owner" | "admin" | "member" }>;
   lastMessage: BackendMessage | null;
   unreadCount: number;
+  taskManagerAgent?: {
+    taskmanagerOrgId: string;
+    taskmanagerUserId: string;
+    agentProfileId: string;
+  } | null;
+  taskThread?: {
+    taskmanagerOrgId: string;
+    taskmanagerTaskId: string;
+    taskNumber: string;
+    agentProfileId: string;
+    sourceAgentConversationId: string | null;
+    parentTaskId: string | null;
+    rootTaskId: string;
+    status: string;
+    title: string;
+  } | null;
 };
 
 export type BackendAttachment = {

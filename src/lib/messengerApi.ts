@@ -22,6 +22,7 @@ type ApiAction =
   | "create_direct_conversation"
   | "create_group"
   | "add_group_members"
+  | "add_task_thread_members"
   | "list_messages"
   | "mark_conversation_read"
   | "register_push_token"
@@ -249,6 +250,12 @@ export const messengerApi = {
   },
   addGroupMembers(conversationId: string, memberIds: string[]) {
     return callApi<{ conversation: BackendConversation }>("add_group_members", {
+      conversationId,
+      memberIds,
+    });
+  },
+  addTaskThreadMembers(conversationId: string, memberIds: string[]) {
+    return callApi<{ conversation: BackendConversation }>("add_task_thread_members", {
       conversationId,
       memberIds,
     });
