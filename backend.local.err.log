@@ -100,3 +100,59 @@ This phone number is already linked to another Orbita login. Error: This phone n
     at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
     at async handleAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:2065:3)
     at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:159:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)
+No Orbita user found for that phone number. Error: No Orbita user found for that phone number.
+    at handleServiceAction (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:1884:31)
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5)
+    at async Server.<anonymous> (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/backend/server.mjs:141:26)

@@ -171,6 +171,8 @@ const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap
 const DEV_BYPASS_OTP = "123456";
 const DEV_OTP_ENABLED = __DEV__ || process.env.EXPO_PUBLIC_ENABLE_DEV_OTP === "1";
 const OTP_RESEND_SECONDS = 45;
+const OTP_SIGNUP_BLOCKED_PATTERN = /signups?\s+not\s+allowed\s+for\s+otp/i;
+const OTP_USER_EXISTS_PATTERN = /(?:user|phone).*(?:already|exists|registered)|(?:already|exists|registered).*(?:user|phone)/i;
 const THEME_STORAGE_KEY = "orbita.themeMode";
 const DOCUMENT_TYPES = [
   "application/pdf",
@@ -308,6 +310,27 @@ function expoVoiceExtension(mimeType: string) {
   if (mimeType === "audio/aac") return ".aac";
   if (mimeType === "audio/3gpp") return ".3gp";
   return ".m4a";
+}
+
+function getFriendlyOtpRequestRecovery(
+  message: string,
+  authMode: AuthMode,
+): { message: string; nextMode?: AuthMode } | null {
+  if (authMode === "signin" && OTP_SIGNUP_BLOCKED_PATTERN.test(message)) {
+    return {
+      message: "No Orbita account exists for this phone yet. Enter your name and tap Create account to get started.",
+      nextMode: "signup",
+    };
+  }
+
+  if (authMode === "signup" && OTP_USER_EXISTS_PATTERN.test(message)) {
+    return {
+      message: "An Orbita account already exists for this phone. Sign in with OTP to continue.",
+      nextMode: "signin",
+    };
+  }
+
+  return null;
 }
 
 function waveLevelToBarHeight(level: number, minHeight = 9, maxHeight = 30) {
@@ -1127,6 +1150,18 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
     setLoading(false);
 
     if (result.error) {
+      const recovery = getFriendlyOtpRequestRecovery(result.error.message, authMode);
+      if (recovery) {
+        setPhone(normalizedPhone);
+        setOtp("");
+        setOtpSent(false);
+        setOtpFallbackActive(false);
+        setResendSeconds(0);
+        if (recovery.nextMode) setAuthMode(recovery.nextMode);
+        setNotice(recovery.message);
+        return;
+      }
+
       if (DEV_OTP_ENABLED) {
         setPhone(normalizedPhone);
         setDisplayName(normalizedName);
