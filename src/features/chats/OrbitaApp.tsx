@@ -135,6 +135,7 @@ type ForwardTarget = {
   title: string;
   subtitle: string;
 };
+type VoiceRecordingBackend = "expo" | "native";
 type ChatListContact = BackendProfile & { existingConversationId?: string };
 type UnsavedPeer = {
   defaultName: string;
@@ -285,6 +286,28 @@ function normalizeWaveSamples(samples?: number[] | null, targetCount = 22) {
   if (max - min < 0.004) return [];
   const range = Math.max(0.015, max - min);
   return resampled.map((sample) => clamp(0.1 + ((sample - min) / range) * 0.9, 0.08, 1));
+}
+
+function meteringToWaveLevel(metering?: number) {
+  if (!Number.isFinite(metering)) return 0.08;
+  const normalized = ((metering ?? -70) + 62) / 62;
+  return clamp(0.08 + normalized * normalized * 0.92, 0.08, 1);
+}
+
+function expoVoiceMimeType(uri?: string | null) {
+  const normalized = uri?.toLowerCase() ?? "";
+  if (normalized.endsWith(".m4a")) return "audio/mp4";
+  if (normalized.endsWith(".aac")) return "audio/aac";
+  if (normalized.endsWith(".3gp")) return "audio/3gpp";
+  if (normalized.endsWith(".webm")) return "audio/webm";
+  return Platform.OS === "web" ? "audio/webm" : "audio/mp4";
+}
+
+function expoVoiceExtension(mimeType: string) {
+  if (mimeType === "audio/webm") return ".webm";
+  if (mimeType === "audio/aac") return ".aac";
+  if (mimeType === "audio/3gpp") return ".3gp";
+  return ".m4a";
 }
 
 function waveLevelToBarHeight(level: number, minHeight = 9, maxHeight = 30) {
@@ -4471,7 +4494,9 @@ function ChatPane({
   const [voiceNativeDurationMs, setVoiceNativeDurationMs] = useState(0);
   const [voiceWaveSamples, setVoiceWaveSamples] = useState<number[]>(() => Array(VOICE_WAVEFORM_BARS).fill(0.14));
   const stopWebWaveAnalyserRef = useRef<(() => void) | null>(null);
+  const voiceRecordingBackendRef = useRef<VoiceRecordingBackend | null>(null);
   const nativeWaveformPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const nativeStartWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [quickPromptOpen, setQuickPromptOpen] = useState(false);
   const canTriggerOlderRef = useRef(false);
   const contentHeightRef = useRef(0);
@@ -4620,13 +4645,35 @@ function ChatPane({
     return () => {
       stopWebWaveAnalyserRef.current?.();
       stopNativeWaveformPolling();
+      stopNativeStartWatchdog();
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      Platform.OS === "web" ||
+      voiceRecordingBackendRef.current !== "expo" ||
+      !voiceRecorderVisible ||
+      voiceRecorderPaused ||
+      !recorderState.isRecording
+    ) {
+      return;
+    }
+    const level = meteringToWaveLevel(recorderState.metering);
+    setVoiceWaveSamples((samples) => [...samples.slice(1), level]);
+  }, [recorderState.durationMillis, recorderState.isRecording, recorderState.metering, voiceRecorderPaused, voiceRecorderVisible]);
 
   function stopNativeWaveformPolling() {
     if (nativeWaveformPollRef.current) {
       clearInterval(nativeWaveformPollRef.current);
       nativeWaveformPollRef.current = null;
+    }
+  }
+
+  function stopNativeStartWatchdog() {
+    if (nativeStartWatchdogRef.current) {
+      clearTimeout(nativeStartWatchdogRef.current);
+      nativeStartWatchdogRef.current = null;
     }
   }
 
@@ -4692,14 +4739,54 @@ function ChatPane({
     }
   }
 
+  async function startExpoRecorderBackend() {
+    await recorder.prepareToRecordAsync();
+    recorder.record();
+    voiceRecordingBackendRef.current = "expo";
+    if (Platform.OS === "web") {
+      void startWebWaveAnalyser();
+    }
+  }
+
+  function startNativeStartWatchdog() {
+    stopNativeStartWatchdog();
+    nativeStartWatchdogRef.current = setTimeout(() => {
+      if (voiceRecordingBackendRef.current !== "native") return;
+      void orbitaAudioWaveform.getStatusAsync().then(async (status) => {
+        if (voiceRecordingBackendRef.current !== "native") return;
+        if (status.durationMs > 120 || status.waveformSamples.length > 0) return;
+
+        stopNativeWaveformPolling();
+        await orbitaAudioWaveform.discardRecordingAsync().catch(() => undefined);
+        voiceRecordingBackendRef.current = null;
+        setVoiceNativeDurationMs(0);
+        setVoiceWaveSamples(Array(VOICE_WAVEFORM_BARS).fill(0.14));
+        try {
+          await startExpoRecorderBackend();
+          setVoiceRecorderVisible(true);
+          setVoiceRecorderPaused(false);
+        } catch {
+          setVoiceRecorderVisible(false);
+          setVoiceRecorderPaused(false);
+          await setAudioModeAsync({
+            allowsRecording: false,
+            playsInSilentMode: true,
+            interruptionMode: "duckOthers",
+          }).catch(() => undefined);
+        }
+      }).catch(() => undefined);
+    }, 900);
+  }
+
   async function startVoiceRecording() {
     if (voiceRecorderVisible && voiceRecorderPaused) {
-      if (Platform.OS === "web") {
+      if (voiceRecordingBackendRef.current === "expo") {
         recorder.record();
-        void startWebWaveAnalyser();
-      } else {
+        if (Platform.OS === "web") void startWebWaveAnalyser();
+      } else if (voiceRecordingBackendRef.current === "native") {
         await orbitaAudioWaveform.resumeRecordingAsync();
         startNativeWaveformPolling();
+        startNativeStartWatchdog();
       }
       setVoiceRecorderPaused(false);
       return;
@@ -4714,25 +4801,45 @@ function ChatPane({
     });
     setVoiceWaveSamples(Array(VOICE_WAVEFORM_BARS).fill(0.14));
     setVoiceNativeDurationMs(0);
-    setVoiceRecorderVisible(true);
-    setVoiceRecorderPaused(false);
-    if (Platform.OS === "web") {
-      await recorder.prepareToRecordAsync();
-      recorder.record();
-      void startWebWaveAnalyser();
-    } else {
-      await orbitaAudioWaveform.startRecordingAsync();
-      startNativeWaveformPolling();
+    voiceRecordingBackendRef.current = null;
+    try {
+      const nativeAvailable = Platform.OS !== "web" && await orbitaAudioWaveform.isAvailableAsync();
+      if (nativeAvailable) {
+        await orbitaAudioWaveform.startRecordingAsync();
+        voiceRecordingBackendRef.current = "native";
+        setVoiceRecorderVisible(true);
+        setVoiceRecorderPaused(false);
+        startNativeWaveformPolling();
+        startNativeStartWatchdog();
+        return;
+      }
+    } catch {
+      await orbitaAudioWaveform.discardRecordingAsync().catch(() => undefined);
+    }
+
+    try {
+      await startExpoRecorderBackend();
+      setVoiceRecorderVisible(true);
+      setVoiceRecorderPaused(false);
+    } catch {
+      voiceRecordingBackendRef.current = null;
+      setVoiceRecorderVisible(false);
+      setVoiceRecorderPaused(false);
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        interruptionMode: "duckOthers",
+      }).catch(() => undefined);
     }
   }
 
   async function pauseVoiceRecording() {
     if (!voiceRecorderVisible || voiceRecorderPaused) return;
-    if (Platform.OS === "web" && !recorderState.isRecording) return;
-    if (Platform.OS === "web") {
+    stopNativeStartWatchdog();
+    if (voiceRecordingBackendRef.current === "expo") {
       recorder.pause();
       stopWebWaveAnalyser();
-    } else {
+    } else if (voiceRecordingBackendRef.current === "native") {
       await orbitaAudioWaveform.pauseRecordingAsync();
       stopNativeWaveformPolling();
     }
@@ -4745,7 +4852,8 @@ function ChatPane({
     let result:
       | { durationMs: number | null; mimeType: string; uri: string; waveformSamples: number[] }
       | null = null;
-    if (Platform.OS === "web") {
+    const backend = voiceRecordingBackendRef.current;
+    if (backend === "expo") {
       const durationMs = recorderState.durationMillis || null;
       const waveformSamples = normalizeWaveSamples(voiceWaveSamples, VOICE_WAVEFORM_BARS);
       try {
@@ -4756,16 +4864,18 @@ function ChatPane({
         return null;
       }
       const uri = recorder.uri ?? recorderState.url;
+      const mimeType = expoVoiceMimeType(uri);
       result = uri
         ? {
             durationMs,
-            mimeType: "audio/webm",
+            mimeType,
             uri,
             waveformSamples,
           }
         : null;
-    } else {
+    } else if (backend === "native") {
       try {
+        stopNativeStartWatchdog();
         stopNativeWaveformPolling();
         const nativeResult = await orbitaAudioWaveform.stopRecordingAsync();
         result = {
@@ -4778,6 +4888,9 @@ function ChatPane({
         setVoiceRecorderBusy(false);
         return null;
       }
+    } else {
+      setVoiceRecorderBusy(false);
+      return null;
     }
     await setAudioModeAsync({
       allowsRecording: false,
@@ -4788,12 +4901,14 @@ function ChatPane({
     setVoiceRecorderPaused(false);
     setVoiceRecorderBusy(false);
     setVoiceNativeDurationMs(0);
+    voiceRecordingBackendRef.current = null;
     if (!result?.uri) return null;
+    const extension = result.mimeType === "audio/wav" ? ".wav" : expoVoiceExtension(result.mimeType);
     return {
       localId: `voice-${Date.now()}`,
       kind: "voice",
       uri: result.uri,
-      name: `voice-note-${Date.now()}${result.mimeType === "audio/wav" ? ".wav" : ".webm"}`,
+      name: `voice-note-${Date.now()}${extension}`,
       mimeType: result.mimeType,
       durationMs: result.durationMs,
       waveformSamples: result.waveformSamples,
@@ -4803,10 +4918,11 @@ function ChatPane({
   async function discardVoiceAttachment() {
     stopWebWaveAnalyser();
     stopNativeWaveformPolling();
-    if (voiceRecorderVisible && Platform.OS === "web") {
+    stopNativeStartWatchdog();
+    if (voiceRecorderVisible && voiceRecordingBackendRef.current === "expo") {
       await recorder.stop().catch(() => undefined);
     }
-    if (voiceRecorderVisible && Platform.OS !== "web") {
+    if (voiceRecorderVisible && voiceRecordingBackendRef.current === "native") {
       await orbitaAudioWaveform.discardRecordingAsync().catch(() => undefined);
     }
     if (voiceRecorderVisible) {
@@ -4820,6 +4936,7 @@ function ChatPane({
     setVoiceRecorderPaused(false);
     setVoiceRecorderBusy(false);
     setVoiceNativeDurationMs(0);
+    voiceRecordingBackendRef.current = null;
     setVoiceWaveSamples(Array(VOICE_WAVEFORM_BARS).fill(0.14));
   }
 
@@ -4835,7 +4952,8 @@ function ChatPane({
   }
 
   const composerCanSend = Boolean(draft.trim() || attachment);
-  const voiceElapsedLabel = formatDurationMs(Platform.OS === "web" ? recorderState.durationMillis : voiceNativeDurationMs);
+  const voiceElapsedMs = voiceRecordingBackendRef.current === "expo" ? recorderState.durationMillis : voiceNativeDurationMs;
+  const voiceElapsedLabel = formatDurationMs(voiceElapsedMs);
 
   const edgeSwipeResponder = useMemo(
     () =>
