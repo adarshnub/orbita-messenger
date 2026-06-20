@@ -163,9 +163,7 @@ const VOICE_RECORDING_OPTIONS = {
 const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: "chats", label: "Chats", icon: "chatbubbles-outline" },
   { id: "admin", label: "Admin", icon: "briefcase-outline" },
-  { id: "status", label: "Status", icon: "aperture-outline" },
   { id: "contacts", label: "Contacts", icon: "people-outline" },
-  { id: "calls", label: "Calls", icon: "call-outline" },
   { id: "settings", label: "Settings", icon: "settings-outline" },
 ];
 
@@ -984,7 +982,11 @@ function IconButton({
 }) {
   const { isDarkTheme } = useAppTheme();
   return (
-    <Pressable accessibilityLabel={label} onPress={onPress} style={[styles.iconButton, isDarkTheme && styles.iconButtonDark]}>
+    <Pressable
+      accessibilityLabel={label}
+      onPress={onPress}
+      style={({ pressed }) => [styles.iconButton, isDarkTheme && styles.iconButtonDark, pressed && styles.pressablePressed]}
+    >
       <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name={icon} size={21} />
     </Pressable>
   );
@@ -1198,7 +1200,11 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                   <Pressable
                     accessibilityLabel={isDarkTheme ? "Switch to light theme" : "Switch to dark theme"}
                     onPress={toggleTheme}
-                    style={[styles.authThemeButton, !isDarkTheme && styles.authThemeButtonLight]}
+                    style={({ pressed }) => [
+                      styles.authThemeButton,
+                      !isDarkTheme && styles.authThemeButtonLight,
+                      pressed && styles.pressablePressed,
+                    ]}
                   >
                     <Ionicons color={authIconColor} name={isDarkTheme ? "sunny-outline" : "moon-outline"} size={18} />
                   </Pressable>
@@ -1215,10 +1221,11 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                   <View style={[styles.authModeSwitch, !isDarkTheme && styles.authModeSwitchLight]}>
                     <Pressable
                       onPress={() => switchMode("signin")}
-                      style={[
+                      style={({ pressed }) => [
                         styles.authModeButton,
                         authMode === "signin" && styles.authModeButtonActive,
                         !isDarkTheme && authMode === "signin" && styles.authModeButtonActiveLight,
+                        pressed && styles.pressablePressed,
                       ]}
                     >
                       <Text
@@ -1234,10 +1241,11 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                     </Pressable>
                     <Pressable
                       onPress={() => switchMode("signup")}
-                      style={[
+                      style={({ pressed }) => [
                         styles.authModeButton,
                         authMode === "signup" && styles.authModeButtonActive,
                         !isDarkTheme && authMode === "signup" && styles.authModeButtonActiveLight,
+                        pressed && styles.pressablePressed,
                       ]}
                     >
                       <Text
@@ -1295,7 +1303,11 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                       />
                     </View>
                     <View style={styles.otpActionRow}>
-                      <Pressable disabled={loading || resendSeconds > 0} onPress={() => requestOtp(true)} style={styles.textActionButton}>
+                      <Pressable
+                        disabled={loading || resendSeconds > 0}
+                        onPress={() => requestOtp(true)}
+                        style={({ pressed }) => [styles.textActionButton, pressed && styles.pressablePressed]}
+                      >
                         <Text
                           style={[
                             styles.textAction,
@@ -1307,7 +1319,11 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                           {resendLabel}
                         </Text>
                       </Pressable>
-                      <Pressable disabled={loading} onPress={editLoginDetails} style={styles.textActionButton}>
+                      <Pressable
+                        disabled={loading}
+                        onPress={editLoginDetails}
+                        style={({ pressed }) => [styles.textActionButton, pressed && styles.pressablePressed]}
+                      >
                         <Text style={[styles.textAction, !isDarkTheme && styles.textActionLight]}>Edit details</Text>
                       </Pressable>
                     </View>
@@ -1316,7 +1332,11 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                 <Pressable
                   disabled={loading || !hasSupabaseConfig}
                   onPress={otpSent ? verifyOtp : () => requestOtp(false)}
-                  style={[styles.loginButton, (loading || !hasSupabaseConfig) && styles.buttonDisabled]}
+                  style={({ pressed }) => [
+                    styles.loginButton,
+                    pressed && styles.pressablePressed,
+                    (loading || !hasSupabaseConfig) && styles.buttonDisabled,
+                  ]}
                 >
                   {loading ? (
                     <ActivityIndicator color="#FFFFFF" />
@@ -1425,6 +1445,7 @@ function MessengerShell({ session }: { session: Session }) {
   const openingAgentFromFabRef = useRef(false);
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
   const visibleTabs = useMemo(() => (adminSession ? tabs : tabs.filter((tab) => tab.id !== "admin")), [adminSession]);
+  const visibleTabIds = useMemo(() => new Set(visibleTabs.map((tab) => tab.id)), [visibleTabs]);
   const conversationIds = useMemo(() => conversations.map((conversation) => conversation.id), [conversations]);
   const conversationKey = conversationIds.join("|");
   const profileId = profile?.id ?? "";
@@ -1473,6 +1494,12 @@ function MessengerShell({ session }: { session: Session }) {
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
+
+  useEffect(() => {
+    if (!visibleTabIds.has(activeTab)) {
+      setActiveTab("chats");
+    }
+  }, [activeTab, visibleTabIds]);
 
   useEffect(() => {
     adminSessionRef.current = adminSession;
@@ -2973,6 +3000,10 @@ function MessengerShell({ session }: { session: Session }) {
   }
 
   function changeTab(tab: Tab) {
+    if (!visibleTabIds.has(tab)) {
+      setActiveTab("chats");
+      return;
+    }
     setActiveTab(tab);
     if (tab !== "chats") selectConversation("");
   }
@@ -2993,10 +3024,10 @@ function MessengerShell({ session }: { session: Session }) {
             {error || "Check that the Orbita backend is running and reachable from this device."}
           </Text>
           <View style={styles.modalActions}>
-            <Pressable onPress={signOut} style={styles.secondaryButton}>
+            <Pressable onPress={signOut} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressablePressed]}>
               <Text style={styles.secondaryText}>Sign out</Text>
             </Pressable>
-            <Pressable onPress={retryBootstrap} style={styles.primaryButton}>
+            <Pressable onPress={retryBootstrap} style={({ pressed }) => [styles.primaryButton, pressed && styles.pressablePressed]}>
               <Text style={styles.primaryText}>Retry</Text>
             </Pressable>
           </View>
@@ -3132,10 +3163,11 @@ function MessengerShell({ session }: { session: Session }) {
           onPress={() => {
             void openAgentChatFromFab();
           }}
-          style={[
+          style={({ pressed }) => [
             styles.agentFab,
             isDarkTheme && styles.agentFabDark,
             { bottom: showBottomTabs ? 66 + bottomInset : 20 + bottomInset },
+            pressed && styles.pressablePressed,
           ]}
         >
           <Ionicons color={isDarkTheme ? colors.primaryDark : "#FFFFFF"} name="sparkles" size={18} />
@@ -3274,14 +3306,18 @@ function Sidebar({
             accessibilityLabel={tab.label}
             key={tab.id}
             onPress={() => onChange(tab.id)}
-            style={[styles.navItem, activeTab === tab.id && styles.navItemActive]}
+            style={({ pressed }) => [styles.navItem, activeTab === tab.id && styles.navItemActive, pressed && styles.pressablePressed]}
           >
             <Ionicons color={activeTab === tab.id ? colors.primaryDark : "rgba(255,255,255,0.76)"} name={tab.icon} size={22} />
             <Text style={[styles.navLabel, activeTab === tab.id && styles.navLabelActive]}>{tab.label}</Text>
           </Pressable>
         ))}
       </View>
-      <Pressable accessibilityLabel="New chat" onPress={onNewChat} style={styles.composeButton}>
+      <Pressable
+        accessibilityLabel="New chat"
+        onPress={onNewChat}
+        style={({ pressed }) => [styles.composeButton, pressed && styles.pressablePressed]}
+      >
         <Ionicons color="#FFFFFF" name="add" size={26} />
       </Pressable>
     </View>
@@ -3305,7 +3341,12 @@ function BottomTabs({
   return (
     <View style={[styles.bottomTabs, isDarkTheme && styles.bottomTabsDark, { paddingBottom: bottomInset + 8 }]}>
       {visibleTabs.map((tab) => (
-        <Pressable accessibilityLabel={tab.label} key={tab.id} onPress={() => onChange(tab.id)} style={styles.bottomTab}>
+        <Pressable
+          accessibilityLabel={tab.label}
+          key={tab.id}
+          onPress={() => onChange(tab.id)}
+          style={({ pressed }) => [styles.bottomTab, pressed && styles.bottomTabPressed]}
+        >
           <View>
             <Ionicons
               color={activeTab === tab.id ? (isDarkTheme ? colors.accent : colors.primaryDark) : isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted}
@@ -3423,7 +3464,15 @@ function Panel({
     return <StatusPanel isWide={isWide} onNewStatus={onNewStatus} profile={profile} statuses={statuses} />;
   }
   if (activeTab === "contacts") {
-    return <ContactsPanel contacts={contacts} isWide={isWide} onCreateGroup={onCreateGroup} onNewChat={onNewChat} />;
+    return (
+      <ContactsPanel
+        contacts={contacts}
+        isWide={isWide}
+        onCreateGroup={onCreateGroup}
+        onNewChat={onNewChat}
+        onOpenContact={onOpenContact}
+      />
+    );
   }
   if (activeTab === "calls") {
     return <CallsPanel isWide={isWide} />;
@@ -3615,7 +3664,11 @@ function AdminPanelV2({
           <Text style={[styles.adminEyebrow, isDarkTheme && styles.adminMutedText]}>Task Manager</Text>
           <Text style={[styles.adminTitle, isDarkTheme && styles.chatTitleDark]}>{session.orgName}</Text>
         </View>
-        <Pressable accessibilityLabel="Refresh admin data" onPress={onRefresh} style={[styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark]}>
+        <Pressable
+          accessibilityLabel="Refresh admin data"
+          onPress={onRefresh}
+          style={({ pressed }) => [styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark, pressed && styles.pressablePressed]}
+        >
           {loading ? <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} /> : <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="refresh-outline" size={20} />}
         </Pressable>
       </View>
@@ -3626,7 +3679,12 @@ function AdminPanelV2({
             <Pressable
               key={item.id}
               onPress={() => setSection(item.id)}
-              style={[styles.adminSectionTab, isDarkTheme && styles.adminSectionTabDark, section === item.id && styles.adminSectionTabActive]}
+              style={({ pressed }) => [
+                styles.adminSectionTab,
+                isDarkTheme && styles.adminSectionTabDark,
+                section === item.id && styles.adminSectionTabActive,
+                pressed && styles.pressablePressed,
+              ]}
             >
               <Ionicons color={section === item.id ? "#FFFFFF" : isDarkTheme ? colors.accent : colors.primaryDark} name={item.icon} size={16} />
               <Text style={[styles.adminSectionTabText, isDarkTheme && styles.adminMutedText, section === item.id && styles.adminSectionTabTextActive]}>{item.label}</Text>
@@ -3677,11 +3735,12 @@ function AdminPanelV2({
               <Pressable
                 key={user._id}
                 onPress={() => void onSelectUser(user._id)}
-                style={[
+                style={({ pressed }) => [
                   styles.adminListRow,
                   isDarkTheme && styles.adminListRowDark,
                   selectedUser?._id === user._id && styles.adminListRowActive,
                   selectedUser?._id === user._id && isDarkTheme && styles.adminListRowActiveDark,
+                  pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
                 ]}
               >
                 <View>
@@ -3702,7 +3761,7 @@ function AdminPanelV2({
               <Pressable
                 accessibilityLabel="Filter tasks by employee"
                 onPress={() => setTaskFilterOpen((current) => !current)}
-                style={styles.adminFilterTrigger}
+                style={({ pressed }) => [styles.adminFilterTrigger, pressed && styles.pressablePressed]}
               >
                 <View>
                   <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>Employee filter</Text>
@@ -3729,11 +3788,12 @@ function AdminPanelV2({
                       setTaskAssigneeFilter("all");
                       setTaskFilterOpen(false);
                     }}
-                    style={[
+                    style={({ pressed }) => [
                       styles.adminFilterOption,
                       isDarkTheme && styles.adminFilterOptionDark,
                       taskAssigneeFilter === "all" && styles.adminFilterOptionActive,
                       taskAssigneeFilter === "all" && isDarkTheme && styles.adminFilterOptionActiveDark,
+                      pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
                     ]}
                   >
                     <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>All employees</Text>
@@ -3748,11 +3808,12 @@ function AdminPanelV2({
                           setTaskAssigneeFilter(user._id);
                           setTaskFilterOpen(false);
                         }}
-                        style={[
+                        style={({ pressed }) => [
                           styles.adminFilterOption,
                           isDarkTheme && styles.adminFilterOptionDark,
                           taskAssigneeFilter === user._id && styles.adminFilterOptionActive,
                           taskAssigneeFilter === user._id && isDarkTheme && styles.adminFilterOptionActiveDark,
+                          pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
                         ]}
                       >
                         <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{user.name}</Text>
@@ -3812,7 +3873,7 @@ function AdminPanelV2({
                   <View key={department._id} style={[styles.adminDepartmentCard, isDarkTheme && styles.adminListRowDark]}>
                     <Pressable
                       onPress={() => void toggleDepartment(department._id)}
-                      style={styles.adminDepartmentTrigger}
+                      style={({ pressed }) => [styles.adminDepartmentTrigger, pressed && styles.pressablePressed]}
                     >
                       <View>
                         <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{department.name}</Text>
@@ -3824,7 +3885,15 @@ function AdminPanelV2({
                       <View style={styles.adminDepartmentMembersInline}>
                         {isDepartmentLoading ? <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} /> : null}
                         {details?.members.map((member) => (
-                          <Pressable key={member.user_id} onPress={() => void onSelectUser(member.user_id)} style={[styles.adminChatRow, isDarkTheme && styles.adminChatRowDark]}>
+                          <Pressable
+                            key={member.user_id}
+                            onPress={() => void onSelectUser(member.user_id)}
+                            style={({ pressed }) => [
+                              styles.adminChatRow,
+                              isDarkTheme && styles.adminChatRowDark,
+                              pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+                            ]}
+                          >
                             <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{member.name}</Text>
                             <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>
                               {[member.role, ...(member.roles ?? [])].filter(Boolean).join(" - ") || "member"}
@@ -3922,7 +3991,11 @@ function AdminPanel({
           <Text style={[styles.adminEyebrow, isDarkTheme && styles.adminMutedText]}>Task Manager</Text>
           <Text style={[styles.adminTitle, isDarkTheme && styles.chatTitleDark]}>{session.orgName}</Text>
         </View>
-        <Pressable accessibilityLabel="Refresh admin data" onPress={onRefresh} style={[styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark]}>
+        <Pressable
+          accessibilityLabel="Refresh admin data"
+          onPress={onRefresh}
+          style={({ pressed }) => [styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark, pressed && styles.pressablePressed]}
+        >
           {loading ? <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} /> : <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="refresh-outline" size={20} />}
         </Pressable>
       </View>
@@ -3951,19 +4024,35 @@ function AdminPanel({
                   accessibilityLabel={`Set role ${role}`}
                   key={role}
                   onPress={() => onSetEmployeeRole(role)}
-                  style={[styles.roleToggleButton, employeeRole === role && styles.roleToggleButtonActive]}
+                  style={({ pressed }) => [
+                    styles.roleToggleButton,
+                    employeeRole === role && styles.roleToggleButtonActive,
+                    pressed && styles.pressablePressed,
+                  ]}
                 >
                   <Text style={[styles.roleToggleText, employeeRole === role && styles.roleToggleTextActive]}>{role}</Text>
                 </Pressable>
               ))}
             </View>
           </View>
-          <Pressable accessibilityLabel="Add employee" onPress={() => void onCreateEmployee()} style={styles.adminPrimaryButton}>
+          <Pressable
+            accessibilityLabel="Add employee"
+            onPress={() => void onCreateEmployee()}
+            style={({ pressed }) => [styles.adminPrimaryButton, pressed && styles.pressablePressed]}
+          >
             <Ionicons color="#FFFFFF" name="person-add-outline" size={17} />
             <Text style={styles.adminPrimaryButtonText}>Add employee</Text>
           </Pressable>
           {users.map((user) => (
-            <Pressable key={user._id} onPress={() => void onSelectUser(user._id)} style={[styles.adminListRow, selectedUser?._id === user._id && styles.adminListRowActive]}>
+            <Pressable
+              key={user._id}
+              onPress={() => void onSelectUser(user._id)}
+              style={({ pressed }) => [
+                styles.adminListRow,
+                selectedUser?._id === user._id && styles.adminListRowActive,
+                pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+              ]}
+            >
               <View>
                 <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{user.name}</Text>
                 <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{user.role} · {user.agent_channel ?? "whatsapp"}</Text>
@@ -3981,7 +4070,10 @@ function AdminPanel({
                 <Text numberOfLines={1} style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{task.title}</Text>
                 <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{task.status}</Text>
               </View>
-              <Pressable onPress={() => void onUpdateTaskStatus(task._id, task.status === "done" ? "open" : "done")} style={styles.adminTaskButton}>
+              <Pressable
+                onPress={() => void onUpdateTaskStatus(task._id, task.status === "done" ? "open" : "done")}
+                style={({ pressed }) => [styles.adminTaskButton, pressed && styles.pressablePressed]}
+              >
                 <Ionicons color={task.status === "done" ? colors.primaryDark : "#FFFFFF"} name={task.status === "done" ? "refresh-outline" : "checkmark"} size={16} />
               </Pressable>
             </View>
@@ -4183,12 +4275,20 @@ function ChatsPanel({
             value={query}
           />
           {query ? (
-            <Pressable onPress={() => setQuery("")}>
+            <Pressable
+              accessibilityLabel="Clear search"
+              onPress={() => setQuery("")}
+              style={({ pressed }) => [styles.inlineIconHit, pressed && styles.pressablePressed]}
+            >
               <Ionicons color={isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted} name="close-circle" size={18} />
             </Pressable>
           ) : null}
         </View>
-        <Pressable accessibilityLabel="Add contact" onPress={onNewChat} style={[styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark]}>
+        <Pressable
+          accessibilityLabel="Add contact"
+          onPress={onNewChat}
+          style={({ pressed }) => [styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark, pressed && styles.pressablePressed]}
+        >
           <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="person-add-outline" size={20} />
         </Pressable>
       </View>
@@ -4206,11 +4306,12 @@ function ChatsPanel({
                   <Pressable
                     key={row.id}
                     onPress={() => onSelect(conversation.id)}
-                    style={[
+                    style={({ pressed }) => [
                       styles.chatRow,
                       isDarkTheme && styles.chatRowDark,
                       selectedId === conversation.id && styles.chatRowActive,
                       isDarkTheme && selectedId === conversation.id && styles.chatRowActiveDark,
+                      pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
                     ]}
                   >
                     <Avatar
@@ -4249,7 +4350,11 @@ function ChatsPanel({
                 <Pressable
                   key={row.id}
                   onPress={() => onOpenContact(contact.id)}
-                  style={[styles.chatRow, isDarkTheme && styles.chatRowDark]}
+                  style={({ pressed }) => [
+                    styles.chatRow,
+                    isDarkTheme && styles.chatRowDark,
+                    pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+                  ]}
                 >
                   <Avatar
                     avatarUrl={contact.avatarUrl}
@@ -4832,11 +4937,12 @@ function ChatPane({
                     ) : null}
                     <Pressable
                       onLongPress={() => onForwardMessage(message)}
-                      style={[
+                      style={({ pressed }) => [
                         styles.bubble,
                         mine ? styles.mineBubble : styles.theirBubble,
                         isDarkTheme && mine && styles.mineBubbleDark,
                         isDarkTheme && !mine && styles.theirBubbleDark,
+                        pressed && styles.bubblePressed,
                       ]}
                     >
                       {message.forwardedFrom ? (
@@ -4907,7 +5013,11 @@ function ChatPane({
                     onPress={() => {
                       void sendQuickPrompt(item);
                     }}
-                    style={[styles.quickPromptItem, isDarkTheme && styles.quickPromptItemDark]}
+                    style={({ pressed }) => [
+                      styles.quickPromptItem,
+                      isDarkTheme && styles.quickPromptItemDark,
+                      pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+                    ]}
                   >
                     <Text style={[styles.quickPromptItemText, isDarkTheme && styles.quickPromptItemTextDark]}>
                       {item.label}
@@ -4919,7 +5029,11 @@ function ChatPane({
             <Pressable
               accessibilityLabel="Open quick prompts"
               onPress={() => setQuickPromptOpen((prev) => !prev)}
-              style={[styles.quickPromptButton, isDarkTheme && styles.quickPromptButtonDark]}
+              style={({ pressed }) => [
+                styles.quickPromptButton,
+                isDarkTheme && styles.quickPromptButtonDark,
+                pressed && styles.pressablePressed,
+              ]}
             >
               <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.primaryDark} name="help-circle-outline" size={18} />
             </Pressable>
@@ -4933,7 +5047,12 @@ function ChatPane({
               onPress={() => {
                 void discardVoiceAttachment();
               }}
-              style={[styles.voiceInlineButton, styles.voiceDeleteButton, isDarkTheme && styles.voiceDeleteButtonDark]}
+              style={({ pressed }) => [
+                styles.voiceInlineButton,
+                styles.voiceDeleteButton,
+                isDarkTheme && styles.voiceDeleteButtonDark,
+                pressed && styles.pressablePressed,
+              ]}
             >
               <Ionicons color={colors.danger} name="trash-outline" size={20} />
             </Pressable>
@@ -4963,7 +5082,11 @@ function ChatPane({
               accessibilityLabel={voiceRecorderPaused ? "Resume voice recording" : "Pause voice recording"}
               disabled={voiceRecorderBusy}
               onPress={voiceRecorderPaused ? startVoiceRecording : pauseVoiceRecording}
-              style={[styles.voiceInlineButton, isDarkTheme && styles.voiceInlineButtonDark]}
+              style={({ pressed }) => [
+                styles.voiceInlineButton,
+                isDarkTheme && styles.voiceInlineButtonDark,
+                pressed && styles.pressablePressed,
+              ]}
             >
               <Ionicons color={isDarkTheme ? "#E9EDEF" : colors.primaryDark} name={voiceRecorderPaused ? "mic" : "pause"} size={20} />
             </Pressable>
@@ -4973,7 +5096,11 @@ function ChatPane({
               onPress={() => {
                 void sendVoiceAttachment();
               }}
-              style={[styles.voiceSendButton, voiceRecorderBusy && styles.buttonDisabled]}
+              style={({ pressed }) => [
+                styles.voiceSendButton,
+                pressed && styles.pressablePressed,
+                voiceRecorderBusy && styles.buttonDisabled,
+              ]}
             >
               {voiceRecorderBusy ? (
                 <ActivityIndicator color="#FFFFFF" size="small" />
@@ -4984,7 +5111,15 @@ function ChatPane({
           </View>
         ) : (
           <>
-            <Pressable accessibilityLabel="Add attachment" onPress={onOpenAttachmentMenu} style={[styles.composerAccessoryButton, isDarkTheme && styles.composerAccessoryButtonDark]}>
+            <Pressable
+              accessibilityLabel="Add attachment"
+              onPress={onOpenAttachmentMenu}
+              style={({ pressed }) => [
+                styles.composerAccessoryButton,
+                isDarkTheme && styles.composerAccessoryButtonDark,
+                pressed && styles.pressablePressed,
+              ]}
+            >
               <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name="add" size={22} />
             </Pressable>
             <View style={styles.composerBody}>
@@ -4993,6 +5128,7 @@ function ChatPane({
               ) : null}
               <TextInput
                 blurOnSubmit={false}
+                scrollEnabled={false}
                 multiline
                 onChangeText={setDraft}
                 onKeyPress={(event) => {
@@ -5019,7 +5155,7 @@ function ChatPane({
                 accessibilityLabel="Send message"
                 disabled={!composerCanSend}
                 onPress={() => onSend()}
-                style={[styles.sendButton, !composerCanSend && styles.buttonDisabled]}
+                style={({ pressed }) => [styles.sendButton, pressed && styles.pressablePressed, !composerCanSend && styles.buttonDisabled]}
               >
                 <Ionicons color="#FFFFFF" name="send" size={20} />
               </Pressable>
@@ -5028,11 +5164,20 @@ function ChatPane({
                 <Pressable
                   accessibilityLabel="Take photo"
                   onPress={onTakePhoto}
-                  style={[styles.sendButton, styles.cameraQuickButton, isDarkTheme && styles.cameraQuickButtonDark]}
+                  style={({ pressed }) => [
+                    styles.sendButton,
+                    styles.cameraQuickButton,
+                    isDarkTheme && styles.cameraQuickButtonDark,
+                    pressed && styles.pressablePressed,
+                  ]}
                 >
                   <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="camera-outline" size={20} />
                 </Pressable>
-                <Pressable accessibilityLabel="Record voice note" onPress={startVoiceRecording} style={styles.sendButton}>
+                <Pressable
+                  accessibilityLabel="Record voice note"
+                  onPress={startVoiceRecording}
+                  style={({ pressed }) => [styles.sendButton, pressed && styles.pressablePressed]}
+                >
                   <Ionicons color="#FFFFFF" name="mic" size={19} />
                 </Pressable>
               </View>
@@ -5077,7 +5222,7 @@ function ComposerAttachmentPreview({
                 : "Audio"}
         </Text>
       </View>
-      <Pressable onPress={onRemove} style={styles.composerAttachmentClose}>
+      <Pressable onPress={onRemove} style={({ pressed }) => [styles.composerAttachmentClose, pressed && styles.pressablePressed]}>
         <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name="close" size={16} />
       </Pressable>
     </View>
@@ -5095,7 +5240,7 @@ function MessageAttachmentCard({
 
   if (attachment.kind === "image") {
     return (
-      <Pressable onPress={() => openMessageUrl(attachment.url)} style={styles.imageAttachment}>
+      <Pressable onPress={() => openMessageUrl(attachment.url)} style={({ pressed }) => [styles.imageAttachment, pressed && styles.pressablePressed]}>
         <Image source={{ uri: attachment.url }} style={styles.imageAttachmentMedia} />
         <Text numberOfLines={1} style={[styles.attachmentCaption, mine && (isDarkTheme ? styles.attachmentCaptionMineDark : styles.attachmentCaptionMine)]}>
           {attachment.filename}
@@ -5109,7 +5254,14 @@ function MessageAttachmentCard({
   }
 
   return (
-    <Pressable onPress={() => openMessageUrl(attachment.url)} style={[styles.documentAttachment, mine && (isDarkTheme ? styles.documentAttachmentMineDark : styles.documentAttachmentMine)]}>
+    <Pressable
+      onPress={() => openMessageUrl(attachment.url)}
+      style={({ pressed }) => [
+        styles.documentAttachment,
+        mine && (isDarkTheme ? styles.documentAttachmentMineDark : styles.documentAttachmentMine),
+        pressed && styles.pressablePressed,
+      ]}
+    >
       <View style={[styles.documentAttachmentIcon, mine && (isDarkTheme ? styles.documentAttachmentIconMineDark : styles.documentAttachmentIconMine)]}>
         <Ionicons color={mine ? (isDarkTheme ? "#E9EDEF" : colors.primaryDark) : colors.primaryDark} name="document-text-outline" size={20} />
       </View>
@@ -5155,7 +5307,11 @@ function AudioAttachmentCard({
           }
           player.play();
         }}
-        style={[styles.audioPlayButton, mine && (isDarkTheme ? styles.audioPlayButtonMineDark : styles.audioPlayButtonMine)]}
+        style={({ pressed }) => [
+          styles.audioPlayButton,
+          mine && (isDarkTheme ? styles.audioPlayButtonMineDark : styles.audioPlayButtonMine),
+          pressed && styles.pressablePressed,
+        ]}
       >
         <Ionicons color={mine ? (isDarkTheme ? "#E9EDEF" : colors.primaryDark) : "#FFFFFF"} name={status.playing ? "pause" : "play"} size={17} />
       </Pressable>
@@ -5212,7 +5368,14 @@ function StatusPanel({
     <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Status" actionIcon="add-circle-outline" actionLabel="New status" onAction={onNewStatus} />
       <ScrollView contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}>
-        <Pressable onPress={onNewStatus} style={[styles.statusComposer, isDarkTheme && styles.statusComposerDark]}>
+        <Pressable
+          onPress={onNewStatus}
+          style={({ pressed }) => [
+            styles.statusComposer,
+            isDarkTheme && styles.statusComposerDark,
+            pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+          ]}
+        >
           <Avatar avatarUrl={profile.avatarUrl} name={profile.displayName} size={54} />
           <View style={styles.chatRowBody}>
             <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>My status</Text>
@@ -5246,23 +5409,43 @@ function ContactsPanel({
   isWide,
   onCreateGroup,
   onNewChat,
+  onOpenContact,
 }: {
   contacts: BackendProfile[];
   isWide: boolean;
   onCreateGroup: () => void;
   onNewChat: () => void;
+  onOpenContact: (contactId: string) => void;
 }) {
   const { isDarkTheme } = useAppTheme();
   return (
     <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Contacts" actionIcon="person-add-outline" actionLabel="Add contact" onAction={onNewChat} />
-      <Pressable onPress={onCreateGroup} style={[styles.quickAction, isDarkTheme && styles.quickActionDark]}>
+      <Pressable
+        accessibilityRole="button"
+        onPress={onCreateGroup}
+        style={({ pressed }) => [
+          styles.quickAction,
+          isDarkTheme && styles.quickActionDark,
+          pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+        ]}
+      >
         <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="people-outline" size={22} />
         <Text style={[styles.quickActionText, isDarkTheme && styles.quickActionTextDark]}>New group</Text>
       </Pressable>
       <ScrollView contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}>
         {contacts.length ? contacts.map((contact) => (
-          <View key={contact.id} style={[styles.contactRow, isDarkTheme && styles.contactRowDark]}>
+          <Pressable
+            accessibilityLabel={`Message ${contact.displayName}`}
+            accessibilityRole="button"
+            key={contact.id}
+            onPress={() => onOpenContact(contact.id)}
+            style={({ pressed }) => [
+              styles.contactRow,
+              isDarkTheme && styles.contactRowDark,
+              pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+            ]}
+          >
             <Avatar
               avatarUrl={contact.avatarUrl}
               isBot={contact.about?.trim().toLowerCase() === "task manager agent"}
@@ -5272,7 +5455,8 @@ function ContactsPanel({
               <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{contact.displayName}</Text>
               <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{contact.phone ?? contact.about}</Text>
             </View>
-          </View>
+            <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="chatbubble-outline" size={21} />
+          </Pressable>
         )) : <EmptyState icon="person-add-outline" title="No contacts" copy="Add contacts by phone number to start 1:1 chats or groups." />}
       </ScrollView>
     </View>
@@ -5322,7 +5506,11 @@ function SettingsPanel({
           disabled={isUploadingProfilePhoto}
           hitSlop={10}
           onPress={onUploadProfilePhoto}
-          style={[styles.profileAvatarButton, isUploadingProfilePhoto && styles.disabledPressable]}
+          style={({ pressed }) => [
+            styles.profileAvatarButton,
+            pressed && styles.pressablePressed,
+            isUploadingProfilePhoto && styles.disabledPressable,
+          ]}
         >
           <Avatar avatarUrl={profile.avatarUrl} name={profile.displayName} size={64} />
           <View style={[styles.profileAvatarBadge, isDarkTheme && styles.profileAvatarBadgeDark]}>
@@ -5342,7 +5530,14 @@ function SettingsPanel({
           </Text>
         </View>
       </View>
-      <Pressable onPress={toggleTheme} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
+      <Pressable
+        onPress={toggleTheme}
+        style={({ pressed }) => [
+          styles.settingRow,
+          isDarkTheme && styles.settingRowDark,
+          pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+        ]}
+      >
         <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name={isDarkTheme ? "moon" : "sunny-outline"} size={22} />
         <View style={styles.chatRowBody}>
           <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Theme</Text>
@@ -5354,14 +5549,28 @@ function SettingsPanel({
           <View style={[styles.themeSwitchKnob, isDarkTheme && styles.themeSwitchKnobOn]} />
         </View>
       </Pressable>
-      <Pressable onPress={onOpenProfile} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
+      <Pressable
+        onPress={onOpenProfile}
+        style={({ pressed }) => [
+          styles.settingRow,
+          isDarkTheme && styles.settingRowDark,
+          pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+        ]}
+      >
         <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="person-circle-outline" size={22} />
         <View style={styles.chatRowBody}>
           <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Profile</Text>
           <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Edit your display name and status line</Text>
         </View>
       </Pressable>
-      <Pressable onPress={onNewChat} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
+      <Pressable
+        onPress={onNewChat}
+        style={({ pressed }) => [
+          styles.settingRow,
+          isDarkTheme && styles.settingRowDark,
+          pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+        ]}
+      >
         <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="person-add-outline" size={22} />
         <View style={styles.chatRowBody}>
           <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Add contact</Text>
@@ -5382,7 +5591,15 @@ function SettingsPanel({
           </View>
         </View>
       ))}
-      <Pressable onPress={onSignOut} style={[styles.settingRow, styles.settingDangerRow, isDarkTheme && styles.settingRowDark]}>
+      <Pressable
+        onPress={onSignOut}
+        style={({ pressed }) => [
+          styles.settingRow,
+          styles.settingDangerRow,
+          isDarkTheme && styles.settingRowDark,
+          pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+        ]}
+      >
         <Ionicons color={colors.danger} name="log-out-outline" size={22} />
         <View style={styles.chatRowBody}>
           <Text style={[styles.chatTitle, styles.settingDangerText]}>Log out</Text>
@@ -5474,14 +5691,21 @@ function NewChatModal({
               style={styles.modalInput}
               value={nickname}
             />
-            <Pressable onPress={addContact} style={[styles.primaryButton, styles.fullWidthButton]}>
+            <Pressable
+              onPress={addContact}
+              style={({ pressed }) => [styles.primaryButton, styles.fullWidthButton, pressed && styles.pressablePressed]}
+            >
               <Text style={styles.primaryText}>Add contact</Text>
             </Pressable>
           </View>
           {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
           <ScrollView contentContainerStyle={styles.newChatContactListContent} style={styles.newChatContactList}>
             {contacts.length ? contacts.map((contact) => (
-              <Pressable key={contact.id} onPress={() => onOpenConversation(contact.id)} style={styles.newChatContactRow}>
+              <Pressable
+                key={contact.id}
+                onPress={() => onOpenConversation(contact.id)}
+                style={({ pressed }) => [styles.newChatContactRow, pressed && styles.rowPressed]}
+              >
                 <Avatar
                   avatarUrl={contact.avatarUrl}
                   isBot={contact.about?.trim().toLowerCase() === "task manager agent"}
@@ -5662,7 +5886,11 @@ function ContactPicker({
   return (
     <ScrollView style={styles.modalList}>
       {contacts.length ? contacts.map((contact) => (
-        <Pressable key={contact.id} onPress={() => toggle(contact.id)} style={styles.modalRow}>
+        <Pressable
+          key={contact.id}
+          onPress={() => toggle(contact.id)}
+          style={({ pressed }) => [styles.modalRow, pressed && styles.modalRowPressed]}
+        >
           <Avatar
             avatarUrl={contact.avatarUrl}
             isBot={contact.about?.trim().toLowerCase() === "task manager agent"}
@@ -5711,7 +5939,7 @@ function AttachmentMenuModal({
           <Pressable
             key={action.label}
             onPress={action.onPress}
-            style={styles.attachmentMenuRow}
+            style={({ pressed }) => [styles.attachmentMenuRow, pressed && styles.rowPressed]}
           >
             <View style={styles.attachmentMenuIcon}>
               <Ionicons color={colors.primaryDark} name={action.icon} size={20} />
@@ -5770,7 +5998,7 @@ function ForwardPickerModal({
                   selected ? current.filter((item) => item !== target.id) : [...current, target.id],
                 )
               }
-              style={styles.modalRow}
+              style={({ pressed }) => [styles.modalRow, pressed && styles.modalRowPressed]}
             >
               <Avatar avatarUrl={target.avatarUrl} isBot={Boolean(target.isBot)} name={target.title} />
               <View style={styles.chatRowBody}>
@@ -5864,11 +6092,15 @@ function ModalActions({
 }) {
   return (
     <View style={styles.modalActions}>
-      <Pressable onPress={onCancel} style={styles.secondaryButton}>
+      <Pressable onPress={onCancel} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressablePressed]}>
         <Text style={styles.secondaryText}>Cancel</Text>
       </Pressable>
       {onSubmit ? (
-        <Pressable disabled={disabled} onPress={disabled ? undefined : onSubmit} style={[styles.primaryButton, disabled && styles.buttonDisabled]}>
+        <Pressable
+          disabled={disabled}
+          onPress={disabled ? undefined : onSubmit}
+          style={({ pressed }) => [styles.primaryButton, pressed && styles.pressablePressed, disabled && styles.buttonDisabled]}
+        >
           <Text style={styles.primaryText}>{submitLabel ?? "Save"}</Text>
         </Pressable>
       ) : null}
@@ -5883,6 +6115,25 @@ const styles = StyleSheet.create({
   loadingScreenDark: { backgroundColor: "#111B21" },
   loadingLabel: { color: colors.muted, fontSize: 14, fontWeight: "700" },
   loadingLabelDark: { color: "rgba(255,255,255,0.70)" },
+  pressablePressed: { opacity: 0.72, transform: [{ scale: 0.97 }] },
+  rowPressed: {
+    backgroundColor: "rgba(0,168,132,0.14)",
+    borderColor: "rgba(0,168,132,0.32)",
+  },
+  rowPressedDark: {
+    backgroundColor: "rgba(6,207,156,0.16)",
+    borderColor: "rgba(6,207,156,0.34)",
+  },
+  bottomTabPressed: { backgroundColor: "rgba(0,168,132,0.10)", transform: [{ scale: 0.98 }] },
+  modalRowPressed: { backgroundColor: "rgba(0,168,132,0.10)" },
+  bubblePressed: { opacity: 0.82, transform: [{ scale: 0.99 }] },
+  inlineIconHit: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   logoFrame: {
     overflow: "hidden",
     alignItems: "center",
@@ -6361,7 +6612,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   bottomTabsDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#202C33" },
-  bottomTab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 2 },
+  bottomTab: { flex: 1, alignItems: "center", justifyContent: "center", gap: 2, borderRadius: 16 },
   bottomTabLabel: { color: colors.muted, fontSize: 10, fontWeight: "600" },
   bottomTabLabelDark: { color: "rgba(255,255,255,0.58)" },
   bottomTabLabelActive: { color: colors.primaryDark },
@@ -7070,16 +7321,21 @@ const styles = StyleSheet.create({
   composerBody: { flex: 1, gap: 8 },
   composerQuickActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   composerInput: {
-    minHeight: 42,
+    minHeight: 44,
     maxHeight: 110,
-    borderRadius: 21,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 10,
     color: colors.ink,
+    fontSize: 16,
+    lineHeight: 22,
     backgroundColor: "#F0F2F5",
+    textAlignVertical: "center",
+    includeFontPadding: false,
   },
   composerInputDark: { color: "#FFFFFF", backgroundColor: "rgba(255,255,255,0.08)" },
-  composerInputWithAttachment: { minHeight: 40 },
+  composerInputWithAttachment: { minHeight: 44 },
   composerAttachment: {
     flexDirection: "row",
     alignItems: "center",
@@ -7307,7 +7563,7 @@ const styles = StyleSheet.create({
   newContactForm: { gap: 10 },
   statusInput: { minHeight: 130, textAlignVertical: "top", paddingTop: 12 },
   modalList: { maxHeight: 430, minHeight: 120, flexShrink: 1 },
-  modalRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 10 },
+  modalRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 8, paddingVertical: 10, borderRadius: 14 },
   newChatContactList: { maxHeight: 430, minHeight: 120, flexShrink: 1 },
   newChatContactListContent: { gap: 8, paddingVertical: 2 },
   newChatContactRow: {
