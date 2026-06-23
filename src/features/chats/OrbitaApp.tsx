@@ -4464,7 +4464,7 @@ function ChatsPanel({
           conversation,
           hasTaskThreads: false,
           id: `conversation-${conversation.id}`,
-          taskThreadsExpanded: expandedAgentIds[conversation.id] ?? true,
+          taskThreadsExpanded: expandedAgentIds[conversation.id] ?? false,
           type: "conversation" as const,
         };
         const rowsForConversation: Array<
@@ -4477,7 +4477,7 @@ function ChatsPanel({
         if (taskThreadsForAgent.length) {
           parentRow.hasTaskThreads = true;
         }
-        if (taskThreadsForAgent.length && (expandedAgentIds[conversation.id] ?? true)) {
+        if (taskThreadsForAgent.length && (expandedAgentIds[conversation.id] ?? false)) {
           rowsForConversation.push(
             ...taskThreadsForAgent
               .filter(taskThreadVisible)
@@ -4594,7 +4594,7 @@ function ChatsPanel({
                           animateNextListLayout();
                           setExpandedAgentIds((current) => ({
                             ...current,
-                            [conversation.id]: !(current[conversation.id] ?? true),
+                            [conversation.id]: !(current[conversation.id] ?? false),
                           }));
                         }}
                         style={({ pressed }) => [styles.taskThreadChevron, pressed && styles.pressablePressed]}
