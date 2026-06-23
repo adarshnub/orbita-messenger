@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { Link } from "expo-router";
 import {
   RecordingPresets,
   requestRecordingPermissionsAsync,
@@ -1449,6 +1450,19 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                     Required: EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.
                   </Text>
                 ) : null}
+              </View>
+              <View style={styles.loginLegalRow}>
+                <Text style={[styles.loginLegalText, !isDarkTheme && styles.loginLegalTextLight]}>
+                  By continuing, you agree to Orbita processing your data as described in our{" "}
+                </Text>
+                <Link href={"/privacy" as never} asChild>
+                  <Pressable style={({ pressed }) => [styles.loginLegalLinkButton, pressed && styles.pressablePressed]}>
+                    <Text style={[styles.loginLegalLink, !isDarkTheme && styles.loginLegalLinkLight]}>
+                      Privacy Policy
+                    </Text>
+                  </Pressable>
+                </Link>
+                <Text style={[styles.loginLegalText, !isDarkTheme && styles.loginLegalTextLight]}>.</Text>
               </View>
             </View>
             {isAuthWide ? (
@@ -7104,6 +7118,19 @@ const styles = StyleSheet.create({
   loginNoticeTextLight: { color: colors.primaryDark },
   loginHintText: { color: "rgba(255,255,255,0.58)", fontSize: 12, lineHeight: 18 },
   loginHintTextLight: { color: colors.muted },
+  loginLegalRow: {
+    maxWidth: 520,
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 8,
+  },
+  loginLegalText: { color: "rgba(255,255,255,0.58)", fontSize: 12, lineHeight: 18, textAlign: "center" },
+  loginLegalTextLight: { color: colors.muted },
+  loginLegalLinkButton: { borderRadius: 6 },
+  loginLegalLink: { color: colors.accent, fontSize: 12, fontWeight: "800", lineHeight: 18 },
+  loginLegalLinkLight: { color: colors.primaryDark },
   noticeText: { color: colors.primaryDark, fontSize: 13, fontWeight: "700" },
   hintText: { color: colors.muted, fontSize: 12, lineHeight: 18 },
   appFrame: { flex: 1, flexDirection: "row", backgroundColor: colors.page },
