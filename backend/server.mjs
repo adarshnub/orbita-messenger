@@ -1782,6 +1782,149 @@ async function ensureTaskThreadContextMessage(thread, payload) {
   return message.id;
 }
 
+function sourceTaskStatusNotificationText(thread, status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  const statusLabel = canonicalSourceTaskStatus(normalized) || formatTaskStatusLabel(status).toLowerCase();
+  const taskRef = `${thread.task_number || "Task"}${thread.title ? ` - ${thread.title}` : ""}`;
+  if (statusLabel === "closed") {
+    return `${taskRef} was closed.`;
+  }
+  if (statusLabel === "completed") {
+    return `${taskRef} was marked as completed.`;
+  }
+  return `${taskRef} status changed to ${statusLabel}.`;
+}
+
+function canonicalSourceTaskStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (normalized === "discarded" || normalized === "closed") return "closed";
+  if (normalized === "done" || normalized === "completed") return "completed";
+  return "";
+}
+
+async function notifySourceAgentConversationForTaskStatus(userId, conversationId, status) {
+  await getConversation(userId, conversationId);
+  const normalizedStatus = String(status || "").trim().toLowerCase();
+  if (!["done", "completed", "closed", "discarded"].includes(normalizedStatus)) {
+    return { notified: false, reason: "Status does not need source conversation notification." };
+  }
+
+  const { data: thread, error: threadError } = await supabase
+    .from("taskmanager_task_threads")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .maybeSingle();
+  if (threadError) throw threadError;
+  if (!thread) throw new Error("Task thread not found.");
+  if (!thread.agent_profile_id) {
+    return { notified: false, reason: "Task thread has no agent profile." };
+  }
+
+  return notifySourceAgentConversationForThreadStatus(thread, normalizedStatus);
+}
+
+async function sourceAgentConversationIdsForThread(thread) {
+  const directConversationId =
+    typeof thread?.source_agent_conversation_id === "string" && thread.source_agent_conversation_id
+      ? thread.source_agent_conversation_id
+      : "";
+  const conversationIds = directConversationId ? [directConversationId] : [];
+  if (!thread?.taskmanager_org_id || !thread?.taskmanager_task_id || !thread?.agent_profile_id) {
+    return conversationIds;
+  }
+
+  const { data: members, error: memberError } = await supabase
+    .from("taskmanager_task_thread_members")
+    .select("taskmanager_user_id, role, status")
+    .eq("taskmanager_org_id", thread.taskmanager_org_id)
+    .eq("taskmanager_task_id", thread.taskmanager_task_id)
+    .eq("status", "linked")
+    .order("role", { ascending: true });
+  if (memberError) throw memberError;
+
+  const taskmanagerUserIds = [...new Set((members ?? []).map((member) => member.taskmanager_user_id).filter(Boolean))];
+  if (!taskmanagerUserIds.length) return [...new Set(conversationIds)];
+
+  const { data: links, error: linkError } = await supabase
+    .from("taskmanager_agent_links")
+    .select("conversation_id, taskmanager_user_id")
+    .eq("taskmanager_org_id", thread.taskmanager_org_id)
+    .eq("agent_profile_id", thread.agent_profile_id)
+    .eq("enabled", true)
+    .in("taskmanager_user_id", taskmanagerUserIds);
+  if (linkError) throw linkError;
+
+  for (const userId of taskmanagerUserIds) {
+    const link = (links ?? []).find((row) => row.taskmanager_user_id === userId && row.conversation_id);
+    if (link?.conversation_id) conversationIds.push(link.conversation_id);
+  }
+
+  return [...new Set(conversationIds)];
+}
+
+async function notifySourceAgentConversationForThreadStatus(thread, status) {
+  const normalizedStatus = String(status || "").trim().toLowerCase();
+  const canonicalStatus = canonicalSourceTaskStatus(normalizedStatus);
+  if (!canonicalStatus) {
+    return { notified: false, reason: "Status does not need source conversation notification." };
+  }
+  const sourceConversationIds = await sourceAgentConversationIdsForThread(thread);
+  const sourceConversationId = sourceConversationIds[0];
+  if (!sourceConversationId) {
+    return { notified: false, reason: "Task thread is not linked to a source agent conversation." };
+  }
+  if (!thread?.agent_profile_id) {
+    return { notified: false, reason: "Task thread has no agent profile." };
+  }
+
+  await ensureConversationParticipants(sourceConversationId, [
+    { user_id: thread.agent_profile_id, role: "owner" },
+  ]);
+
+  const clientMessageId = [
+    "task-thread-source-status",
+    thread.taskmanager_org_id,
+    thread.taskmanager_task_id,
+    canonicalStatus,
+    sourceConversationId,
+  ].join(":");
+  const { data: existing, error: existingError } = await supabase
+    .from("messages")
+    .select("*")
+    .eq("conversation_id", sourceConversationId)
+    .eq("sender_id", thread.agent_profile_id)
+    .eq("client_message_id", clientMessageId)
+    .maybeSingle();
+  if (existingError) throw existingError;
+  if (existing) {
+    return { notified: true, message: await mapMessageWithAttachments(existing), reason: "already_notified" };
+  }
+
+  const message = await insertMessageWithReceipts(
+    sourceConversationId,
+    thread.agent_profile_id,
+    "text",
+    {
+      body: sourceTaskStatusNotificationText({ ...thread, status: canonicalStatus }, canonicalStatus),
+      system: {
+        kind: "task_thread_source_status_changed",
+        taskmanagerOrgId: thread.taskmanager_org_id,
+        taskmanagerTaskId: thread.taskmanager_task_id,
+        taskNumber: thread.task_number,
+        status: canonicalStatus,
+        taskThreadConversationId: thread.conversation_id,
+      },
+    },
+    {
+      awaitPush: true,
+      clientMessageId,
+      pushSource: "task_thread_source_status_changed",
+    },
+  );
+
+  return { notified: true, message: await mapMessageWithAttachments(message) };
+}
+
 async function ensureTaskmanagerTaskThread(payload) {
   const taskmanagerOrgId = requiredString(payload, "taskmanagerOrgId");
   const taskmanagerTaskId = requiredString(payload, "taskmanagerTaskId");
@@ -1843,7 +1986,7 @@ async function ensureTaskmanagerTaskThread(payload) {
     status: optionalString(payload, "status") || "open",
     agent_profile_id: agentProfileId,
     conversation_id: conversation.id,
-    source_agent_conversation_id: sourceAgentConversationId,
+    source_agent_conversation_id: sourceAgentConversationId || existingThread?.source_agent_conversation_id || null,
     updated_at: now,
   };
   let threadResult = await supabase
@@ -1926,6 +2069,15 @@ async function ensureTaskmanagerTaskThread(payload) {
       completedAt,
     }),
   );
+
+  await notifySourceAgentConversationForThreadStatus(thread, thread.status).catch((error) => {
+    console.error("[taskmanager-thread] source status notification failed", {
+      taskmanagerOrgId,
+      taskmanagerTaskId,
+      status: thread.status,
+      error: errorMessage(error),
+    });
+  });
 
   const targetUserIds = linkedRows.map((row) => row.orbita_user_id).filter(Boolean);
   await createRealtimeEvents(targetUserIds, "group_member_added", thread.conversation_id, {
@@ -2358,6 +2510,23 @@ async function handleServiceAction(action, payload) {
 
   if (action === "ensure_task_thread") {
     return ensureTaskmanagerTaskThread(payload);
+  }
+
+  if (action === "notify_task_thread_status_changed") {
+    const taskmanagerOrgId = requiredString(payload, "taskmanagerOrgId");
+    const taskmanagerTaskId = requiredString(payload, "taskmanagerTaskId");
+    const status = requiredString(payload, "status");
+    const { data: thread, error: threadError } = await supabase
+      .from("taskmanager_task_threads")
+      .select("*")
+      .eq("taskmanager_org_id", taskmanagerOrgId)
+      .eq("taskmanager_task_id", taskmanagerTaskId)
+      .maybeSingle();
+    if (threadError) throw threadError;
+    if (!thread) {
+      return { notified: false, reason: "Task thread not found." };
+    }
+    return notifySourceAgentConversationForThreadStatus(thread, status);
   }
 
   if (action === "update_taskmanager_agent_name") {
@@ -2819,6 +2988,14 @@ async function handleAction(user, action, payload, req) {
     const updated = (await loadConversations(user.id)).find((item) => item.id === conversationId);
     if (!updated) throw new Error("Unable to load updated task thread.");
     return { conversation: updated };
+  }
+
+  if (action === "notify_task_thread_status_changed") {
+    return notifySourceAgentConversationForTaskStatus(
+      user.id,
+      requiredString(payload, "conversationId"),
+      requiredString(payload, "status"),
+    );
   }
 
   if (action === "list_messages") {

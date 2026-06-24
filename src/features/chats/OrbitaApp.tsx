@@ -3164,7 +3164,18 @@ function MessengerShell({ session }: { session: Session }) {
         setError("Open admin mode before changing task status from the chat list.");
         return;
       }
+      const taskConversation = conversations.find(
+        (conversation) => conversation.taskThread?.taskmanagerTaskId === taskId,
+      );
       await taskManagerAdminApi.updateTaskStatus(adminSession, taskId, status);
+      if (taskConversation && isCompletedTaskThreadStatus(status)) {
+        await messengerApi.notifyTaskThreadStatusChanged({
+          conversationId: taskConversation.id,
+          status,
+        }).catch((error) => {
+          console.error("Unable to notify source agent conversation", error);
+        });
+      }
       animateNextListLayout();
       setConversations((current) =>
         current.map((conversation) =>
@@ -3182,7 +3193,7 @@ function MessengerShell({ session }: { session: Session }) {
       await refreshAdminData(adminSession, { silent: true });
       void retryBootstrap();
     },
-    [adminSession, refreshAdminData, retryBootstrap],
+    [adminSession, conversations, refreshAdminData, retryBootstrap],
   );
 
   if (loading) {

@@ -23,6 +23,7 @@ type ApiAction =
   | "create_group"
   | "add_group_members"
   | "add_task_thread_members"
+  | "notify_task_thread_status_changed"
   | "list_messages"
   | "mark_conversation_read"
   | "register_push_token"
@@ -259,6 +260,9 @@ export const messengerApi = {
       conversationId,
       memberIds,
     });
+  },
+  notifyTaskThreadStatusChanged(input: { conversationId: string; status: string }) {
+    return callApi<{ message?: BackendMessage; notified: boolean; reason?: string }>("notify_task_thread_status_changed", input);
   },
   listMessages(input: string | { beforeCreatedAt?: string; conversationId: string; limit?: number }) {
     const payload = typeof input === "string" ? { conversationId: input } : input;
