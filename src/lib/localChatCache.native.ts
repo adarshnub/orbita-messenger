@@ -30,6 +30,8 @@ export type QueuedOutgoingMessage = {
   kind: BackendMessage["kind"];
   lastError?: string;
   localId: string;
+  replyTo?: BackendMessage["replyTo"];
+  replyToMessageId?: string | null;
   senderId: string;
   status: "queued" | "sending" | "failed";
   taskManagerText?: string;

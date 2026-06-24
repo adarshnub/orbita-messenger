@@ -47,6 +47,7 @@ import {
   BackendConversation,
   BackendMessage,
   BackendProfile,
+  BackendReplyPreview,
   BackendStatus,
 } from "@/features/chats/backendTypes";
 import {
@@ -107,7 +108,16 @@ import { colors, radii, shadow } from "@/theme/colors";
 type Tab = "chats" | "status" | "contacts" | "calls" | "settings" | "admin";
 type AuthMode = "signin" | "signup";
 type AppThemeMode = "light" | "dark";
+type AccentThemeId = "green" | "blue" | "purple" | "rose" | "amber";
 type ChatMessage = BackendMessage & { localState?: "sending" | "queued" | "failed" };
+type MessageActionAnchor = {
+  height: number;
+  mine: boolean;
+  width: number;
+  x: number;
+  y: number;
+};
+type MessageActionTarget = { anchor?: MessageActionAnchor; message: ChatMessage } | null;
 type TypingParticipant = {
   displayName: string;
   expiresAt: number;
@@ -177,11 +187,89 @@ const OTP_RESEND_SECONDS = 45;
 const OTP_SIGNUP_BLOCKED_PATTERN = /signups?\s+not\s+allowed\s+for\s+otp/i;
 const OTP_USER_EXISTS_PATTERN = /(?:user|phone).*(?:already|exists|registered)|(?:already|exists|registered).*(?:user|phone)/i;
 const THEME_STORAGE_KEY = "orbita.themeMode";
+const ACCENT_THEME_STORAGE_KEY = "orbita.accentTheme";
+const MESSAGE_ACTION_MENU_WIDTH = 176;
+const MESSAGE_ACTION_MENU_HEIGHT = 92;
+const MESSAGE_ACTION_MENU_GAP = 6;
 const DOCUMENT_TYPES = [
   "application/pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+];
+
+const ACCENT_THEMES: Array<{
+  id: AccentThemeId;
+  label: string;
+  primary: string;
+  primaryDark: string;
+  primarySoft: string;
+  accent: string;
+  accentSoft: string;
+  bubbleMine: string;
+  darkBubbleMine: string;
+  darkAccentSoft: string;
+}> = [
+  {
+    id: "green",
+    label: "Orbita green",
+    primary: "#00A884",
+    primaryDark: "#008069",
+    primarySoft: "#D9FDD3",
+    accent: "#06CF9C",
+    accentSoft: "#E7FCE3",
+    bubbleMine: "#D9FDD3",
+    darkBubbleMine: "#005C4B",
+    darkAccentSoft: "rgba(6,207,156,0.12)",
+  },
+  {
+    id: "blue",
+    label: "Signal blue",
+    primary: "#2563EB",
+    primaryDark: "#1D4ED8",
+    primarySoft: "#DBEAFE",
+    accent: "#38BDF8",
+    accentSoft: "#E0F2FE",
+    bubbleMine: "#DBEAFE",
+    darkBubbleMine: "#1E3A8A",
+    darkAccentSoft: "rgba(56,189,248,0.15)",
+  },
+  {
+    id: "purple",
+    label: "Cosmic violet",
+    primary: "#8B5CF6",
+    primaryDark: "#6D28D9",
+    primarySoft: "#EDE9FE",
+    accent: "#C084FC",
+    accentSoft: "#F3E8FF",
+    bubbleMine: "#EDE9FE",
+    darkBubbleMine: "#4C1D95",
+    darkAccentSoft: "rgba(192,132,252,0.16)",
+  },
+  {
+    id: "rose",
+    label: "Rose coral",
+    primary: "#F43F5E",
+    primaryDark: "#BE123C",
+    primarySoft: "#FFE4E6",
+    accent: "#FB7185",
+    accentSoft: "#FFF1F2",
+    bubbleMine: "#FFE4E6",
+    darkBubbleMine: "#881337",
+    darkAccentSoft: "rgba(251,113,133,0.16)",
+  },
+  {
+    id: "amber",
+    label: "Amber gold",
+    primary: "#F59E0B",
+    primaryDark: "#B45309",
+    primarySoft: "#FEF3C7",
+    accent: "#FBBF24",
+    accentSoft: "#FFFBEB",
+    bubbleMine: "#FEF3C7",
+    darkBubbleMine: "#78350F",
+    darkAccentSoft: "rgba(251,191,36,0.16)",
+  },
 ];
 const AGENT_QUICK_PROMPTS: Array<{ id: string; label: string; prompt: string }> = [
   {
@@ -241,15 +329,23 @@ function taskThreadArchiveTitle(status?: string | null) {
 }
 
 type AppThemeContextValue = {
+  accentTheme: AccentThemeId;
+  accentThemes: typeof ACCENT_THEMES;
   isDarkTheme: boolean;
+  setAccentTheme: (theme: AccentThemeId) => void;
   setThemeMode: (mode: AppThemeMode) => void;
+  themeColors: (typeof ACCENT_THEMES)[number];
   themeMode: AppThemeMode;
   toggleTheme: () => void;
 };
 
 const AppThemeContext = createContext<AppThemeContextValue>({
+  accentTheme: "green",
+  accentThemes: ACCENT_THEMES,
   isDarkTheme: false,
+  setAccentTheme: () => undefined,
   setThemeMode: () => undefined,
+  themeColors: ACCENT_THEMES[0],
   themeMode: "light",
   toggleTheme: () => undefined,
 });
@@ -260,16 +356,29 @@ function useAppTheme() {
 
 function usePersistedTheme() {
   const [themeMode, setThemeModeState] = useState<AppThemeMode>("light");
+  const [accentTheme, setAccentThemeState] = useState<AccentThemeId>("green");
   const isDarkTheme = themeMode === "dark";
+  const themeColors = ACCENT_THEMES.find((item) => item.id === accentTheme) ?? ACCENT_THEMES[0];
 
   useEffect(() => {
-    AsyncStorage.getItem(THEME_STORAGE_KEY)
-      .then((savedTheme) => {
+    Promise.all([
+      AsyncStorage.getItem(THEME_STORAGE_KEY),
+      AsyncStorage.getItem(ACCENT_THEME_STORAGE_KEY),
+    ])
+      .then(([savedTheme, savedAccentTheme]) => {
         if (savedTheme === "light" || savedTheme === "dark") {
           setThemeModeState(savedTheme);
         }
+        if (ACCENT_THEMES.some((item) => item.id === savedAccentTheme)) {
+          setAccentThemeState(savedAccentTheme as AccentThemeId);
+        }
       })
       .catch(() => undefined);
+  }, []);
+
+  const setAccentTheme = useCallback((theme: AccentThemeId) => {
+    setAccentThemeState(theme);
+    void AsyncStorage.setItem(ACCENT_THEME_STORAGE_KEY, theme).catch(() => undefined);
   }, []);
 
   const setThemeMode = useCallback((mode: AppThemeMode) => {
@@ -282,8 +391,17 @@ function usePersistedTheme() {
   }, [setThemeMode, themeMode]);
 
   return useMemo<AppThemeContextValue>(
-    () => ({ isDarkTheme, setThemeMode, themeMode, toggleTheme }),
-    [isDarkTheme, setThemeMode, themeMode, toggleTheme],
+    () => ({
+      accentTheme,
+      accentThemes: ACCENT_THEMES,
+      isDarkTheme,
+      setAccentTheme,
+      setThemeMode,
+      themeColors,
+      themeMode,
+      toggleTheme,
+    }),
+    [accentTheme, isDarkTheme, setAccentTheme, setThemeMode, themeColors, themeMode, toggleTheme],
   );
 }
 
@@ -374,12 +492,21 @@ function waveLevelToBarHeight(level: number, minHeight = 9, maxHeight = 30) {
 }
 
 function mergeAttachmentWaveforms(serverMessage: BackendMessage, localMessage?: BackendMessage | null): BackendMessage {
-  if (!localMessage?.attachments?.length || !serverMessage.attachments.length) return serverMessage;
+  const mergedMessage: BackendMessage = localMessage
+    ? {
+        ...serverMessage,
+        clientMessageId: serverMessage.clientMessageId ?? localMessage.clientMessageId ?? null,
+        forwardedFrom: serverMessage.forwardedFrom ?? localMessage.forwardedFrom ?? null,
+        replyTo: serverMessage.replyTo ?? localMessage.replyTo ?? null,
+        replyToMessageId: serverMessage.replyToMessageId ?? localMessage.replyToMessageId ?? null,
+      }
+    : serverMessage;
+  if (!localMessage?.attachments?.length || !serverMessage.attachments.length) return mergedMessage;
   const localAttachment = localMessage.attachments[0];
   const serverAttachment = serverMessage.attachments[0];
-  if (serverAttachment.waveformSamples?.length || !localAttachment.waveformSamples?.length) return serverMessage;
+  if (serverAttachment.waveformSamples?.length || !localAttachment.waveformSamples?.length) return mergedMessage;
   return {
-    ...serverMessage,
+    ...mergedMessage,
     attachments: [
       {
         ...serverAttachment,
@@ -521,6 +648,35 @@ function conversationSubtitle(conversation: BackendConversation) {
   return "Direct message";
 }
 
+function participantDisplayName(conversation: BackendConversation, userId: string, currentUserId: string) {
+  if (userId === currentUserId) return "You";
+  return conversation.participants.find((participant) => participant.id === userId)?.displayName ?? "Member";
+}
+
+function buildReplyPreviewFromMessage(message: BackendMessage): BackendReplyPreview {
+  return {
+    messageId: message.id,
+    senderId: message.senderId,
+    body: messagePreviewText(message).slice(0, 180),
+    kind: message.kind,
+  };
+}
+
+function replyPreviewText(reply: BackendReplyPreview | null | undefined) {
+  if (!reply) return "";
+  const text = reply.body.trim();
+  if (text) return text;
+  if (reply.kind === "image") return "Photo";
+  if (reply.kind === "voice" || reply.kind === "audio") return "Voice note";
+  if (reply.kind === "document") return "Document";
+  return "Message";
+}
+
+function taskManagerReplyText(reply: BackendReplyPreview | null, messageText: string) {
+  const quote = replyPreviewText(reply);
+  return quote ? `[Replying to quoted message: ${quote}]\n${messageText}` : messageText;
+}
+
 function isTaskConversation(conversation: BackendConversation) {
   return Boolean(conversation.taskThread);
 }
@@ -578,7 +734,18 @@ function useKeyboardClearance(enabled = true) {
 
 function mergeMessages(incoming: BackendMessage[], local: ChatMessage[]) {
   const pending = local.filter((message) => message.localState);
-  const stable = [...incoming];
+  const localById = new Map(local.map((message) => [message.id, message]));
+  const localByClientId = new Map(
+    local
+      .filter((message) => message.clientMessageId)
+      .map((message) => [message.clientMessageId as string, message]),
+  );
+  const stable = incoming.map((incomingMessage) => {
+    const localMatch =
+      localById.get(incomingMessage.id) ||
+      (incomingMessage.clientMessageId ? localByClientId.get(incomingMessage.clientMessageId) : undefined);
+    return localMatch ? mergeMessagePayload(localMatch, incomingMessage) : incomingMessage;
+  });
   const stableById = new Set(stable.map((message) => message.id));
 
   pending.forEach((pendingMessage) => {
@@ -597,6 +764,8 @@ function mergeMessagePayload(existing: ChatMessage, incoming: BackendMessage): B
     attachments: incoming.attachments.length ? incoming.attachments : existing.attachments,
     clientMessageId: incoming.clientMessageId ?? existing.clientMessageId ?? null,
     forwardedFrom: incoming.forwardedFrom ?? existing.forwardedFrom ?? null,
+    replyTo: incoming.replyTo ?? existing.replyTo ?? null,
+    replyToMessageId: incoming.replyToMessageId ?? existing.replyToMessageId ?? null,
     status: incoming.status ?? existing.status,
   };
 }
@@ -638,6 +807,7 @@ function createLocalMessageId() {
 }
 
 function OrbitaLogo({ size = 64 }: { size?: number }) {
+  const { themeColors } = useAppTheme();
   const scan = useRef(new Animated.Value(0)).current;
   const pulse = useRef(new Animated.Value(1)).current;
   const glint = useRef(new Animated.Value(0)).current;
@@ -677,17 +847,18 @@ function OrbitaLogo({ size = 64 }: { size?: number }) {
   const glintOpacity = glint.interpolate({ inputRange: [0, 0.45, 1], outputRange: [0.25, 1, 0.35] });
 
   return (
-    <Animated.View style={[styles.logoFrame, { width: size, height: size, borderRadius: size * 0.28, transform: [{ scale: pulse }] }]}>
-      <View style={[styles.logoCore, { width: size * 0.72, height: size * 0.72, borderRadius: size * 0.2 }]} />
-      <View style={[styles.logoNode, styles.logoNodeTop, { width: size * 0.16, height: size * 0.16, borderRadius: size * 0.08 }]} />
-      <View style={[styles.logoNode, styles.logoNodeLeft, { width: size * 0.13, height: size * 0.13, borderRadius: size * 0.065 }]} />
-      <View style={[styles.logoNode, styles.logoNodeRight, { width: size * 0.12, height: size * 0.12, borderRadius: size * 0.06 }]} />
-      <View style={[styles.logoSignal, { width: size * 0.5, top: size * 0.32 }]} />
-      <View style={[styles.logoSignal, { width: size * 0.38, top: size * 0.48 }]} />
+    <Animated.View style={[styles.logoFrame, { backgroundColor: themeColors.primaryDark, width: size, height: size, borderRadius: size * 0.28, transform: [{ scale: pulse }] }]}>
+      <View style={[styles.logoCore, { backgroundColor: themeColors.primary, width: size * 0.72, height: size * 0.72, borderRadius: size * 0.2 }]} />
+      <View style={[styles.logoNode, styles.logoNodeTop, { backgroundColor: themeColors.accent, width: size * 0.16, height: size * 0.16, borderRadius: size * 0.08 }]} />
+      <View style={[styles.logoNode, styles.logoNodeLeft, { backgroundColor: themeColors.accent, width: size * 0.13, height: size * 0.13, borderRadius: size * 0.065 }]} />
+      <View style={[styles.logoNode, styles.logoNodeRight, { backgroundColor: themeColors.accent, width: size * 0.12, height: size * 0.12, borderRadius: size * 0.06 }]} />
+      <View style={[styles.logoSignal, { backgroundColor: themeColors.primarySoft, width: size * 0.5, top: size * 0.32 }]} />
+      <View style={[styles.logoSignal, { backgroundColor: themeColors.primarySoft, width: size * 0.38, top: size * 0.48 }]} />
       <Animated.View
         style={[
           styles.logoScan,
           {
+            backgroundColor: themeColors.accent,
             height: size * 0.78,
             opacity: glintOpacity,
             transform: [{ translateX: scanTranslate }, { rotate: "18deg" }],
@@ -712,7 +883,7 @@ function OrbitaBrand({ compact, inverse }: { compact?: boolean; inverse?: boolea
 }
 
 function AuthSignalScene({ inline = false }: { inline?: boolean }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   const float = useRef(new Animated.Value(0)).current;
   const scan = useRef(new Animated.Value(0)).current;
 
@@ -742,10 +913,10 @@ function AuthSignalScene({ inline = false }: { inline?: boolean }) {
     <View pointerEvents="none" style={[styles.authSignalScene, inline && styles.authSignalSceneInline]}>
       <Animated.View style={[styles.authSignalCore, !isDarkTheme && styles.authSignalCoreLight, { transform: [{ translateY: drift }] }]}>
         <OrbitaLogo size={82} />
-        <Animated.View style={[styles.authScanLine, !isDarkTheme && styles.authScanLineLight, { transform: [{ translateY: scanY }] }]} />
-        <Animated.View style={[styles.authNode, !isDarkTheme && styles.authNodeLight, styles.authNodeOne, { opacity: nodePulse }]} />
-        <Animated.View style={[styles.authNode, styles.authNodeTwo, !isDarkTheme && styles.authNodeTwoLight, { opacity: nodePulse }]} />
-        <Animated.View style={[styles.authNode, styles.authNodeThree, !isDarkTheme && styles.authNodeThreeLight, { opacity: nodePulse }]} />
+        <Animated.View style={[styles.authScanLine, !isDarkTheme && styles.authScanLineLight, { backgroundColor: themeColors.accent, transform: [{ translateY: scanY }] }]} />
+        <Animated.View style={[styles.authNode, !isDarkTheme && styles.authNodeLight, styles.authNodeOne, { backgroundColor: themeColors.primary, opacity: nodePulse }]} />
+        <Animated.View style={[styles.authNode, styles.authNodeTwo, !isDarkTheme && styles.authNodeTwoLight, { backgroundColor: themeColors.accent, opacity: nodePulse }]} />
+        <Animated.View style={[styles.authNode, styles.authNodeThree, !isDarkTheme && styles.authNodeThreeLight, { backgroundColor: themeColors.primaryDark, opacity: nodePulse }]} />
         <View style={[styles.authTrace, !isDarkTheme && styles.authTraceLight, styles.authTraceOne]} />
         <View style={[styles.authTrace, !isDarkTheme && styles.authTraceLight, styles.authTraceTwo]} />
         <View style={[styles.authTrace, !isDarkTheme && styles.authTraceLight, styles.authTraceThree]} />
@@ -765,6 +936,7 @@ function Avatar({
   name: string;
   size?: number;
 }) {
+  const { themeColors } = useAppTheme();
   const [failed, setFailed] = useState(false);
   const pulse = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -796,15 +968,17 @@ function Avatar({
                 width: size + 8,
                 height: size + 8,
                 borderRadius: (size + 8) / 2,
+                borderColor: themeColors.primary,
+                backgroundColor: themeColors.darkAccentSoft,
                 opacity: pulseOpacity,
                 transform: [{ scale: pulseScale }],
               },
             ]}
           />
-          <View style={[styles.botAvatarRing, { width: size + 4, height: size + 4, borderRadius: (size + 4) / 2 }]} />
+          <View style={[styles.botAvatarRing, { borderColor: themeColors.accent, width: size + 4, height: size + 4, borderRadius: (size + 4) / 2 }]} />
         </>
       ) : null}
-      <View style={[styles.avatar, { width: size, height: size, borderRadius: size / 2 }]}>
+      <View style={[styles.avatar, { backgroundColor: themeColors.primary, width: size, height: size, borderRadius: size / 2 }]}>
       {hasImage ? (
         <Image
           source={{ uri: avatarUrl! }}
@@ -812,14 +986,14 @@ function Avatar({
           style={[styles.avatarImage, { width: size, height: size, borderRadius: size / 2 }]}
         />
       ) : isBot ? (
-        <View style={styles.botAvatarFace}>
+        <View style={[styles.botAvatarFace, { borderColor: themeColors.primarySoft }]}>
           <View style={styles.botAvatarEyeRow}>
-            <View style={styles.botAvatarEye} />
-            <View style={styles.botAvatarEye} />
+            <View style={[styles.botAvatarEye, { backgroundColor: themeColors.primaryDark }]} />
+            <View style={[styles.botAvatarEye, { backgroundColor: themeColors.primaryDark }]} />
           </View>
-          <View style={styles.botAvatarMouth} />
-          <View style={styles.botAvatarChip}>
-            <Ionicons color={colors.primaryDark} name="sparkles" size={9} />
+          <View style={[styles.botAvatarMouth, { backgroundColor: themeColors.primary }]} />
+          <View style={[styles.botAvatarChip, { backgroundColor: themeColors.accent, borderColor: themeColors.primarySoft }]}>
+            <Ionicons color={themeColors.primaryDark} name="sparkles" size={9} />
           </View>
         </View>
       ) : (
@@ -831,7 +1005,7 @@ function Avatar({
 }
 
 function SkeletonBlock({ style }: { style?: StyleProp<ViewStyle> }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   const opacity = useRef(new Animated.Value(0.42)).current;
 
   useEffect(() => {
@@ -849,7 +1023,7 @@ function SkeletonBlock({ style }: { style?: StyleProp<ViewStyle> }) {
 }
 
 function ChatRowsSkeleton({ count = 5 }: { count?: number }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <>
       {Array.from({ length: count }).map((_, index) => (
@@ -872,7 +1046,7 @@ function ChatRowsSkeleton({ count = 5 }: { count?: number }) {
 }
 
 function MessageListSkeleton() {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <>
       <View style={[styles.messageWrap, styles.messageTheirs]}>
@@ -903,7 +1077,7 @@ function MessageListSkeleton() {
 }
 
 function MessageBody({ mine, text }: { mine: boolean; text: string }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <Text
       style={[
@@ -914,6 +1088,167 @@ function MessageBody({ mine, text }: { mine: boolean; text: string }) {
     >
       {renderMessageInline(text, mine, isDarkTheme, "message")}
     </Text>
+  );
+}
+
+function SwipeableMessageBubble({
+  children,
+  message,
+  mine,
+  onActions,
+  onReply,
+  themeColors,
+}: {
+  children: ReactNode;
+  message: ChatMessage;
+  mine: boolean;
+  onActions: (target: NonNullable<MessageActionTarget>) => void;
+  onReply: () => void;
+  themeColors: (typeof ACCENT_THEMES)[number];
+}) {
+  const { isDarkTheme } = useAppTheme();
+  const [hovered, setHovered] = useState(false);
+  const frameRef = useRef<View | null>(null);
+  const translateX = useRef(new Animated.Value(0)).current;
+  const replyTriggeredRef = useRef(false);
+  const openActions = useCallback(() => {
+    const fallback = () => onActions({ message });
+    const frame = frameRef.current;
+    if (!frame?.measureInWindow) {
+      fallback();
+      return;
+    }
+    frame.measureInWindow((x, y, width, height) => {
+      onActions({ anchor: { height, mine, width, x, y }, message });
+    });
+  }, [message, mine, onActions]);
+  const responder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_event, gestureState) => {
+          const mostlyHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.35;
+          const correctDirection = mine ? gestureState.dx < -12 : gestureState.dx > 12;
+          return mostlyHorizontal && correctDirection;
+        },
+        onPanResponderMove: (_event, gestureState) => {
+          const x = mine ? clamp(gestureState.dx, -58, 0) : clamp(gestureState.dx, 0, 58);
+          translateX.setValue(x);
+        },
+        onPanResponderRelease: (_event, gestureState) => {
+          const correctDistance = mine ? gestureState.dx <= -52 : gestureState.dx >= 52;
+          const shouldReply = correctDistance && Math.abs(gestureState.dy) <= 38;
+          Animated.spring(translateX, {
+            bounciness: 5,
+            speed: 18,
+            toValue: 0,
+            useNativeDriver: true,
+          }).start();
+          if (shouldReply && !replyTriggeredRef.current) {
+            replyTriggeredRef.current = true;
+            onReply();
+            setTimeout(() => {
+              replyTriggeredRef.current = false;
+            }, 260);
+          }
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(translateX, {
+            bounciness: 5,
+            speed: 18,
+            toValue: 0,
+            useNativeDriver: true,
+          }).start();
+        },
+        onShouldBlockNativeResponder: () => false,
+      }),
+    [mine, onReply, translateX],
+  );
+  const replyOpacity = translateX.interpolate({
+    inputRange: mine ? [-58, -24, 0] : [0, 24, 58],
+    outputRange: mine ? [1, 0.65, 0] : [0, 0.65, 1],
+  });
+
+  return (
+    <View ref={frameRef} style={styles.swipeBubbleFrame}>
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.replySwipeCue,
+          mine ? styles.replySwipeCueMine : styles.replySwipeCueTheirs,
+          isDarkTheme && styles.replySwipeCueDark,
+          { opacity: replyOpacity },
+        ]}
+      >
+        <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="return-up-back" size={16} />
+      </Animated.View>
+      <Animated.View {...responder.panHandlers} style={{ transform: [{ translateX }] }}>
+        <Pressable
+          onHoverIn={() => setHovered(true)}
+          onHoverOut={() => setHovered(false)}
+          onLongPress={openActions}
+          style={({ pressed }) => [
+            styles.bubble,
+            mine ? styles.mineBubble : styles.theirBubble,
+            mine && { backgroundColor: isDarkTheme ? themeColors.darkBubbleMine : themeColors.bubbleMine },
+            isDarkTheme && mine && styles.mineBubbleDark,
+            isDarkTheme && !mine && styles.theirBubbleDark,
+            pressed && styles.bubblePressed,
+          ]}
+        >
+          {children}
+          {Platform.OS === "web" ? (
+            <Pressable
+              accessibilityLabel="Message actions"
+              onPress={openActions}
+              style={({ pressed }) => [
+                styles.messageMenuButton,
+                mine ? styles.messageMenuButtonMine : styles.messageMenuButtonTheirs,
+                isDarkTheme && styles.messageMenuButtonDark,
+                hovered && styles.messageMenuButtonVisible,
+                pressed && styles.pressablePressed,
+              ]}
+            >
+              <Ionicons color={isDarkTheme ? "rgba(233,237,239,0.88)" : colors.muted} name="chevron-down" size={16} />
+            </Pressable>
+          ) : null}
+        </Pressable>
+      </Animated.View>
+    </View>
+  );
+}
+
+function MessageReplyQuote({
+  mine,
+  reply,
+  senderName,
+  themeColors,
+}: {
+  mine: boolean;
+  reply: BackendReplyPreview;
+  senderName: string;
+  themeColors: (typeof ACCENT_THEMES)[number];
+}) {
+  const { isDarkTheme } = useAppTheme();
+  return (
+    <View style={[
+      styles.replyQuote,
+      mine && (isDarkTheme ? styles.replyQuoteMineDark : styles.replyQuoteMine),
+      !mine && isDarkTheme && styles.replyQuoteDark,
+    ]}>
+      <View style={[styles.replyQuoteBar, { backgroundColor: mine ? themeColors.accent : themeColors.primaryDark }]} />
+      <View style={styles.replyQuoteBody}>
+        <Text numberOfLines={1} style={[
+          styles.replyQuoteName,
+          mine && (isDarkTheme ? styles.replyQuoteNameMineDark : styles.replyQuoteNameMine),
+          { color: isDarkTheme && mine ? themeColors.accent : themeColors.primaryDark },
+        ]}>
+          {senderName}
+        </Text>
+        <Text numberOfLines={2} style={[styles.replyQuoteText, mine && (isDarkTheme ? styles.replyQuoteTextMineDark : styles.replyQuoteTextMine)]}>
+          {replyPreviewText(reply)}
+        </Text>
+      </View>
+    </View>
   );
 }
 
@@ -991,7 +1326,7 @@ function renderMessageFormatting(text: string, mine: boolean, isDarkTheme: boole
 }
 
 function StatusSkeleton() {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <>
       <View style={[styles.statusComposer, isDarkTheme && styles.statusComposerDark]}>
@@ -1016,7 +1351,7 @@ function StatusSkeleton() {
 }
 
 function SettingsSkeleton() {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <>
       <View style={[styles.profileCard, isDarkTheme && styles.profileCardDark]}>
@@ -1041,7 +1376,7 @@ function SettingsSkeleton() {
 }
 
 function AppShellSkeleton() {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <SafeAreaView edges={["top", "left", "right"]} style={[styles.safe, isDarkTheme && styles.safeDark]}>
       <View style={[styles.appFrame, isDarkTheme && styles.appFrameDark]}>
@@ -1083,14 +1418,20 @@ function IconButton({
   label: string;
   onPress?: () => void | Promise<void>;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <Pressable
       accessibilityLabel={label}
       onPress={onPress}
-      style={({ pressed }) => [styles.iconButton, isDarkTheme && styles.iconButtonDark, pressed && styles.pressablePressed]}
+      style={({ pressed }) => [
+        styles.iconButton,
+        !isDarkTheme && { backgroundColor: themeColors.accentSoft, borderColor: themeColors.primarySoft },
+        isDarkTheme && styles.iconButtonDark,
+        isDarkTheme && { backgroundColor: themeColors.darkAccentSoft, borderColor: themeColors.primaryDark },
+        pressed && styles.pressablePressed,
+      ]}
     >
-      <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name={icon} size={21} />
+      <Ionicons color={isDarkTheme ? "#FFFFFF" : themeColors.primaryDark} name={icon} size={21} />
     </Pressable>
   );
 }
@@ -1133,7 +1474,7 @@ export function OrbitaApp() {
 }
 
 function FullScreenLoader() {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <SafeAreaView style={[styles.safe, isDarkTheme && styles.safeDark]}>
       <View style={[styles.loadingScreen, isDarkTheme && styles.loadingScreenDark]}>
@@ -1145,7 +1486,7 @@ function FullScreenLoader() {
 }
 
 function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => void }) {
-  const { isDarkTheme, toggleTheme } = useAppTheme();
+  const { isDarkTheme, themeColors, toggleTheme } = useAppTheme();
   const { width } = useWindowDimensions();
   const [authMode, setAuthMode] = useState<AuthMode>("signin");
   const [displayName, setDisplayName] = useState("");
@@ -1287,7 +1628,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
       : "Sign in with your phone OTP to continue your encrypted workspace.";
   const primaryLabel = otpSent ? "Verify and continue" : authMode === "signup" ? "Create account" : "Send phone OTP";
   const resendLabel = otpFallbackActive ? "Retry SMS OTP" : resendSeconds > 0 ? `Resend in ${resendSeconds}s` : "Resend OTP";
-  const authIconColor = isDarkTheme ? colors.accent : colors.primaryDark;
+  const authIconColor = isDarkTheme ? themeColors.accent : themeColors.primaryDark;
   const authPlaceholderColor = isDarkTheme ? "rgba(255,255,255,0.52)" : "rgba(17,27,33,0.42)";
   const isAuthWide = Platform.OS === "web" && width >= 980;
 
@@ -1305,7 +1646,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
       >
         <View style={[styles.loginScreen, !isDarkTheme && styles.loginScreenLight]}>
           <View style={[styles.loginBackdropGrid, !isDarkTheme && styles.loginBackdropGridLight]} />
-          <View style={[styles.loginGlow, !isDarkTheme && styles.loginGlowLight]} />
+          <View style={[styles.loginGlow, !isDarkTheme && styles.loginGlowLight, { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft }]} />
           {!isAuthWide ? <AuthSignalScene /> : null}
           <View style={[styles.loginContent, isAuthWide && styles.loginContentWide]}>
             <View style={[styles.loginAuthColumn, isAuthWide && styles.loginAuthColumnWide]}>
@@ -1318,13 +1659,14 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                     style={({ pressed }) => [
                       styles.authThemeButton,
                       !isDarkTheme && styles.authThemeButtonLight,
+                      !isDarkTheme && { borderColor: themeColors.primarySoft, backgroundColor: themeColors.accentSoft },
                       pressed && styles.pressablePressed,
                     ]}
                   >
                     <Ionicons color={authIconColor} name={isDarkTheme ? "sunny-outline" : "moon-outline"} size={18} />
                   </Pressable>
                 </View>
-                <View style={[styles.loginBadge, !isDarkTheme && styles.loginBadgeLight]}>
+                <View style={[styles.loginBadge, !isDarkTheme && styles.loginBadgeLight, !isDarkTheme && { backgroundColor: themeColors.accentSoft }]}>
                   <Ionicons color={authIconColor} name="sparkles" size={14} />
                   <Text style={[styles.loginBadgeText, !isDarkTheme && styles.loginBadgeTextLight]}>AI signal layer</Text>
                 </View>
@@ -1339,7 +1681,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                       style={({ pressed }) => [
                         styles.authModeButton,
                         authMode === "signin" && styles.authModeButtonActive,
-                        !isDarkTheme && authMode === "signin" && styles.authModeButtonActiveLight,
+                        !isDarkTheme && authMode === "signin" && [styles.authModeButtonActiveLight, { backgroundColor: themeColors.primaryDark }],
                         pressed && styles.pressablePressed,
                       ]}
                     >
@@ -1359,7 +1701,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                       style={({ pressed }) => [
                         styles.authModeButton,
                         authMode === "signup" && styles.authModeButtonActive,
-                        !isDarkTheme && authMode === "signup" && styles.authModeButtonActiveLight,
+                        !isDarkTheme && authMode === "signup" && [styles.authModeButtonActiveLight, { backgroundColor: themeColors.primaryDark }],
                         pressed && styles.pressablePressed,
                       ]}
                     >
@@ -1426,7 +1768,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                         <Text
                           style={[
                             styles.textAction,
-                            !isDarkTheme && styles.textActionLight,
+                            !isDarkTheme && [styles.textActionLight, { color: themeColors.primaryDark }],
                             (loading || resendSeconds > 0) && styles.textActionDisabled,
                             !isDarkTheme && (loading || resendSeconds > 0) && styles.textActionDisabledLight,
                           ]}
@@ -1439,7 +1781,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                         onPress={editLoginDetails}
                         style={({ pressed }) => [styles.textActionButton, pressed && styles.pressablePressed]}
                       >
-                        <Text style={[styles.textAction, !isDarkTheme && styles.textActionLight]}>Edit details</Text>
+                        <Text style={[styles.textAction, !isDarkTheme && [styles.textActionLight, { color: themeColors.primaryDark }]]}>Edit details</Text>
                       </Pressable>
                     </View>
                   </>
@@ -1449,6 +1791,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                   onPress={otpSent ? verifyOtp : () => requestOtp(false)}
                   style={({ pressed }) => [
                     styles.loginButton,
+                    { backgroundColor: themeColors.primaryDark },
                     pressed && styles.pressablePressed,
                     (loading || !hasSupabaseConfig) && styles.buttonDisabled,
                   ]}
@@ -1462,7 +1805,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                     </>
                   )}
                 </Pressable>
-                {notice ? <Text style={[styles.loginNoticeText, !isDarkTheme && styles.loginNoticeTextLight]}>{notice}</Text> : null}
+                {notice ? <Text style={[styles.loginNoticeText, !isDarkTheme && [styles.loginNoticeTextLight, { color: themeColors.primaryDark }]]}>{notice}</Text> : null}
                 {!hasSupabaseConfig ? (
                   <Text style={[styles.loginHintText, !isDarkTheme && styles.loginHintTextLight]}>
                     Required: EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY.
@@ -1475,7 +1818,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
                 </Text>
                 <Link href={"/privacy" as never} asChild>
                   <Pressable style={({ pressed }) => [styles.loginLegalLinkButton, pressed && styles.pressablePressed]}>
-                    <Text style={[styles.loginLegalLink, !isDarkTheme && styles.loginLegalLinkLight]}>
+                    <Text style={[styles.loginLegalLink, !isDarkTheme && [styles.loginLegalLinkLight, { color: themeColors.primaryDark }]]}>
                       Privacy Policy
                     </Text>
                   </Pressable>
@@ -1484,8 +1827,8 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
               </View>
             </View>
             {isAuthWide ? (
-              <View style={[styles.authVisualPanel, !isDarkTheme && styles.authVisualPanelLight]}>
-                <View style={[styles.authVisualHalo, !isDarkTheme && styles.authVisualHaloLight]} />
+              <View style={[styles.authVisualPanel, !isDarkTheme && styles.authVisualPanelLight, !isDarkTheme && { borderColor: themeColors.primarySoft }]}>
+                <View style={[styles.authVisualHalo, !isDarkTheme && styles.authVisualHaloLight, { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft }]} />
                 <AuthSignalScene inline />
                 <View style={[styles.authVisualRail, styles.authVisualRailTop, !isDarkTheme && styles.authVisualRailLight]} />
                 <View style={[styles.authVisualRail, styles.authVisualRailMiddle, !isDarkTheme && styles.authVisualRailLight]} />
@@ -1503,7 +1846,7 @@ function LoginScreen({ onSignedIn }: { onSignedIn: (session: Session | null) => 
 function MessengerShell({ session }: { session: Session }) {
   const { width } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   const isWide = width >= 840;
   const [activeTab, setActiveTab] = useState<Tab>("chats");
   const [appLifecycleState, setAppLifecycleState] = useState(AppState.currentState);
@@ -1513,6 +1856,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [statuses, setStatuses] = useState<BackendStatus[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [selectedMessages, setSelectedMessages] = useState<ChatMessage[]>([]);
+  const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
   const [draft, setDraft] = useState("");
   const [composerAttachment, setComposerAttachment] = useState<ComposerAttachment | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1546,6 +1890,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
   const [forwardPickerOpen, setForwardPickerOpen] = useState(false);
+  const [messageActionTarget, setMessageActionTarget] = useState<MessageActionTarget>(null);
   const [saveContactPeer, setSaveContactPeer] = useState<UnsavedPeer | null>(null);
   const bootstrapRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const messageRefreshTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -2488,6 +2833,8 @@ function MessengerShell({ session }: { session: Session }) {
             clientMessageId: queued.localId,
             conversationId: queued.conversationId,
             kind: queued.kind,
+            replyToMessageId: queued.replyToMessageId ?? null,
+            replyTo: queued.replyTo ?? null,
             ...(queued.taskManagerText && queued.taskManagerText !== queued.body ? { taskManagerText: queued.taskManagerText } : {}),
           });
           const queuedLocalMessage = messagesByConversationRef.current[queued.conversationId]?.find((message) => message.id === queued.localId);
@@ -2575,6 +2922,8 @@ function MessengerShell({ session }: { session: Session }) {
   useEffect(() => {
     setComposerAttachment(null);
     setAttachmentMenuOpen(false);
+    setReplyingToMessage(null);
+    setMessageActionTarget(null);
   }, [selectedId]);
 
   const selectConversation = useCallback((conversationId: string) => {
@@ -2582,6 +2931,7 @@ function MessengerShell({ session }: { session: Session }) {
       setSelectedId("");
       setSelectedMessages([]);
       setLoadingMessagesFor("");
+      setReplyingToMessage(null);
       return;
     }
 
@@ -2960,8 +3310,22 @@ function MessengerShell({ session }: { session: Session }) {
     modelBodyOverride?: string,
   ) {
     const text = body.trim();
-    const modelText = (modelBodyOverride ?? body).trim();
-    if (!selected || !profile || (!text && !modelText && !attachment)) return;
+    const baseModelText = (modelBodyOverride ?? body).trim();
+    if (!selected || !profile) return;
+    const replyTarget = replyingToMessage?.conversationId === selected.id ? replyingToMessage : null;
+    const replyTo = replyTarget ? buildReplyPreviewFromMessage(replyTarget) : null;
+    const modelText = replyTo && isTaskManagerAgentConversation(selected)
+      ? taskManagerReplyText(replyTo, baseModelText || text)
+      : baseModelText;
+    if (!text && !modelText && !attachment) return;
+    if (Platform.OS === "web") {
+      console.info("[orbita-web-send] reply target", {
+        conversationId: selected.id,
+        replyToMessageId: replyTo?.messageId ?? null,
+        replyToBody: replyTo?.body?.slice(0, 180) ?? null,
+        body: text.slice(0, 180),
+      });
+    }
     stopTyping(selected.id);
     let resolvedKind = kind;
     if (attachment) {
@@ -2991,6 +3355,8 @@ function MessengerShell({ session }: { session: Session }) {
           ]
         : [],
       forwardedFrom: null,
+      replyTo,
+      replyToMessageId: replyTo?.messageId ?? null,
       createdAt: new Date().toISOString(),
       status: "sent",
       localState: "sending",
@@ -2998,6 +3364,7 @@ function MessengerShell({ session }: { session: Session }) {
 
     setDraft("");
     setComposerAttachment(null);
+    setReplyingToMessage(null);
     setError("");
     setSelectedMessages((current) => {
       const next = [...current, optimisticMessage];
@@ -3043,6 +3410,8 @@ function MessengerShell({ session }: { session: Session }) {
         body: text,
         attachmentId,
         clientMessageId: tempId,
+        replyToMessageId: replyTo?.messageId ?? null,
+        replyTo,
         ...(modelText && modelText !== text ? { taskManagerText: modelText } : {}),
       });
       const mergedMessage = mergeAttachmentWaveforms(result.message, optimisticMessage);
@@ -3103,6 +3472,8 @@ function MessengerShell({ session }: { session: Session }) {
           kind: resolvedKind,
           lastError: nextError instanceof Error ? nextError.message : undefined,
           localId: tempId,
+          replyTo,
+          replyToMessageId: replyTo?.messageId ?? null,
           senderId: profile.id,
           status: "queued",
           taskManagerText: modelText && modelText !== text ? modelText : undefined,
@@ -3124,6 +3495,7 @@ function MessengerShell({ session }: { session: Session }) {
         return;
       }
       if (attachment) setComposerAttachment(attachment);
+      if (replyTarget) setReplyingToMessage(replyTarget);
       void markCachedMessageFailed(profile.id, optimisticMessage).catch(() => undefined);
       setSelectedMessages((current) => {
         const next = current.map((message) =>
@@ -3319,21 +3691,21 @@ function MessengerShell({ session }: { session: Session }) {
                 messages={selectedMessages.filter((message) => message.conversationId === selected.id)}
                 messagesLoading={loadingMessagesFor === selected.id}
                 onAddMembers={() => setMembersOpen(true)}
-                onForwardMessage={(message) => {
-                  setForwardingMessage(message);
-                  setForwardPickerOpen(true);
-                }}
+                onMessageActions={setMessageActionTarget}
+                onReplyToMessage={setReplyingToMessage}
                 onLoadOlder={() => loadOlderMessages(selected.id)}
                 onOpenAttachmentMenu={() => setAttachmentMenuOpen(true)}
                 onTakePhoto={() => void takePhotoAttachment()}
                 onBack={() => selectConversation("")}
                 onRemoveAttachment={() => setComposerAttachment(null)}
+                onRemoveReply={() => setReplyingToMessage(null)}
                 onSend={(nextKind, nextBody, nextAttachment, modelBodyOverride) =>
                   sendMessage(nextKind, nextBody, nextAttachment, modelBodyOverride)}
                 onSaveContact={() => {
                   if (selectedUnsavedPeer) setSaveContactPeer(selectedUnsavedPeer);
                 }}
                 setDraft={handleDraftChange}
+                replyingToMessage={replyingToMessage?.conversationId === selected.id ? replyingToMessage : null}
                 typingText={typingStatusText(selectedTypingParticipants)}
                 unsavedPeer={selectedUnsavedPeer}
               />
@@ -3354,12 +3726,14 @@ function MessengerShell({ session }: { session: Session }) {
           }}
           style={({ pressed }) => [
             styles.agentFab,
+            { backgroundColor: themeColors.primaryDark, borderColor: themeColors.primary },
             isDarkTheme && styles.agentFabDark,
+            isDarkTheme && { backgroundColor: themeColors.accent, borderColor: themeColors.accent },
             { bottom: showBottomTabs ? 66 + bottomInset : 20 + bottomInset },
             pressed && styles.pressablePressed,
           ]}
         >
-          <Ionicons color={isDarkTheme ? colors.primaryDark : "#FFFFFF"} name="sparkles" size={18} />
+          <Ionicons color={isDarkTheme ? themeColors.primaryDark : "#FFFFFF"} name="sparkles" size={18} />
           <Text style={[styles.agentFabText, isDarkTheme && styles.agentFabTextDark]}>Agent</Text>
         </Pressable>
       ) : null}
@@ -3449,6 +3823,16 @@ function MessengerShell({ session }: { session: Session }) {
         onPickImage={() => void pickImageAttachment()}
         visible={attachmentMenuOpen}
       />
+      <MessageActionsModal
+        anchor={messageActionTarget?.anchor}
+        message={messageActionTarget?.message ?? null}
+        onClose={() => setMessageActionTarget(null)}
+        onReply={(message) => {
+          setMessageActionTarget(null);
+          setReplyingToMessage(message);
+        }}
+        visible={Boolean(messageActionTarget)}
+      />
       <ForwardPickerModal
         message={forwardingMessage}
         onClose={() => {
@@ -3468,7 +3852,7 @@ function AppHeader({
 }: {
   isWide: boolean;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <View style={[styles.header, isDarkTheme && styles.headerDark, !isWide && styles.headerMobile]}>
       <OrbitaBrand compact={!isWide} inverse={isDarkTheme} />
@@ -3487,9 +3871,15 @@ function Sidebar({
   onNewChat: () => void;
   tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }>;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
-    <View style={[styles.sidebar, isDarkTheme && styles.sidebarDark]}>
+    <View
+      style={[
+        styles.sidebar,
+        { backgroundColor: isDarkTheme ? "#111B21" : themeColors.primaryDark },
+        isDarkTheme && styles.sidebarDark,
+      ]}
+    >
       <View style={styles.brandMark}>
         <OrbitaLogo size={36} />
       </View>
@@ -3499,17 +3889,27 @@ function Sidebar({
             accessibilityLabel={tab.label}
             key={tab.id}
             onPress={() => onChange(tab.id)}
-            style={({ pressed }) => [styles.navItem, activeTab === tab.id && styles.navItemActive, pressed && styles.pressablePressed]}
+            style={({ pressed }) => [
+              styles.navItem,
+              activeTab === tab.id && [
+                styles.navItemActive,
+                {
+                  backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft,
+                  borderColor: isDarkTheme ? themeColors.accent : themeColors.primarySoft,
+                },
+              ],
+              pressed && styles.pressablePressed,
+            ]}
           >
-            <Ionicons color={activeTab === tab.id ? colors.primaryDark : "rgba(255,255,255,0.76)"} name={tab.icon} size={22} />
-            <Text style={[styles.navLabel, activeTab === tab.id && styles.navLabelActive]}>{tab.label}</Text>
+            <Ionicons color={activeTab === tab.id ? themeColors.primaryDark : "rgba(255,255,255,0.76)"} name={tab.icon} size={22} />
+            <Text style={[styles.navLabel, activeTab === tab.id && styles.navLabelActive, activeTab === tab.id && { color: themeColors.primaryDark }]}>{tab.label}</Text>
           </Pressable>
         ))}
       </View>
       <Pressable
         accessibilityLabel="New chat"
         onPress={onNewChat}
-        style={({ pressed }) => [styles.composeButton, pressed && styles.pressablePressed]}
+        style={({ pressed }) => [styles.composeButton, { backgroundColor: themeColors.primary }, pressed && styles.pressablePressed]}
       >
         <Ionicons color="#FFFFFF" name="add" size={26} />
       </Pressable>
@@ -3530,7 +3930,7 @@ function BottomTabs({
   tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }>;
   unreadTotal: number;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <View style={[styles.bottomTabs, isDarkTheme && styles.bottomTabsDark, { paddingBottom: bottomInset + 8 }]}>
       {visibleTabs.map((tab) => (
@@ -3542,7 +3942,7 @@ function BottomTabs({
         >
           <View>
             <Ionicons
-              color={activeTab === tab.id ? (isDarkTheme ? colors.accent : colors.primaryDark) : isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted}
+              color={activeTab === tab.id ? (isDarkTheme ? themeColors.accent : themeColors.primaryDark) : isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted}
               name={tab.icon}
               size={21}
             />
@@ -3554,6 +3954,7 @@ function BottomTabs({
               isDarkTheme && styles.bottomTabLabelDark,
               activeTab === tab.id && styles.bottomTabLabelActive,
               isDarkTheme && activeTab === tab.id && styles.bottomTabLabelActiveDark,
+              activeTab === tab.id && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
             ]}
           >
             {tab.label}
@@ -3565,9 +3966,10 @@ function BottomTabs({
 }
 
 function UnreadBadge({ compact, count }: { compact?: boolean; count: number }) {
+  const { themeColors } = useAppTheme();
   const label = count > 99 ? "99+" : String(count);
   return (
-    <View style={[styles.unreadBadge, compact && styles.unreadBadgeCompact]}>
+    <View style={[styles.unreadBadge, { backgroundColor: themeColors.primaryDark }, compact && styles.unreadBadgeCompact]}>
       <Text style={styles.unreadBadgeText}>{label}</Text>
     </View>
   );
@@ -3654,7 +4056,7 @@ function Panel({
   settingsNotice: string;
   statuses: BackendStatus[];
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   if (activeTab === "status") {
     return <StatusPanel isWide={isWide} onNewStatus={onNewStatus} profile={profile} statuses={statuses} />;
   }
@@ -3772,7 +4174,7 @@ function AdminPanelV2({
   tasks: TaskManagerAdminTask[];
   users: TaskManagerAdminUser[];
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   const [section, setSection] = useState<AdminSectionId>("overview");
   const [expandedDepartmentIds, setExpandedDepartmentIds] = useState<Record<string, boolean>>({});
   const [departmentDetailsById, setDepartmentDetailsById] = useState<Record<string, TaskManagerDepartmentDetails>>({});
@@ -3863,9 +4265,14 @@ function AdminPanelV2({
         <Pressable
           accessibilityLabel="Refresh admin data"
           onPress={onRefresh}
-          style={({ pressed }) => [styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark, pressed && styles.pressablePressed]}
+          style={({ pressed }) => [
+            styles.searchAddButton,
+            { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft, borderColor: isDarkTheme ? themeColors.primaryDark : themeColors.primarySoft },
+            isDarkTheme && styles.searchAddButtonDark,
+            pressed && styles.pressablePressed,
+          ]}
         >
-          {loading ? <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} /> : <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="refresh-outline" size={20} />}
+          {loading ? <ActivityIndicator color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} /> : <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="refresh-outline" size={20} />}
         </Pressable>
       </View>
       {notice ? <Text style={styles.errorBar}>{notice}</Text> : null}
@@ -3878,12 +4285,12 @@ function AdminPanelV2({
               style={({ pressed }) => [
                 styles.adminSectionTab,
                 isDarkTheme && styles.adminSectionTabDark,
-                section === item.id && styles.adminSectionTabActive,
+                section === item.id && [styles.adminSectionTabActive, { backgroundColor: themeColors.primaryDark, borderColor: themeColors.primaryDark }],
                 pressed && styles.pressablePressed,
               ]}
             >
-              <Ionicons color={section === item.id ? "#FFFFFF" : isDarkTheme ? colors.accent : colors.primaryDark} name={item.icon} size={16} />
-              <Text style={[styles.adminSectionTabText, isDarkTheme && styles.adminMutedText, section === item.id && styles.adminSectionTabTextActive]}>{item.label}</Text>
+              <Ionicons color={section === item.id ? "#FFFFFF" : isDarkTheme ? themeColors.accent : themeColors.primaryDark} name={item.icon} size={16} />
+              <Text style={[styles.adminSectionTabText, { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark }, isDarkTheme && styles.adminMutedText, section === item.id && styles.adminSectionTabTextActive]}>{item.label}</Text>
               {item.count !== undefined ? <Text style={[styles.adminSectionTabCount, section === item.id && styles.adminSectionTabTextActive]}>{item.count}</Text> : null}
             </Pressable>
           ))}
@@ -3934,7 +4341,7 @@ function AdminPanelV2({
                 style={({ pressed }) => [
                   styles.adminListRow,
                   isDarkTheme && styles.adminListRowDark,
-                  selectedUser?._id === user._id && styles.adminListRowActive,
+                  selectedUser?._id === user._id && [styles.adminListRowActive, { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft, borderColor: isDarkTheme ? themeColors.primaryDark : themeColors.primarySoft }],
                   selectedUser?._id === user._id && isDarkTheme && styles.adminListRowActiveDark,
                   pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
                 ]}
@@ -3943,7 +4350,7 @@ function AdminPanelV2({
                   <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{user.name}</Text>
                   <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{user.role} - {user.agent_channel ?? "whatsapp"}</Text>
                 </View>
-                <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="chatbubble-ellipses-outline" size={18} />
+                <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="chatbubble-ellipses-outline" size={18} />
               </Pressable>
             ))}
           </View>
@@ -3965,7 +4372,7 @@ function AdminPanelV2({
                     {selectedTaskAssignee?.name ?? "All employees"}
                   </Text>
                 </View>
-                <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name={taskFilterOpen ? "chevron-up" : "chevron-down"} size={18} />
+                <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name={taskFilterOpen ? "chevron-up" : "chevron-down"} size={18} />
               </Pressable>
               {taskFilterOpen ? (
                 <View style={styles.adminFilterMenu}>
@@ -3987,7 +4394,7 @@ function AdminPanelV2({
                     style={({ pressed }) => [
                       styles.adminFilterOption,
                       isDarkTheme && styles.adminFilterOptionDark,
-                      taskAssigneeFilter === "all" && styles.adminFilterOptionActive,
+                      taskAssigneeFilter === "all" && [styles.adminFilterOptionActive, { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft, borderColor: isDarkTheme ? themeColors.primaryDark : themeColors.primarySoft }],
                       taskAssigneeFilter === "all" && isDarkTheme && styles.adminFilterOptionActiveDark,
                       pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
                     ]}
@@ -4007,7 +4414,7 @@ function AdminPanelV2({
                         style={({ pressed }) => [
                           styles.adminFilterOption,
                           isDarkTheme && styles.adminFilterOptionDark,
-                          taskAssigneeFilter === user._id && styles.adminFilterOptionActive,
+                          taskAssigneeFilter === user._id && [styles.adminFilterOptionActive, { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft, borderColor: isDarkTheme ? themeColors.primaryDark : themeColors.primarySoft }],
                           taskAssigneeFilter === user._id && isDarkTheme && styles.adminFilterOptionActiveDark,
                           pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
                         ]}
@@ -4075,11 +4482,11 @@ function AdminPanelV2({
                         <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{department.name}</Text>
                         <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{department.member_count ?? 0} members</Text>
                       </View>
-                      <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name={isExpanded ? "chevron-up" : "chevron-down"} size={18} />
+                      <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name={isExpanded ? "chevron-up" : "chevron-down"} size={18} />
                     </Pressable>
                     {isExpanded ? (
                       <View style={styles.adminDepartmentMembersInline}>
-                        {isDepartmentLoading ? <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} /> : null}
+                        {isDepartmentLoading ? <ActivityIndicator color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} /> : null}
                         {details?.members.map((member) => (
                           <Pressable
                             key={member.user_id}
@@ -4169,7 +4576,7 @@ function AdminPanel({
   tasks: TaskManagerAdminTask[];
   users: TaskManagerAdminUser[];
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   if (!session) {
     return (
       <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
@@ -4190,9 +4597,14 @@ function AdminPanel({
         <Pressable
           accessibilityLabel="Refresh admin data"
           onPress={onRefresh}
-          style={({ pressed }) => [styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark, pressed && styles.pressablePressed]}
+          style={({ pressed }) => [
+            styles.searchAddButton,
+            { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft, borderColor: isDarkTheme ? themeColors.primaryDark : themeColors.primarySoft },
+            isDarkTheme && styles.searchAddButtonDark,
+            pressed && styles.pressablePressed,
+          ]}
         >
-          {loading ? <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} /> : <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="refresh-outline" size={20} />}
+          {loading ? <ActivityIndicator color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} /> : <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="refresh-outline" size={20} />}
         </Pressable>
       </View>
       {notice ? <Text style={styles.errorBar}>{notice}</Text> : null}
@@ -4222,7 +4634,7 @@ function AdminPanel({
                   onPress={() => onSetEmployeeRole(role)}
                   style={({ pressed }) => [
                     styles.roleToggleButton,
-                    employeeRole === role && styles.roleToggleButtonActive,
+                    employeeRole === role && [styles.roleToggleButtonActive, { backgroundColor: themeColors.primaryDark }],
                     pressed && styles.pressablePressed,
                   ]}
                 >
@@ -4234,7 +4646,7 @@ function AdminPanel({
           <Pressable
             accessibilityLabel="Add employee"
             onPress={() => void onCreateEmployee()}
-            style={({ pressed }) => [styles.adminPrimaryButton, pressed && styles.pressablePressed]}
+            style={({ pressed }) => [styles.adminPrimaryButton, { backgroundColor: themeColors.primaryDark }, pressed && styles.pressablePressed]}
           >
             <Ionicons color="#FFFFFF" name="person-add-outline" size={17} />
             <Text style={styles.adminPrimaryButtonText}>Add employee</Text>
@@ -4245,7 +4657,7 @@ function AdminPanel({
               onPress={() => void onSelectUser(user._id)}
               style={({ pressed }) => [
                 styles.adminListRow,
-                selectedUser?._id === user._id && styles.adminListRowActive,
+                selectedUser?._id === user._id && [styles.adminListRowActive, { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft, borderColor: isDarkTheme ? themeColors.primaryDark : themeColors.primarySoft }],
                 pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
               ]}
             >
@@ -4253,7 +4665,7 @@ function AdminPanel({
                 <Text style={[styles.adminRowTitle, isDarkTheme && styles.chatTitleDark]}>{user.name}</Text>
                 <Text style={[styles.adminRowMeta, isDarkTheme && styles.adminMutedText]}>{user.role} · {user.agent_channel ?? "whatsapp"}</Text>
               </View>
-              <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="chatbubble-ellipses-outline" size={18} />
+              <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="chatbubble-ellipses-outline" size={18} />
             </Pressable>
           ))}
         </View>
@@ -4268,9 +4680,9 @@ function AdminPanel({
               </View>
               <Pressable
                 onPress={() => void onUpdateTaskStatus(task._id, task.status === "done" ? "open" : "done")}
-                style={({ pressed }) => [styles.adminTaskButton, pressed && styles.pressablePressed]}
+                style={({ pressed }) => [styles.adminTaskButton, { backgroundColor: task.status === "done" ? themeColors.accent : themeColors.primaryDark }, pressed && styles.pressablePressed]}
               >
-                <Ionicons color={task.status === "done" ? colors.primaryDark : "#FFFFFF"} name={task.status === "done" ? "refresh-outline" : "checkmark"} size={16} />
+                <Ionicons color={task.status === "done" ? themeColors.primaryDark : "#FFFFFF"} name={task.status === "done" ? "refresh-outline" : "checkmark"} size={16} />
               </Pressable>
             </View>
           ))}
@@ -4304,8 +4716,8 @@ function AdminPanel({
 }
 
 function AdminMetric({ label, value, tone }: { label: string; value: number | string; tone?: "danger" | "success" }) {
-  const { isDarkTheme } = useAppTheme();
-  const color = tone === "danger" ? "#EF4444" : tone === "success" ? "#10B981" : isDarkTheme ? colors.accent : colors.primaryDark;
+  const { isDarkTheme, themeColors } = useAppTheme();
+  const color = tone === "danger" ? "#EF4444" : tone === "success" ? themeColors.primaryDark : isDarkTheme ? themeColors.accent : themeColors.primaryDark;
   return (
     <View style={[styles.adminMetricCard, isDarkTheme && styles.adminSectionDark]}>
       <Text style={[styles.adminMetricLabel, isDarkTheme && styles.adminMutedText]}>{label}</Text>
@@ -4325,10 +4737,10 @@ function AdminSectionHeader({ meta, title }: { meta?: string; title: string }) {
 }
 
 function AdminCompactStat({ label, value }: { label: string; value: number | string }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <View style={[styles.adminCompactStat, isDarkTheme && styles.adminSectionDark]}>
-      <Text style={[styles.adminMetricValue, isDarkTheme && { color: colors.accent }]}>{value}</Text>
+      <Text style={[styles.adminMetricValue, { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark }]}>{value}</Text>
       <Text style={[styles.adminMetricLabel, isDarkTheme && styles.adminMutedText]}>{label}</Text>
     </View>
   );
@@ -4349,6 +4761,7 @@ function AdminTaskRow({
   task: TaskManagerAdminTask;
   userName?: string;
 }) {
+  const { themeColors } = useAppTheme();
   const isDone = task.status === "done";
   const statusTone = isDone
     ? styles.adminStatusDone
@@ -4374,12 +4787,12 @@ function AdminTaskRow({
       <Pressable
         disabled={isUpdating}
         onPress={() => void onUpdateTaskStatus(task)}
-        style={[styles.adminTaskButton, isDone && styles.adminTaskButtonDone, isUpdating && styles.adminTaskButtonDisabled]}
+        style={[styles.adminTaskButton, { backgroundColor: isDone ? themeColors.accent : themeColors.primaryDark }, isUpdating && styles.adminTaskButtonDisabled]}
       >
         {isUpdating ? (
-          <ActivityIndicator color={isDone ? colors.primaryDark : "#FFFFFF"} />
+          <ActivityIndicator color={isDone ? themeColors.primaryDark : "#FFFFFF"} />
         ) : (
-          <Ionicons color={isDone ? colors.primaryDark : "#FFFFFF"} name={isDone ? "refresh-outline" : "checkmark"} size={16} />
+          <Ionicons color={isDone ? themeColors.primaryDark : "#FFFFFF"} name={isDone ? "refresh-outline" : "checkmark"} size={16} />
         )}
       </Pressable>
     </View>
@@ -4410,7 +4823,7 @@ function ChatsPanel({
   onUpdateTaskStatus: (taskId: string, status: TaskManagerAdminTask["status"]) => Promise<void>;
   selectedId?: string;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   const [query, setQuery] = useState("");
   const [visibleCount, setVisibleCount] = useState(CHAT_PAGE_SIZE);
   const [expandedAgentIds, setExpandedAgentIds] = useState<Record<string, boolean>>({});
@@ -4642,9 +5055,14 @@ function ChatsPanel({
         <Pressable
           accessibilityLabel="Add contact"
           onPress={onNewChat}
-          style={({ pressed }) => [styles.searchAddButton, isDarkTheme && styles.searchAddButtonDark, pressed && styles.pressablePressed]}
+          style={({ pressed }) => [
+            styles.searchAddButton,
+            { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
+            isDarkTheme && styles.searchAddButtonDark,
+            pressed && styles.pressablePressed,
+          ]}
         >
-          <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="person-add-outline" size={20} />
+          <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="person-add-outline" size={20} />
         </Pressable>
       </View>
       <ScrollView
@@ -4664,8 +5082,9 @@ function ChatsPanel({
                     style={({ pressed }) => [
                       styles.chatRow,
                       isDarkTheme && styles.chatRowDark,
-                      selectedId === conversation.id && styles.chatRowActive,
+                      selectedId === conversation.id && [styles.chatRowActive, { backgroundColor: themeColors.accentSoft, borderColor: themeColors.primarySoft }],
                       isDarkTheme && selectedId === conversation.id && styles.chatRowActiveDark,
+                      isDarkTheme && selectedId === conversation.id && { backgroundColor: themeColors.darkAccentSoft, borderColor: themeColors.primaryDark },
                       pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
                     ]}
                   >
@@ -4683,7 +5102,7 @@ function ChatsPanel({
                         style={({ pressed }) => [styles.taskThreadChevron, pressed && styles.pressablePressed]}
                       >
                         <Ionicons
-                          color={isDarkTheme ? colors.accent : colors.primaryDark}
+                          color={isDarkTheme ? themeColors.accent : themeColors.primaryDark}
                           name={row.taskThreadsExpanded ? "chevron-down" : "chevron-forward"}
                           size={18}
                         />
@@ -4737,18 +5156,35 @@ function ChatsPanel({
                       pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
                     ]}
                   >
-                    <View style={styles.completedTaskSectionIcon}>
+                    <View
+                      style={[
+                        styles.completedTaskSectionIcon,
+                        { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
+                      ]}
+                    >
                       <Ionicons
-                        color={isDarkTheme ? colors.accent : colors.primaryDark}
+                        color={isDarkTheme ? themeColors.accent : themeColors.primaryDark}
                         name={row.expanded ? "chevron-down" : "chevron-forward"}
                         size={16}
                       />
                     </View>
-                    <View style={[styles.completedTaskSectionLine, isDarkTheme && styles.completedTaskSectionLineDark]} />
+                    <View
+                      style={[
+                        styles.completedTaskSectionLine,
+                        { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.primarySoft },
+                        isDarkTheme && styles.completedTaskSectionLineDark,
+                      ]}
+                    />
                     <Text style={[styles.completedTaskSectionTitle, isDarkTheme && styles.completedTaskSectionTitleDark]}>
                       Archived tasks
                     </Text>
-                    <Text style={[styles.completedTaskSectionCount, isDarkTheme && styles.completedTaskSectionCountDark]}>
+                    <Text
+                      style={[
+                        styles.completedTaskSectionCount,
+                        { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft, color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                        isDarkTheme && styles.completedTaskSectionCountDark,
+                      ]}
+                    >
                       {row.count}
                     </Text>
                   </Pressable>
@@ -4784,8 +5220,9 @@ function ChatsPanel({
                         isCompletedTaskThread && styles.taskThreadRowArchived,
                         isDarkTheme && styles.chatRowDark,
                         isDarkTheme && isCompletedTaskThread && styles.taskThreadRowArchivedDark,
-                        selectedId === conversation.id && styles.chatRowActive,
+                        selectedId === conversation.id && [styles.chatRowActive, { backgroundColor: themeColors.accentSoft, borderColor: themeColors.primarySoft }],
                         isDarkTheme && selectedId === conversation.id && styles.chatRowActiveDark,
+                        isDarkTheme && selectedId === conversation.id && { backgroundColor: themeColors.darkAccentSoft, borderColor: themeColors.primaryDark },
                         pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
                         { paddingLeft: 12 + row.depth * 18 },
                       ]}
@@ -4793,6 +5230,7 @@ function ChatsPanel({
                     <View
                       style={[
                         styles.taskThreadRail,
+                        { backgroundColor: isDarkTheme ? themeColors.accent : themeColors.primary },
                         isDarkTheme && styles.taskThreadRailDark,
                         isCompletedTaskThread && styles.taskThreadRailArchived,
                       ]}
@@ -4811,7 +5249,7 @@ function ChatsPanel({
                         style={({ pressed }) => [styles.taskThreadChevron, pressed && styles.pressablePressed]}
                       >
                         <Ionicons
-                          color={isDarkTheme ? colors.accent : colors.primaryDark}
+                        color={isDarkTheme ? themeColors.accent : themeColors.primaryDark}
                           name={taskExpanded ? "chevron-down" : "chevron-forward"}
                           size={16}
                         />
@@ -4822,7 +5260,9 @@ function ChatsPanel({
                     <View
                       style={[
                         styles.taskNumberPill,
+                        !isDarkTheme && { backgroundColor: themeColors.primarySoft, borderColor: themeColors.accentSoft },
                         isDarkTheme && styles.taskNumberPillDark,
+                        isDarkTheme && { backgroundColor: themeColors.darkAccentSoft, borderColor: themeColors.primaryDark },
                         isCompletedTaskThread && styles.taskNumberPillArchived,
                       ]}
                     >
@@ -4832,6 +5272,7 @@ function ChatsPanel({
                           styles.taskNumberText,
                           isDarkTheme && styles.taskNumberTextDark,
                           isCompletedTaskThread && styles.taskNumberTextArchived,
+                          { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
                         ]}
                       >
                         {taskThread?.taskNumber ?? "TASK"}
@@ -4850,7 +5291,7 @@ function ChatsPanel({
                           />
                           {isCompletedTaskThread ? (
                             <Ionicons
-                              color={taskThread?.status === "discarded" || taskThread?.status === "closed" ? colors.faint : "#10B981"}
+                              color={taskThread?.status === "discarded" || taskThread?.status === "closed" ? colors.faint : isDarkTheme ? themeColors.accent : themeColors.primaryDark}
                               name={taskThread?.status === "discarded" || taskThread?.status === "closed" ? "archive-outline" : "checkmark-done-outline"}
                               size={14}
                             />
@@ -4888,10 +5329,11 @@ function ChatsPanel({
                               styles.taskActionDots,
                               isCompletedTaskThread && styles.taskActionDotsArchived,
                               taskActionsOpen && styles.taskActionDotsActive,
+                              taskActionsOpen && { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
                               pressed && styles.pressablePressed,
                             ]}
                           >
-                            <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="ellipsis-horizontal" size={17} />
+                            <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="ellipsis-horizontal" size={17} />
                           </Pressable>
                         </View>
                       </View>
@@ -4938,7 +5380,7 @@ function ChatsPanel({
                       <Text numberOfLines={1} style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{contact.displayName}</Text>
                       <Text numberOfLines={1} style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Tap to start a 1:1 chat</Text>
                     </View>
-                    <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="chatbubble-outline" size={21} />
+                    <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="chatbubble-outline" size={21} />
                   </View>
                 </Pressable>
               );
@@ -4970,9 +5412,16 @@ function TaskThreadInlineActions({
   isDarkTheme: boolean;
   onUpdateStatus: (status: TaskManagerAdminTask["status"]) => Promise<void>;
 }) {
+  const { themeColors } = useAppTheme();
   const isCompleted = isCompletedTaskThreadStatus(currentStatus);
   return (
-    <View style={[styles.taskInlineActions, isDarkTheme && styles.taskInlineActionsDark]}>
+    <View
+      style={[
+        styles.taskInlineActions,
+        { borderColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.primarySoft },
+        isDarkTheme && styles.taskInlineActionsDark,
+      ]}
+    >
       {isCompleted ? (
         <TaskActionButton
           busy={busyStatus === "open"}
@@ -5016,7 +5465,8 @@ function TaskActionButton({
   onPress: () => void;
   tone: "danger" | "success";
 }) {
-  const color = tone === "danger" ? "#DC2626" : colors.primaryDark;
+  const { themeColors } = useAppTheme();
+  const color = tone === "danger" ? "#DC2626" : themeColors.primaryDark;
   return (
     <Pressable
       disabled={busy}
@@ -5028,7 +5478,7 @@ function TaskActionButton({
       ]}
     >
       {busy ? <ActivityIndicator color={color} /> : <Ionicons color={color} name={icon} size={19} />}
-      <Text style={[styles.taskActionButtonText, tone === "danger" && styles.taskActionButtonDangerText]}>{label}</Text>
+      <Text style={[styles.taskActionButtonText, { color }, tone === "danger" && styles.taskActionButtonDangerText]}>{label}</Text>
     </Pressable>
   );
 }
@@ -5044,9 +5494,16 @@ function PanelTitle({
   actionLabel: string;
   onAction: () => void;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
-    <View style={[styles.panelTitle, isDarkTheme && styles.panelTitleDark]}>
+    <View
+      style={[
+        styles.panelTitle,
+        { backgroundColor: isDarkTheme ? "#202C33" : themeColors.primaryDark },
+        isDarkTheme && styles.panelTitleDark,
+        isDarkTheme && { borderBottomColor: themeColors.darkAccentSoft },
+      ]}
+    >
       <Text style={styles.panelHeading}>{title}</Text>
       <IconButton icon={actionIcon} label={actionLabel} onPress={onAction} />
     </View>
@@ -5061,12 +5518,14 @@ function ChatPane({
   currentUserId,
   messages,
   messagesLoading,
-  onForwardMessage,
+  onMessageActions,
+  onReplyToMessage,
   onOpenAttachmentMenu,
   onTakePhoto,
   draft,
   setDraft,
   onRemoveAttachment,
+  onRemoveReply,
   onSaveContact,
   onSend,
   onBack,
@@ -5074,6 +5533,7 @@ function ChatPane({
   isWide,
   loadingOlder,
   onLoadOlder,
+  replyingToMessage,
   typingText,
   unsavedPeer,
 }: {
@@ -5084,12 +5544,14 @@ function ChatPane({
   currentUserId: string;
   messages: ChatMessage[];
   messagesLoading: boolean;
-  onForwardMessage: (message: ChatMessage) => void;
+  onMessageActions: (target: NonNullable<MessageActionTarget>) => void;
+  onReplyToMessage: (message: ChatMessage) => void;
   onOpenAttachmentMenu: () => void;
   onTakePhoto: () => void;
   draft: string;
   setDraft: (value: string) => void;
   onRemoveAttachment: () => void;
+  onRemoveReply: () => void;
   onSaveContact: () => void;
   onSend: (
     kind?: BackendMessage["kind"],
@@ -5102,10 +5564,11 @@ function ChatPane({
   isWide: boolean;
   loadingOlder: boolean;
   onLoadOlder: () => void;
+  replyingToMessage: ChatMessage | null;
   typingText: string;
   unsavedPeer: UnsavedPeer | null;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   const { width } = useWindowDimensions();
   const scrollRef = useRef<ScrollView | null>(null);
   const keyboardInset = useKeyboardClearance(!isWide);
@@ -5620,7 +6083,14 @@ function ChatPane({
       {quickPromptOpen ? (
         <Pressable onPress={() => setQuickPromptOpen(false)} style={styles.quickPromptBackdrop} />
       ) : null}
-      <View style={[styles.chatHeader, isDarkTheme && styles.chatHeaderDark]}>
+      <View
+        style={[
+          styles.chatHeader,
+          { backgroundColor: isDarkTheme ? "#202C33" : themeColors.primaryDark },
+          isDarkTheme && styles.chatHeaderDark,
+          isDarkTheme && { borderBottomColor: themeColors.darkAccentSoft },
+        ]}
+      >
         <View style={[styles.row, styles.chatHeaderMain]}>
           {!isWide ? <IconButton icon="arrow-back" label="Back to chats" onPress={onBack} /> : null}
           <Avatar avatarUrl={conversation.avatarUrl} isBot={isAgentConversation} name={conversation.title} />
@@ -5668,7 +6138,11 @@ function ChatPane({
         </View>
       ) : null}
       <ScrollView
-        contentContainerStyle={[styles.messageList, isDarkTheme && styles.messageListDark]}
+        contentContainerStyle={[
+          styles.messageList,
+          !isDarkTheme && { backgroundColor: themeColors.accentSoft },
+          isDarkTheme && styles.messageListDark,
+        ]}
         keyboardShouldPersistTaps="handled"
         onContentSizeChange={handleContentSizeChange}
         onLayout={() => scrollToLatest(false)}
@@ -5685,7 +6159,7 @@ function ChatPane({
           <>
             {loadingOlder ? (
               <View style={[styles.olderMessagesLoader, isDarkTheme && styles.olderMessagesLoaderDark]}>
-                <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} size="small" />
+                <ActivityIndicator color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} size="small" />
               </View>
             ) : null}
             {messages.map((message, index) => {
@@ -5695,6 +6169,10 @@ function ChatPane({
               const isAudioKind = message.kind === "voice" || message.kind === "audio";
               const previous = messages[index - 1];
               const showDate = !previous || messageDateKey(previous.createdAt) !== messageDateKey(message.createdAt);
+              const repliedMessage = message.replyToMessageId
+                ? messages.find((candidate) => candidate.id === message.replyToMessageId)
+                : null;
+              const replyTo = repliedMessage ? buildReplyPreviewFromMessage(repliedMessage) : message.replyTo ?? null;
               return (
                 <View key={message.id} style={styles.messageWithDate}>
                   {showDate ? (
@@ -5724,23 +6202,28 @@ function ChatPane({
                           {sender?.displayName ?? "Member"}
                         </Text>
                       ) : null}
-                      <Pressable
-                        onLongPress={() => onForwardMessage(message)}
-                        style={({ pressed }) => [
-                          styles.bubble,
-                          mine ? styles.mineBubble : styles.theirBubble,
-                          isDarkTheme && mine && styles.mineBubbleDark,
-                          isDarkTheme && !mine && styles.theirBubbleDark,
-                          pressed && styles.bubblePressed,
-                        ]}
+                      <SwipeableMessageBubble
+                        message={message}
+                        mine={mine}
+                        onActions={onMessageActions}
+                        onReply={() => onReplyToMessage(message)}
+                        themeColors={themeColors}
                       >
                         {message.forwardedFrom ? (
                           <View style={styles.forwardedRow}>
-                            <Ionicons color={mine ? (isDarkTheme ? "rgba(233,237,239,0.78)" : colors.primaryDark) : colors.primaryDark} name="arrow-redo-outline" size={13} />
+                            <Ionicons color={mine ? (isDarkTheme ? "rgba(233,237,239,0.78)" : themeColors.primaryDark) : themeColors.primaryDark} name="arrow-redo-outline" size={13} />
                             <Text style={[styles.forwardedText, mine && (isDarkTheme ? styles.forwardedTextMineDark : styles.forwardedTextMine)]}>
                               Forwarded from {message.forwardedFrom.senderName}
                             </Text>
                           </View>
+                        ) : null}
+                        {replyTo ? (
+                          <MessageReplyQuote
+                            mine={mine}
+                            reply={replyTo}
+                            senderName={participantDisplayName(conversation, replyTo.senderId, currentUserId)}
+                            themeColors={themeColors}
+                          />
                         ) : null}
                         {message.attachments[0] ? <MessageAttachmentCard attachment={message.attachments[0]} mine={mine} /> : null}
                         {message.body ? <MessageBody mine={mine} text={message.body} /> : null}
@@ -5756,10 +6239,10 @@ function ChatPane({
                             <Ionicons color={colors.danger} name="alert-circle" size={15} />
                           ) : null}
                           {mine && !message.localState ? (
-                            <Ionicons color={isDarkTheme ? "#53BDEB" : colors.primaryDark} name="checkmark-done" size={15} />
+                            <Ionicons color={isDarkTheme ? "#53BDEB" : themeColors.primaryDark} name="checkmark-done" size={15} />
                           ) : null}
                         </View>
-                      </Pressable>
+                      </SwipeableMessageBubble>
                     </View>
                   </View>
                 </View>
@@ -5783,7 +6266,7 @@ function ChatPane({
         {agentThinking ? (
           <View style={[styles.messageWrap, styles.messageTheirs]}>
             <View style={[styles.bubble, styles.theirBubble, isDarkTheme && styles.theirBubbleDark, styles.thinkingBubble]}>
-              <ActivityIndicator color={isDarkTheme ? colors.accent : colors.primaryDark} size="small" />
+              <ActivityIndicator color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} size="small" />
               <Text style={[styles.thinkingText, isDarkTheme && styles.thinkingTextDark]}>Thinking...</Text>
             </View>
           </View>
@@ -5825,7 +6308,7 @@ function ChatPane({
                 pressed && styles.pressablePressed,
               ]}
             >
-              <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.primaryDark} name="help-circle-outline" size={18} />
+              <Ionicons color={isDarkTheme ? "#FFFFFF" : themeColors.primaryDark} name="help-circle-outline" size={18} />
             </Pressable>
           </View>
         ) : null}
@@ -5878,7 +6361,7 @@ function ChatPane({
                 pressed && styles.pressablePressed,
               ]}
             >
-              <Ionicons color={isDarkTheme ? "#E9EDEF" : colors.primaryDark} name={voiceRecorderPaused ? "mic" : "pause"} size={20} />
+              <Ionicons color={isDarkTheme ? "#E9EDEF" : themeColors.primaryDark} name={voiceRecorderPaused ? "mic" : "pause"} size={20} />
             </Pressable>
             <Pressable
               accessibilityLabel="Send voice recording"
@@ -5913,6 +6396,14 @@ function ChatPane({
               <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name="add" size={22} />
             </Pressable>
             <View style={styles.composerBody}>
+              {replyingToMessage ? (
+                <ComposerReplyPreview
+                  conversation={conversation}
+                  currentUserId={currentUserId}
+                  message={replyingToMessage}
+                  onRemove={onRemoveReply}
+                />
+              ) : null}
               {attachment ? (
                 <ComposerAttachmentPreview attachment={attachment} onRemove={onRemoveAttachment} />
               ) : null}
@@ -5945,7 +6436,7 @@ function ChatPane({
                 accessibilityLabel="Send message"
                 disabled={!composerCanSend}
                 onPress={() => onSend()}
-                style={({ pressed }) => [styles.sendButton, pressed && styles.pressablePressed, !composerCanSend && styles.buttonDisabled]}
+                style={({ pressed }) => [styles.sendButton, { backgroundColor: themeColors.primaryDark }, pressed && styles.pressablePressed, !composerCanSend && styles.buttonDisabled]}
               >
                 <Ionicons color="#FFFFFF" name="send" size={20} />
               </Pressable>
@@ -5957,11 +6448,12 @@ function ChatPane({
                   style={({ pressed }) => [
                     styles.sendButton,
                     styles.cameraQuickButton,
+                    { backgroundColor: themeColors.primarySoft, borderColor: themeColors.accentSoft },
                     isDarkTheme && styles.cameraQuickButtonDark,
                     pressed && styles.pressablePressed,
                   ]}
                 >
-                  <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="camera-outline" size={20} />
+                  <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="camera-outline" size={20} />
                 </Pressable>
                 <Pressable
                   accessibilityLabel="Record voice note"
@@ -5979,6 +6471,37 @@ function ChatPane({
   );
 }
 
+function ComposerReplyPreview({
+  conversation,
+  currentUserId,
+  message,
+  onRemove,
+}: {
+  conversation: BackendConversation;
+  currentUserId: string;
+  message: ChatMessage;
+  onRemove: () => void;
+}) {
+  const { isDarkTheme, themeColors } = useAppTheme();
+  const senderName = participantDisplayName(conversation, message.senderId, currentUserId);
+  return (
+    <View style={[styles.composerReply, isDarkTheme && styles.composerReplyDark]}>
+      <View style={[styles.composerReplyBar, { backgroundColor: themeColors.primaryDark }]} />
+      <View style={styles.chatRowBody}>
+        <Text numberOfLines={1} style={[styles.composerReplyName, isDarkTheme && styles.composerReplyNameDark, { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark }]}>
+          {senderName}
+        </Text>
+        <Text numberOfLines={2} style={[styles.composerReplyText, isDarkTheme && styles.composerReplyTextDark]}>
+          {messagePreviewText(message) || "Message"}
+        </Text>
+      </View>
+      <Pressable onPress={onRemove} style={({ pressed }) => [styles.composerAttachmentClose, pressed && styles.pressablePressed]}>
+        <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name="close" size={16} />
+      </Pressable>
+    </View>
+  );
+}
+
 function ComposerAttachmentPreview({
   attachment,
   onRemove,
@@ -5986,7 +6509,7 @@ function ComposerAttachmentPreview({
   attachment: ComposerAttachment;
   onRemove: () => void;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <View style={[styles.composerAttachment, isDarkTheme && styles.composerAttachmentDark]}>
       {attachment.kind === "image" ? (
@@ -5994,7 +6517,7 @@ function ComposerAttachmentPreview({
       ) : (
         <View style={[styles.composerAttachmentIcon, isDarkTheme && styles.composerAttachmentIconDark]}>
           <Ionicons
-            color={isDarkTheme ? colors.accent : colors.primaryDark}
+            color={isDarkTheme ? themeColors.accent : themeColors.primaryDark}
             name={attachment.kind === "document" ? "document-text-outline" : "mic-outline"}
             size={18}
           />
@@ -6026,7 +6549,7 @@ function MessageAttachmentCard({
   attachment: BackendAttachment;
   mine: boolean;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
 
   if (attachment.kind === "image") {
     return (
@@ -6053,7 +6576,7 @@ function MessageAttachmentCard({
       ]}
     >
       <View style={[styles.documentAttachmentIcon, mine && (isDarkTheme ? styles.documentAttachmentIconMineDark : styles.documentAttachmentIconMine)]}>
-        <Ionicons color={mine ? (isDarkTheme ? "#E9EDEF" : colors.primaryDark) : colors.primaryDark} name="document-text-outline" size={20} />
+        <Ionicons color={mine ? (isDarkTheme ? "#E9EDEF" : themeColors.primaryDark) : themeColors.primaryDark} name="document-text-outline" size={20} />
       </View>
       <View style={styles.chatRowBody}>
         <Text numberOfLines={1} style={[styles.documentAttachmentTitle, mine && (isDarkTheme ? styles.documentAttachmentTitleMineDark : styles.documentAttachmentTitleMine)]}>
@@ -6063,7 +6586,7 @@ function MessageAttachmentCard({
           {formatBytes(attachment.sizeBytes)}
         </Text>
       </View>
-      <Ionicons color={mine ? (isDarkTheme ? "rgba(233,237,239,0.8)" : colors.primaryDark) : colors.primaryDark} name="open-outline" size={18} />
+      <Ionicons color={mine ? (isDarkTheme ? "rgba(233,237,239,0.8)" : themeColors.primaryDark) : themeColors.primaryDark} name="open-outline" size={18} />
     </Pressable>
   );
 }
@@ -6075,7 +6598,7 @@ function AudioAttachmentCard({
   attachment: BackendAttachment;
   mine: boolean;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   const player = useAudioPlayer(attachment.url);
   const status = useAudioPlayerStatus(player);
   const bars = useMemo(() => normalizeWaveSamples(attachment.waveformSamples, 22), [attachment.waveformSamples]);
@@ -6103,7 +6626,7 @@ function AudioAttachmentCard({
           pressed && styles.pressablePressed,
         ]}
       >
-        <Ionicons color={mine ? (isDarkTheme ? "#E9EDEF" : colors.primaryDark) : "#FFFFFF"} name={status.playing ? "pause" : "play"} size={17} />
+        <Ionicons color={mine ? (isDarkTheme ? "#E9EDEF" : themeColors.primaryDark) : "#FFFFFF"} name={status.playing ? "pause" : "play"} size={17} />
       </Pressable>
       <View style={styles.chatRowBody}>
         <View style={styles.audioWaveRow}>
@@ -6121,12 +6644,12 @@ function AudioAttachmentCard({
                       ? isPlayed
                         ? isDarkTheme
                           ? "#E9EDEF"
-                          : colors.primaryDark
+                          : themeColors.primaryDark
                         : isDarkTheme
                           ? "rgba(233,237,239,0.45)"
                           : "rgba(17,27,33,0.35)"
                       : isPlayed
-                        ? colors.primaryDark
+                        ? themeColors.primaryDark
                         : "#D1D7DB",
                   },
                 ]}
@@ -6153,7 +6676,7 @@ function StatusPanel({
   profile: BackendProfile;
   statuses: BackendStatus[];
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Status" actionIcon="add-circle-outline" actionLabel="New status" onAction={onNewStatus} />
@@ -6171,7 +6694,7 @@ function StatusPanel({
             <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>My status</Text>
             <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Create a text status backed by Supabase.</Text>
           </View>
-          <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="add-circle" size={24} />
+          <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="add-circle" size={24} />
         </Pressable>
         {statuses.length ? (
           statuses.map((status) => (
@@ -6207,7 +6730,7 @@ function ContactsPanel({
   onNewChat: () => void;
   onOpenContact: (contactId: string) => void;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Contacts" actionIcon="person-add-outline" actionLabel="Add contact" onAction={onNewChat} />
@@ -6220,8 +6743,8 @@ function ContactsPanel({
           pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
         ]}
       >
-        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="people-outline" size={22} />
-        <Text style={[styles.quickActionText, isDarkTheme && styles.quickActionTextDark]}>New group</Text>
+        <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="people-outline" size={22} />
+        <Text style={[styles.quickActionText, isDarkTheme && styles.quickActionTextDark, { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark }]}>New group</Text>
       </Pressable>
       <ScrollView contentContainerStyle={[styles.listContent, isDarkTheme && styles.listContentDark]}>
         {contacts.length ? contacts.map((contact) => (
@@ -6245,7 +6768,7 @@ function ContactsPanel({
               <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{contact.displayName}</Text>
               <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{contact.phone ?? contact.about}</Text>
             </View>
-            <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="chatbubble-outline" size={21} />
+            <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="chatbubble-outline" size={21} />
           </Pressable>
         )) : <EmptyState icon="person-add-outline" title="No contacts" copy="Add contacts by phone number to start 1:1 chats or groups." />}
       </ScrollView>
@@ -6254,7 +6777,7 @@ function ContactsPanel({
 }
 
 function CallsPanel({ isWide }: { isWide: boolean }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Calls" actionIcon="call-outline" actionLabel="New call" onAction={() => undefined} />
@@ -6286,7 +6809,7 @@ function SettingsPanel({
   isUploadingProfilePhoto: boolean;
   profile: BackendProfile;
 }) {
-  const { isDarkTheme, themeMode, toggleTheme } = useAppTheme();
+  const { accentTheme, accentThemes, isDarkTheme, setAccentTheme, themeColors, themeMode, toggleTheme } = useAppTheme();
   return (
     <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
       <PanelTitle title="Settings" actionIcon="create-outline" actionLabel="Edit profile" onAction={onOpenProfile} />
@@ -6303,7 +6826,7 @@ function SettingsPanel({
           ]}
         >
           <Avatar avatarUrl={profile.avatarUrl} name={profile.displayName} size={64} />
-          <View style={[styles.profileAvatarBadge, isDarkTheme && styles.profileAvatarBadgeDark]}>
+          <View style={[styles.profileAvatarBadge, { backgroundColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark }, isDarkTheme && styles.profileAvatarBadgeDark]}>
             {isUploadingProfilePhoto ? (
               <ActivityIndicator color={isDarkTheme ? colors.primaryDark : "#FFFFFF"} size="small" />
             ) : (
@@ -6328,17 +6851,59 @@ function SettingsPanel({
           pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
         ]}
       >
-        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name={isDarkTheme ? "moon" : "sunny-outline"} size={22} />
+        <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name={isDarkTheme ? "moon" : "sunny-outline"} size={22} />
         <View style={styles.chatRowBody}>
           <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Theme</Text>
           <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>
             {themeMode === "dark" ? "Dark AI signal theme" : "Light Orbita theme"}
           </Text>
         </View>
-        <View style={[styles.themeSwitch, isDarkTheme && styles.themeSwitchOn]}>
-          <View style={[styles.themeSwitchKnob, isDarkTheme && styles.themeSwitchKnobOn]} />
+        <View style={[styles.themeSwitch, isDarkTheme && { backgroundColor: themeColors.darkAccentSoft }]}>
+          <View style={[styles.themeSwitchKnob, isDarkTheme && styles.themeSwitchKnobOn, isDarkTheme && { backgroundColor: themeColors.accent }]} />
         </View>
       </Pressable>
+      <View style={[styles.settingRowStack, isDarkTheme && styles.settingRowDark]}>
+        <View style={styles.rowBetween}>
+          <View style={styles.chatRowBody}>
+            <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Color theme</Text>
+            <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>
+              {themeColors.label} is active
+            </Text>
+          </View>
+          <View style={[styles.themeSelectedDot, { backgroundColor: themeColors.primaryDark }]} />
+        </View>
+        <View style={styles.accentThemeGrid}>
+          {accentThemes.map((item) => {
+            const selected = item.id === accentTheme;
+            return (
+              <Pressable
+                accessibilityLabel={`Use ${item.label} theme`}
+                accessibilityRole="button"
+                key={item.id}
+                onPress={() => setAccentTheme(item.id)}
+                style={({ pressed }) => [
+                  styles.accentThemeOption,
+                  { borderColor: selected ? item.primaryDark : isDarkTheme ? "rgba(255,255,255,0.12)" : colors.line },
+                  selected && { backgroundColor: isDarkTheme ? item.darkAccentSoft : item.accentSoft },
+                  pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+                ]}
+              >
+                <View style={styles.accentSwatchStack}>
+                  <View style={[styles.accentSwatch, { backgroundColor: item.primaryDark }]} />
+                  <View style={[styles.accentSwatch, styles.accentSwatchMid, { backgroundColor: item.primary }]} />
+                  <View style={[styles.accentSwatch, styles.accentSwatchLight, { backgroundColor: item.bubbleMine }]} />
+                </View>
+                <Text numberOfLines={1} style={[styles.accentThemeLabel, isDarkTheme && styles.accentThemeLabelDark]}>
+                  {item.label.replace("Orbita ", "")}
+                </Text>
+                {selected ? (
+                  <Ionicons color={isDarkTheme ? item.accent : item.primaryDark} name="checkmark-circle" size={17} />
+                ) : null}
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
       <Pressable
         onPress={onOpenProfile}
         style={({ pressed }) => [
@@ -6347,7 +6912,7 @@ function SettingsPanel({
           pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
         ]}
       >
-        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="person-circle-outline" size={22} />
+        <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="person-circle-outline" size={22} />
         <View style={styles.chatRowBody}>
           <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Profile</Text>
           <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Edit your display name and status line</Text>
@@ -6361,20 +6926,20 @@ function SettingsPanel({
           pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
         ]}
       >
-        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name="person-add-outline" size={22} />
+        <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="person-add-outline" size={22} />
         <View style={styles.chatRowBody}>
           <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>Add contact</Text>
           <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>Start a chat by phone number</Text>
         </View>
       </Pressable>
-      {notice ? <Text style={[styles.settingsNotice, isDarkTheme && styles.settingsNoticeDark]}>{notice}</Text> : null}
+      {notice ? <Text style={[styles.settingsNotice, { color: themeColors.primaryDark, backgroundColor: themeColors.accentSoft }, isDarkTheme && { color: themeColors.accent, backgroundColor: themeColors.darkAccentSoft }]}>{notice}</Text> : null}
       {[
         ["key-outline", "Account", "Phone OTP session stored by Supabase Auth"],
         ["lock-closed-outline", "Privacy", "Profile and contact visibility enforced by RLS"],
         ["cloud-upload-outline", "Storage", "Media buckets are configured in Supabase"],
       ].map(([icon, title, copy]) => (
         <View key={title} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
-          <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name={icon as keyof typeof Ionicons.glyphMap} size={22} />
+          <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name={icon as keyof typeof Ionicons.glyphMap} size={22} />
           <View style={styles.chatRowBody}>
             <Text style={[styles.chatTitle, isDarkTheme && styles.chatTitleDark]}>{title}</Text>
             <Text style={[styles.chatPreview, isDarkTheme && styles.chatPreviewDark]}>{copy}</Text>
@@ -6421,11 +6986,11 @@ function EmptyState({
   copy: string;
   compact?: boolean;
 }) {
-  const { isDarkTheme } = useAppTheme();
+  const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <View style={[styles.emptyState, compact && styles.emptyCompact]}>
       <View style={[styles.emptyIcon, isDarkTheme && styles.emptyIconDark]}>
-        <Ionicons color={isDarkTheme ? colors.accent : colors.primaryDark} name={icon} size={28} />
+        <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name={icon} size={28} />
       </View>
       <Text style={[styles.emptyTitle, isDarkTheme && styles.emptyTitleDark]}>{title}</Text>
       <Text style={[styles.emptyCopy, isDarkTheme && styles.emptyCopyDark]}>{copy}</Text>
@@ -6446,6 +7011,7 @@ function NewChatModal({
   onOpenConversation: (otherUserId: string) => Promise<void>;
   visible: boolean;
 }) {
+  const { themeColors } = useAppTheme();
   const [phone, setPhone] = useState("");
   const [nickname, setNickname] = useState("");
   const [notice, setNotice] = useState("");
@@ -6505,7 +7071,7 @@ function NewChatModal({
                   <Text numberOfLines={1} style={styles.chatTitle}>{contact.displayName}</Text>
                   <Text numberOfLines={1} style={styles.chatPreview}>{contact.phone}</Text>
                 </View>
-                <Ionicons color={colors.primaryDark} name="chatbubble-outline" size={21} />
+                <Ionicons color={themeColors.primaryDark} name="chatbubble-outline" size={21} />
               </Pressable>
             )) : <EmptyState compact icon="person-add-outline" title="No contacts" copy="Add a registered phone number first." />}
           </ScrollView>
@@ -6527,6 +7093,7 @@ function SaveContactModal({
   peer: UnsavedPeer | null;
   visible: boolean;
 }) {
+  const { themeColors } = useAppTheme();
   const [nickname, setNickname] = useState("");
 
   useEffect(() => {
@@ -6550,7 +7117,7 @@ function SaveContactModal({
       {peer ? (
         <View style={styles.saveContactPeer}>
           <View style={styles.attachmentMenuIcon}>
-            <Ionicons color={colors.primaryDark} name="call-outline" size={20} />
+            <Ionicons color={themeColors.primaryDark} name="call-outline" size={20} />
           </View>
           <View style={styles.chatRowBody}>
             <Text style={styles.chatTitle}>Phone number</Text>
@@ -6642,6 +7209,7 @@ function AddMembersModal({
   onSave: (memberIds: string[]) => Promise<void>;
   visible: boolean;
 }) {
+  const { themeColors } = useAppTheme();
   const [selected, setSelected] = useState<string[]>([]);
   const existing = new Set(conversation?.participants.map((participant) => participant.id) ?? []);
   const available = contacts.filter((contact) => !existing.has(contact.id));
@@ -6677,6 +7245,7 @@ function TaskThreadMembersModal({
   users: TaskManagerAdminUser[];
   visible: boolean;
 }) {
+  const { themeColors } = useAppTheme();
   const [selected, setSelected] = useState<string[]>([]);
   const existingOrbitaProfileIds = new Set(conversation?.participants.map((participant) => participant.id) ?? []);
   const available = users.filter((user) => {
@@ -6711,7 +7280,7 @@ function TaskThreadMembersModal({
                 <Text style={styles.chatPreview}>{linked ? "Orbita linked" : "Pending until Orbita account is linked"}</Text>
               </View>
               <Ionicons
-                color={selected.includes(user._id) ? colors.primaryDark : colors.faint}
+                color={selected.includes(user._id) ? themeColors.primaryDark : colors.faint}
                 name={selected.includes(user._id) ? "checkbox" : "square-outline"}
                 size={23}
               />
@@ -6733,6 +7302,7 @@ function ContactPicker({
   selected: string[];
   toggle: (id: string) => void;
 }) {
+  const { themeColors } = useAppTheme();
   return (
     <ScrollView style={styles.modalList}>
       {contacts.length ? contacts.map((contact) => (
@@ -6750,7 +7320,7 @@ function ContactPicker({
             <Text style={styles.chatTitle}>{contact.displayName}</Text>
             <Text style={styles.chatPreview}>{contact.phone}</Text>
           </View>
-          <Ionicons color={selected.includes(contact.id) ? colors.primaryDark : colors.faint} name={selected.includes(contact.id) ? "checkbox" : "square-outline"} size={23} />
+          <Ionicons color={selected.includes(contact.id) ? themeColors.primaryDark : colors.faint} name={selected.includes(contact.id) ? "checkbox" : "square-outline"} size={23} />
         </Pressable>
       )) : <EmptyState compact icon="people-outline" title="No contacts available" copy="Add contacts before selecting members." />}
     </ScrollView>
@@ -6770,6 +7340,7 @@ function AttachmentMenuModal({
   onPickImage: () => void;
   visible: boolean;
 }) {
+  const { themeColors } = useAppTheme();
   const actions: Array<{
     icon: keyof typeof Ionicons.glyphMap;
     label: string;
@@ -6792,7 +7363,7 @@ function AttachmentMenuModal({
             style={({ pressed }) => [styles.attachmentMenuRow, pressed && styles.rowPressed]}
           >
             <View style={styles.attachmentMenuIcon}>
-              <Ionicons color={colors.primaryDark} name={action.icon} size={20} />
+              <Ionicons color={themeColors.primaryDark} name={action.icon} size={20} />
             </View>
             <View style={styles.chatRowBody}>
               <Text style={styles.chatTitle}>{action.label}</Text>
@@ -6803,6 +7374,90 @@ function AttachmentMenuModal({
       </View>
       <ModalActions onCancel={onClose} />
     </KeyboardAwareModal>
+  );
+}
+
+function MessageActionsModal({
+  anchor,
+  message,
+  onClose,
+  onReply,
+  visible,
+}: {
+  anchor?: MessageActionAnchor;
+  message: ChatMessage | null;
+  onClose: () => void;
+  onReply: (message: ChatMessage) => void;
+  visible: boolean;
+}) {
+  const { isDarkTheme } = useAppTheme();
+  const { height, width } = useWindowDimensions();
+  const menuWidth = Math.min(MESSAGE_ACTION_MENU_WIDTH, Math.max(144, width - 32));
+  const menuHeight = MESSAGE_ACTION_MENU_HEIGHT;
+  const viewportMargin = 10;
+  const top = anchor
+    ? clamp(
+        anchor.y + anchor.height + menuHeight + MESSAGE_ACTION_MENU_GAP > height - viewportMargin
+          ? anchor.y - menuHeight - MESSAGE_ACTION_MENU_GAP
+          : anchor.y + anchor.height + MESSAGE_ACTION_MENU_GAP,
+        viewportMargin,
+        Math.max(viewportMargin, height - menuHeight - viewportMargin),
+      )
+    : Math.max(viewportMargin, height - menuHeight - 28);
+  const anchoredLeft = anchor
+    ? anchor.mine
+      ? anchor.x + anchor.width - menuWidth
+      : anchor.x
+    : (width - menuWidth) / 2;
+  const left = clamp(
+    anchoredLeft,
+    viewportMargin,
+    Math.max(viewportMargin, width - menuWidth - viewportMargin),
+  );
+  const copyMessage = () => {
+    if (!message?.body) return;
+    if (Platform.OS === "web" && typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      void navigator.clipboard.writeText(message.body).catch(() => undefined);
+    }
+    onClose();
+  };
+  const actions: Array<{
+    icon: keyof typeof Ionicons.glyphMap;
+    label: string;
+    onPress: () => void;
+  }> = [
+    { icon: "return-up-back-outline", label: "Reply", onPress: () => message && onReply(message) },
+    { icon: "copy-outline", label: "Copy", onPress: copyMessage },
+  ];
+  return (
+    <Modal animationType="fade" onRequestClose={onClose} transparent visible={visible}>
+      <Pressable onPress={onClose} style={styles.messageActionsBackdrop}>
+        <Pressable
+          onPress={(event) => event.stopPropagation()}
+          style={[
+            styles.messageActionsSheet,
+            isDarkTheme && styles.messageActionsSheetDark,
+            { left, top, width: menuWidth },
+          ]}
+        >
+          {actions.map((action) => (
+            <Pressable
+              disabled={!message}
+              key={action.label}
+              onPress={action.onPress}
+              style={({ pressed }) => [styles.messageActionRow, pressed && styles.messageActionRowPressed]}
+            >
+              <Ionicons
+                color={isDarkTheme ? "rgba(233,237,239,0.92)" : colors.ink}
+                name={action.icon}
+                size={19}
+              />
+              <Text style={[styles.messageActionText, isDarkTheme && styles.messageActionTextDark]}>{action.label}</Text>
+            </Pressable>
+          ))}
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -6819,6 +7474,7 @@ function ForwardPickerModal({
   targets: ForwardTarget[];
   visible: boolean;
 }) {
+  const { themeColors } = useAppTheme();
   const [selectedTargetIds, setSelectedTargetIds] = useState<string[]>([]);
 
   useEffect(() => {
@@ -6856,7 +7512,7 @@ function ForwardPickerModal({
                 <Text style={styles.chatPreview}>{target.subtitle}</Text>
               </View>
               <Ionicons
-                color={selected ? colors.primaryDark : colors.faint}
+                color={selected ? themeColors.primaryDark : colors.faint}
                 name={selected ? "checkbox" : "square-outline"}
                 size={23}
               />
@@ -8114,10 +8770,64 @@ const styles = StyleSheet.create({
   mineBubbleDark: { backgroundColor: "#005C4B" },
   theirBubble: { backgroundColor: colors.bubbleTheirs, borderTopLeftRadius: 4, borderColor: "rgba(233,237,239,0.72)", borderWidth: 1 },
   theirBubbleDark: { backgroundColor: "#202C33", borderColor: "rgba(255,255,255,0.10)" },
+  swipeBubbleFrame: { position: "relative", overflow: "visible" },
+  replySwipeCue: {
+    position: "absolute",
+    top: "50%",
+    width: 30,
+    height: 30,
+    marginTop: -15,
+    borderRadius: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,128,105,0.12)",
+  },
+  replySwipeCueMine: { right: -38 },
+  replySwipeCueTheirs: { left: -38 },
+  replySwipeCueDark: { backgroundColor: "rgba(6,207,156,0.14)" },
+  messageMenuButton: {
+    position: "absolute",
+    top: 5,
+    width: 30,
+    height: 26,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    opacity: 0,
+    backgroundColor: "rgba(255,255,255,0.58)",
+    shadowColor: "transparent",
+    zIndex: 5,
+  },
+  messageMenuButtonMine: { right: 6 },
+  messageMenuButtonTheirs: { right: 6 },
+  messageMenuButtonDark: {
+    backgroundColor: "rgba(17,27,33,0.52)",
+  },
+  messageMenuButtonVisible: { opacity: 1 },
   forwardedRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   forwardedText: { color: colors.primaryDark, fontSize: 11, fontWeight: "600" },
   forwardedTextMine: { color: colors.primaryDark },
   forwardedTextMineDark: { color: "rgba(233,237,239,0.82)" },
+  replyQuote: {
+    minWidth: 180,
+    maxWidth: "100%",
+    flexDirection: "row",
+    overflow: "hidden",
+    borderRadius: 10,
+    backgroundColor: "rgba(0,168,132,0.08)",
+  },
+  replyQuoteDark: { backgroundColor: "rgba(255,255,255,0.08)" },
+  replyQuoteMine: { backgroundColor: "rgba(17,27,33,0.06)" },
+  replyQuoteMineDark: { backgroundColor: "rgba(255,255,255,0.13)" },
+  replyQuoteBar: { width: 4, backgroundColor: colors.primaryDark },
+  replyQuoteBarMine: { backgroundColor: colors.accent },
+  replyQuoteBody: { flex: 1, minWidth: 0, gap: 2, paddingHorizontal: 9, paddingVertical: 7 },
+  replyQuoteName: { color: colors.primaryDark, fontSize: 12, fontWeight: "800" },
+  replyQuoteNameMine: { color: colors.primaryDark },
+  replyQuoteNameMineDark: { color: colors.accent },
+  replyQuoteText: { color: colors.muted, fontSize: 12, lineHeight: 16 },
+  replyQuoteTextMine: { color: colors.muted },
+  replyQuoteTextMineDark: { color: "rgba(233,237,239,0.74)" },
   thinkingBubble: { flexDirection: "row", alignItems: "center", gap: 8 },
   thinkingText: { color: colors.muted, fontSize: 13, fontWeight: "700" },
   thinkingTextDark: { color: "rgba(255,255,255,0.62)" },
@@ -8362,6 +9072,21 @@ const styles = StyleSheet.create({
   composerAccessoryButtonDark: { backgroundColor: "rgba(255,255,255,0.10)" },
   composerBody: { flex: 1, gap: 8, justifyContent: "center" },
   composerQuickActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  composerReply: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    overflow: "hidden",
+    borderRadius: 15,
+    backgroundColor: "#F0F2F5",
+  },
+  composerReplyDark: { backgroundColor: "rgba(255,255,255,0.08)" },
+  composerReplyBar: { width: 4, alignSelf: "stretch", backgroundColor: colors.primaryDark },
+  composerReplyName: { color: colors.primaryDark, fontSize: 12, fontWeight: "800" },
+  composerReplyNameDark: { color: colors.accent },
+  composerReplyText: { color: colors.muted, fontSize: 12, lineHeight: 17 },
+  composerReplyTextDark: { color: "rgba(255,255,255,0.66)" },
   composerInput: {
     height: 44,
     minHeight: 44,
@@ -8491,6 +9216,16 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   settingRowDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "rgba(255,255,255,0.06)" },
+  settingRowStack: {
+    marginHorizontal: 14,
+    marginBottom: 10,
+    gap: 12,
+    padding: 13,
+    borderRadius: radii.md,
+    borderWidth: 1,
+    borderColor: colors.line,
+    backgroundColor: colors.surface,
+  },
   disabledPressable: { opacity: 0.7 },
   settingDangerRow: { borderColor: "rgba(229,72,77,0.22)" },
   settingDangerText: { color: colors.danger },
@@ -8517,6 +9252,57 @@ const styles = StyleSheet.create({
   themeSwitchOn: { backgroundColor: "rgba(6,207,156,0.28)" },
   themeSwitchKnob: { width: 20, height: 20, borderRadius: 10, backgroundColor: "#FFFFFF" },
   themeSwitchKnobOn: { transform: [{ translateX: 20 }], backgroundColor: colors.accent },
+  themeSelectedDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    flexShrink: 0,
+  },
+  accentThemeGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  accentThemeOption: {
+    minWidth: 96,
+    flexGrow: 1,
+    minHeight: 50,
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+    backgroundColor: "rgba(255,255,255,0.52)",
+  },
+  accentSwatchStack: {
+    width: 34,
+    height: 18,
+    position: "relative",
+    flexShrink: 0,
+  },
+  accentSwatch: {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.72)",
+  },
+  accentSwatchMid: { left: 8 },
+  accentSwatchLight: { left: 16 },
+  accentThemeLabel: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.ink,
+    fontSize: 12,
+    fontWeight: "800",
+  },
+  accentThemeLabelDark: { color: "#FFFFFF" },
   desktopEmpty: { flex: 1, borderRadius: radii.lg, borderColor: colors.line, borderWidth: 1, backgroundColor: colors.surface },
   desktopEmptyDark: { borderColor: "rgba(255,255,255,0.10)", backgroundColor: "#202C33" },
   emptyState: { alignItems: "center", justifyContent: "center", paddingHorizontal: 24, paddingVertical: 42, gap: 8 },
@@ -8708,6 +9494,50 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.line,
   },
+  forwardPreviewCardDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  messageActionsSheet: {
+    position: "absolute",
+    maxWidth: MESSAGE_ACTION_MENU_WIDTH,
+    overflow: "hidden",
+    borderRadius: 12,
+    backgroundColor: "#FFFFFF",
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: "rgba(17,27,33,0.12)",
+    shadowColor: "#101828",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 22,
+    elevation: 12,
+  },
+  messageActionsBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(17,27,33,0.08)",
+  },
+  messageActionsSheetDark: {
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "#111B21",
+  },
+  messageActionRow: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 14,
+  },
+  messageActionRowPressed: { backgroundColor: "rgba(17,27,33,0.07)" },
+  messageActionDivider: {
+    height: 1,
+    marginHorizontal: 18,
+    marginVertical: 7,
+    backgroundColor: "rgba(17,27,33,0.10)",
+  },
+  messageActionDividerDark: { backgroundColor: "rgba(255,255,255,0.10)" },
+  messageActionText: { color: colors.ink, fontSize: 15, fontWeight: "700" },
+  messageActionTextDark: { color: "#FFFFFF" },
   voiceComposerCard: {
     width: "100%",
     maxWidth: 380,

@@ -19,6 +19,12 @@ export type Message = {
   body: string;
   createdAt: string;
   status: MessageStatus;
+  replyTo?: {
+    messageId: string;
+    senderId: string;
+    body: string;
+    kind: MessageKind;
+  } | null;
   replyToId?: string;
   reactions?: Record<string, string>;
   encryptedPayload?: string;

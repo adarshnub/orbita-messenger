@@ -48,6 +48,13 @@ export type BackendAttachment = {
   waveformSamples?: number[] | null;
 };
 
+export type BackendReplyPreview = {
+  messageId: string;
+  senderId: string;
+  body: string;
+  kind: "text" | "image" | "video" | "document" | "audio" | "voice";
+};
+
 export type BackendMessage = {
   id: string;
   clientMessageId?: string | null;
@@ -61,6 +68,8 @@ export type BackendMessage = {
     senderName: string;
     conversationTitle: string;
   } | null;
+  replyTo?: BackendReplyPreview | null;
+  replyToMessageId?: string | null;
   createdAt: string;
   status: "sent" | "delivered" | "read";
 };

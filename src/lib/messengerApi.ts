@@ -280,6 +280,8 @@ export const messengerApi = {
     kind: BackendMessage["kind"];
     body: string;
     attachmentId?: string;
+    replyToMessageId?: string | null;
+    replyTo?: BackendMessage["replyTo"];
     taskManagerText?: string;
   }) {
     return callApi<{

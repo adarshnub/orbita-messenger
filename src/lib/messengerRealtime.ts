@@ -139,6 +139,10 @@ function mapRealtimeMessage(row: unknown): BackendMessage | null {
     encryptedPayload.forwardedFrom && typeof encryptedPayload.forwardedFrom === "object"
       ? (encryptedPayload.forwardedFrom as BackendMessage["forwardedFrom"])
       : null;
+  const replyTo =
+    encryptedPayload.replyTo && typeof encryptedPayload.replyTo === "object"
+      ? (encryptedPayload.replyTo as BackendMessage["replyTo"])
+      : null;
 
   if (
     typeof value.id !== "string" ||
@@ -158,6 +162,8 @@ function mapRealtimeMessage(row: unknown): BackendMessage | null {
     forwardedFrom,
     id: value.id,
     kind: isBackendMessageKind(kind) ? kind : "text",
+    replyTo,
+    replyToMessageId: typeof value.reply_to_message_id === "string" ? value.reply_to_message_id : null,
     senderId: value.sender_id,
     status: "sent",
   };

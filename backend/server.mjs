@@ -367,6 +367,49 @@ function parseForwardedFrom(payload) {
   return { messageId, senderName, conversationTitle };
 }
 
+function parseReplyTo(payload) {
+  if (!isRecord(payload.replyTo)) return null;
+  const replyTo = payload.replyTo;
+  const messageId = typeof replyTo.messageId === "string" ? replyTo.messageId : "";
+  const senderId = typeof replyTo.senderId === "string" ? replyTo.senderId : "";
+  const body = typeof replyTo.body === "string" ? replyTo.body : "";
+  const kind = typeof replyTo.kind === "string" ? replyTo.kind : "text";
+  if (!messageId || !senderId) return null;
+  return { messageId, senderId, body, kind };
+}
+
+function clientReplyPreview(payload, fallbackMessageId = "") {
+  if (!isRecord(payload.replyTo)) return null;
+  const replyTo = payload.replyTo;
+  const messageId =
+    (typeof replyTo.messageId === "string" ? replyTo.messageId.trim() : "") ||
+    fallbackMessageId.trim();
+  const senderId = typeof replyTo.senderId === "string" ? replyTo.senderId.trim() : "";
+  const body = typeof replyTo.body === "string" ? compactMessageText(replyTo.body) : "";
+  const kind = typeof replyTo.kind === "string" ? replyTo.kind : "text";
+  if (!messageId || !senderId) return null;
+  return { messageId, senderId, body, kind };
+}
+
+function replyToPayloadFields(message) {
+  const replyToMessageId = typeof message?.replyToMessageId === "string" ? message.replyToMessageId.trim() : "";
+  const replyTo = isRecord(message?.replyTo) ? message.replyTo : null;
+  const replyToPreviewId = typeof replyTo?.messageId === "string" ? replyTo.messageId.trim() : "";
+  const messageId = replyToMessageId || replyToPreviewId;
+  if (!messageId) return {};
+  return {
+    replyToMessageId: messageId,
+    replyTo: replyTo
+      ? {
+          messageId,
+          senderId: typeof replyTo.senderId === "string" ? replyTo.senderId : "",
+          body: typeof replyTo.body === "string" ? replyTo.body : "",
+          kind: typeof replyTo.kind === "string" ? replyTo.kind : "text",
+        }
+      : { messageId },
+  };
+}
+
 function attachmentMetadata(row) {
   return isRecord(row.encrypted_metadata) ? row.encrypted_metadata : {};
 }
@@ -454,6 +497,8 @@ function mapMessage(row, attachments = []) {
     body: messageBody(row),
     attachments,
     forwardedFrom: parseForwardedFrom(payload),
+    replyTo: parseReplyTo(payload),
+    replyToMessageId: row.reply_to_message_id ?? null,
     createdAt: row.created_at,
     status: "sent",
   };
@@ -934,6 +979,7 @@ async function insertMessageWithReceipts(conversationId, senderId, kind, payload
       sender_id: senderId,
       kind,
       encrypted_payload: payload,
+      reply_to_message_id: options.replyToMessageId ?? null,
     })
     .select()
     .single();
@@ -986,6 +1032,47 @@ async function insertMessageWithReceipts(conversationId, senderId, kind, payload
   }
 
   return message;
+}
+
+async function buildReplyPreview(conversationId, replyToMessageId) {
+  if (!replyToMessageId) return null;
+  const { data: replyToMessage, error } = await supabase
+    .from("messages")
+    .select("*")
+    .eq("id", replyToMessageId)
+    .eq("conversation_id", conversationId)
+    .is("deleted_at", null)
+    .maybeSingle();
+  if (error) throw error;
+  if (!replyToMessage) throw new Error("Reply target was not found in this conversation.");
+
+  const { data: attachments, error: attachmentError } = await supabase
+    .from("media_attachments")
+    .select("*")
+    .eq("message_id", replyToMessage.id)
+    .order("created_at", { ascending: true })
+    .limit(1);
+  if (attachmentError) throw attachmentError;
+
+  const firstAttachment = attachments?.[0] ?? null;
+  return {
+    messageId: replyToMessage.id,
+    senderId: replyToMessage.sender_id,
+    body: compactMessageText(messageBody(replyToMessage)) || attachmentLabel(replyToMessage.kind, firstAttachment),
+    kind: replyToMessage.kind,
+  };
+}
+
+async function buildReplyInsertOptions(conversationId, payload) {
+  const replyToMessageId =
+    optionalString(payload, "replyToMessageId") ||
+    optionalString(payload, "replyToTaskmanagerChatMessageId") ||
+    optionalString(payload, "replyToChatMessageId");
+  const replyTo = await buildReplyPreview(conversationId, replyToMessageId);
+  return {
+    replyTo,
+    replyToMessageId: replyTo?.messageId ?? null,
+  };
 }
 
 async function mapMessageWithAttachments(message) {
@@ -2300,6 +2387,14 @@ async function forwardTaskmanagerInbound(
     return { forwarded: false, reason: taskThreadContext.reason };
   }
   if (taskThreadContext) {
+    const replyFields = replyToPayloadFields(message);
+    console.info("[orbita-taskmanager-forward] task thread payload", {
+      conversationId,
+      messageId: message.id,
+      taskmanagerTaskId: taskThreadContext.taskmanagerTaskId,
+      replyToMessageId: replyFields.replyToMessageId ?? null,
+      replyToBody: typeof replyFields.replyTo?.body === "string" ? replyFields.replyTo.body.slice(0, 180) : null,
+    });
     const raw = JSON.stringify({
       taskmanagerOrgId: taskThreadContext.taskmanagerOrgId,
       taskmanagerUserId: taskThreadContext.taskmanagerUserId,
@@ -2315,6 +2410,7 @@ async function forwardTaskmanagerInbound(
       messageId: message.id,
       kind: message.kind,
       text: taskManagerTextOverride || message.body || undefined,
+      ...replyFields,
       attachment: attachments[0] ?? null,
       attachments,
       sentAt: message.createdAt ?? new Date().toISOString(),
@@ -2406,6 +2502,14 @@ async function forwardTaskmanagerInbound(
     .maybeSingle();
   if (sourceAgentProfileError) throw sourceAgentProfileError;
 
+  const replyFields = replyToPayloadFields(message);
+  console.info("[orbita-taskmanager-forward] direct agent payload", {
+    conversationId,
+    messageId: message.id,
+    taskmanagerUserId: activeLink.taskmanager_user_id,
+    replyToMessageId: replyFields.replyToMessageId ?? null,
+    replyToBody: typeof replyFields.replyTo?.body === "string" ? replyFields.replyTo.body.slice(0, 180) : null,
+  });
   const raw = JSON.stringify({
     taskmanagerOrgId: activeLink.taskmanager_org_id,
     taskmanagerUserId: activeLink.taskmanager_user_id,
@@ -2420,6 +2524,7 @@ async function forwardTaskmanagerInbound(
     messageId: message.id,
     kind: message.kind,
     text: taskManagerTextOverride || message.body || undefined,
+    ...replyFields,
     attachment: attachments[0] ?? null,
     attachments,
     sentAt: message.createdAt ?? new Date().toISOString(),
@@ -2608,8 +2713,10 @@ async function handleServiceAction(action, payload) {
 
     const hasExternalRequester =
       requesterTaskmanagerUserId && requesterTaskmanagerUserId !== taskmanagerUserId;
+    const replyInsert = await buildReplyInsertOptions(deliveryConversationId, payload);
     const messagePayload = {
       body,
+      ...(replyInsert.replyTo ? { replyTo: replyInsert.replyTo } : {}),
       ...(hasExternalRequester
         ? {
             system: {
@@ -2638,6 +2745,7 @@ async function handleServiceAction(action, payload) {
     const message = await insertMessageWithReceipts(deliveryConversationId, link.agent_profile_id, kind, messagePayload, {
       awaitPush: true,
       pushSource: "send_agent_message",
+      replyToMessageId: replyInsert.replyToMessageId,
     });
     const linkedAttachment = attachmentRow ? await linkAttachmentToMessage(attachmentRow, message.id) : null;
     const mappedAttachments = linkedAttachment
@@ -2688,8 +2796,10 @@ async function handleServiceAction(action, payload) {
       { user_id: member.orbita_user_id, role: member.role || "member" },
     ]);
 
+    const replyInsert = await buildReplyInsertOptions(thread.conversation_id, payload);
     const messagePayload = {
       body,
+      ...(replyInsert.replyTo ? { replyTo: replyInsert.replyTo } : {}),
       system: {
         kind: "task_thread_agent_message",
         taskmanagerOrgId,
@@ -2714,6 +2824,7 @@ async function handleServiceAction(action, payload) {
     const message = await insertMessageWithReceipts(thread.conversation_id, thread.agent_profile_id, kind, messagePayload, {
       awaitPush: true,
       pushSource: "send_task_thread_agent_message",
+      replyToMessageId: replyInsert.replyToMessageId,
     });
     const linkedAttachment = attachmentRow ? await linkAttachmentToMessage(attachmentRow, message.id) : null;
     const mappedAttachments = linkedAttachment
@@ -3038,6 +3149,7 @@ async function handleAction(user, action, payload, req) {
     const clientMessageId = optionalString(payload, "clientMessageId").slice(0, 128);
     const taskManagerText = optionalString(payload, "taskManagerText").slice(0, 5000);
     const attachmentId = optionalString(payload, "attachmentId");
+    const replyToMessageId = optionalString(payload, "replyToMessageId");
     await getConversation(user.id, conversationId);
     if (clientMessageId) {
       const { data: existingMessage, error: existingMessageError } = await supabase
@@ -3060,7 +3172,36 @@ async function handleAction(user, action, payload, req) {
       : optionalString(payload, "kind") || "text";
     if (!body && !attachmentRow) throw new Error("Message body or attachment is required.");
 
-    const message = await insertMessageWithReceipts(conversationId, user.id, kind, { body }, { clientMessageId });
+    let replyTo = null;
+    let replyToStorageMessageId = null;
+    let replyToLookupError = null;
+    if (replyToMessageId) {
+      try {
+        replyTo = await buildReplyPreview(conversationId, replyToMessageId);
+        replyToStorageMessageId = replyTo.messageId;
+      } catch (error) {
+        replyToLookupError = errorMessage(error);
+      }
+    }
+    if (!replyTo) {
+      replyTo = clientReplyPreview(payload, replyToMessageId);
+    }
+    console.info("[orbita-send-message] reply target", {
+      conversationId,
+      senderId: user.id,
+      clientMessageId,
+      replyToMessageId: replyToMessageId || null,
+      resolvedReplyToMessageId: replyTo?.messageId ?? null,
+      storedReplyToMessageId: replyToStorageMessageId,
+      replyToBody: replyTo?.body?.slice(0, 180) ?? null,
+      replyToLookupError,
+      usedClientReplyPreview: Boolean(replyTo && !replyToStorageMessageId),
+    });
+    const messagePayload = replyTo ? { body, replyTo } : { body };
+    const message = await insertMessageWithReceipts(conversationId, user.id, kind, messagePayload, {
+      clientMessageId,
+      replyToMessageId: replyToStorageMessageId,
+    });
     if (attachmentRow) {
       await linkAttachmentToMessage(attachmentRow, message.id);
     }
