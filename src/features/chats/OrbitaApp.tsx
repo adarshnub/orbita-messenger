@@ -418,6 +418,39 @@ function formatTime(iso: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
 }
 
+function defaultDueDateParts() {
+  const due = new Date();
+  due.setHours(18, 0, 0, 0);
+  const yyyy = String(due.getFullYear());
+  const mm = String(due.getMonth() + 1).padStart(2, "0");
+  const dd = String(due.getDate()).padStart(2, "0");
+  return { date: `${yyyy}-${mm}-${dd}`, time: "6:00 PM" };
+}
+
+function dueDatePartsToIso(datePart: string, timePart: string) {
+  if (!datePart) return null;
+  const time = parseTwelveHourTime(timePart) ?? { hours: 18, minutes: 0 };
+  const hours = String(time.hours).padStart(2, "0");
+  const minutes = String(time.minutes).padStart(2, "0");
+  const date = new Date(`${datePart}T${hours}:${minutes}`);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
+function parseTwelveHourTime(value: string): { hours: number; minutes: number } | null {
+  const match = value.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*([ap]m)$/i);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2] ?? "0");
+  if (!Number.isInteger(hour) || hour < 1 || hour > 12 || !Number.isInteger(minute) || minute < 0 || minute > 59) {
+    return null;
+  }
+  const meridiem = match[3]?.toLowerCase();
+  return {
+    hours: meridiem === "pm" ? (hour === 12 ? 12 : hour + 12) : hour === 12 ? 0 : hour,
+    minutes: minute,
+  };
+}
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
@@ -631,19 +664,25 @@ function messageDateLabel(iso: string) {
 }
 
 function conversationFallbackPreview(conversation: BackendConversation) {
+  const humanMemberCount = conversation.participants.filter(
+    (participant) => participant.about?.trim().toLowerCase() !== "task manager agent",
+  ).length;
   if (conversation.taskThread) {
-    return `${conversation.participants.length} task member${conversation.participants.length === 1 ? "" : "s"}`;
+    return `${humanMemberCount} task member${humanMemberCount === 1 ? "" : "s"}`;
   }
   if (conversation.kind === "direct") return "1:1 conversation";
-  return `${conversation.participants.length} member${conversation.participants.length === 1 ? "" : "s"}`;
+  return `${humanMemberCount} member${humanMemberCount === 1 ? "" : "s"}`;
 }
 
 function conversationSubtitle(conversation: BackendConversation) {
+  const humanMemberCount = conversation.participants.filter(
+    (participant) => participant.about?.trim().toLowerCase() !== "task manager agent",
+  ).length;
   if (conversation.taskThread) {
-    return `${conversation.participants.length} task member${conversation.participants.length === 1 ? "" : "s"}`;
+    return `${humanMemberCount} task member${humanMemberCount === 1 ? "" : "s"}`;
   }
   if (conversation.kind === "group") {
-    return `${conversation.participants.length} members`;
+    return `${humanMemberCount} member${humanMemberCount === 1 ? "" : "s"}`;
   }
   return "Direct message";
 }
@@ -1375,6 +1414,26 @@ function renderMessageMentions(text: string, mine: boolean, isDarkTheme: boolean
   return nodes;
 }
 
+function renderComposerMentionText(text: string, isDarkTheme: boolean): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const mentionPattern = /@orbita\b/gi;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = mentionPattern.exec(text))) {
+    if (match.index > cursor) nodes.push(text.slice(cursor, match.index));
+    nodes.push(
+      <Text key={`composer-mention-${match.index}`} style={[styles.composerInputMention, isDarkTheme && styles.composerInputMentionDark]}>
+        {match[0]}
+      </Text>,
+    );
+    cursor = match.index + match[0].length;
+  }
+
+  if (cursor < text.length) nodes.push(text.slice(cursor));
+  return nodes;
+}
+
 function StatusSkeleton() {
   const { isDarkTheme, themeColors } = useAppTheme();
   return (
@@ -1903,6 +1962,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [profile, setProfile] = useState<BackendProfile | null>(null);
   const [contacts, setContacts] = useState<BackendProfile[]>([]);
   const [conversations, setConversations] = useState<BackendConversation[]>([]);
+  const [taskOrgMembersByConversationId, setTaskOrgMembersByConversationId] = useState<Record<string, BackendProfile[]>>({});
   const [statuses, setStatuses] = useState<BackendStatus[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [selectedMessages, setSelectedMessages] = useState<ChatMessage[]>([]);
@@ -1935,6 +1995,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [groupOpen, setGroupOpen] = useState(false);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [subtaskParentConversation, setSubtaskParentConversation] = useState<BackendConversation | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
@@ -3115,6 +3176,28 @@ function MessengerShell({ session }: { session: Session }) {
     ? { defaultName: peerLabel(selectedDirectPeer), phone: selectedDirectPeer.phone }
     : null;
 
+  useEffect(() => {
+    if (!selected?.taskThread) return undefined;
+    if (taskOrgMembersByConversationId[selected.id]) return undefined;
+    let cancelled = false;
+    messengerApi.listTaskmanagerOrgMembers(selected.id)
+      .then((result) => {
+        if (cancelled) return;
+        setTaskOrgMembersByConversationId((current) => ({
+          ...current,
+          [selected.id]: result.members,
+        }));
+      })
+      .catch((nextError) => {
+        if (!cancelled) {
+          setError(nextError instanceof Error ? nextError.message : "Unable to load organization members.");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected?.id, selected?.taskThread, taskOrgMembersByConversationId]);
+
   const forwardTargets = useMemo<ForwardTarget[]>(() => {
     const conversationTargets = conversations
       .filter((conversation) => conversation.id !== selectedId)
@@ -3155,27 +3238,40 @@ function MessengerShell({ session }: { session: Session }) {
     [contactsWithDefaultAgent, existingConversationByContactId],
   );
   const taskMemberCandidates = useMemo<BackendProfile[]>(() => {
+    if (!selected?.taskThread) return [];
+    return (taskOrgMembersByConversationId[selected.id] ?? selected.participants)
+      .filter((profile) => profile.id !== profileId)
+      .filter((profile) => profile.about?.trim().toLowerCase() !== "task manager agent")
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [profileId, selected, taskOrgMembersByConversationId]);
+  const subtaskAssigneeCandidates = useMemo<BackendProfile[]>(() => {
     const byId = new Map<string, BackendProfile>();
-    const addCandidate = (profile: BackendProfile | null | undefined) => {
-      if (!profile || profile.id === profileId) return;
-      if (profile.about?.trim().toLowerCase() === "task manager agent") return;
-      if (byId.has(profile.id)) return;
-      byId.set(profile.id, {
-        about: profile.about,
-        avatarUrl: profile.avatarUrl,
-        displayName: profile.displayName,
-        id: profile.id,
-        isOnline: profile.isOnline,
-        lastSeenAt: profile.lastSeenAt,
-        phone: profile.phone,
+    const addCandidate = (candidate: BackendProfile | null | undefined) => {
+      if (!candidate) return;
+      if (candidate.about?.trim().toLowerCase() === "task manager agent") return;
+      byId.set(candidate.id, {
+        about: candidate.about,
+        avatarUrl: candidate.avatarUrl,
+        displayName: candidate.displayName,
+        id: candidate.id,
+        isOnline: candidate.isOnline,
+        lastSeenAt: candidate.lastSeenAt,
+        phone: candidate.phone,
       });
     };
-    contacts.forEach(addCandidate);
-    conversations.forEach((conversation) => {
-      conversation.participants.forEach(addCandidate);
-    });
+    addCandidate(profile);
+    if (selected?.taskThread) {
+      (taskOrgMembersByConversationId[selected.id] ?? selected.participants).forEach(addCandidate);
+    }
     return [...byId.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
-  }, [contacts, conversations, profileId]);
+  }, [profile, selected, taskOrgMembersByConversationId]);
+  const selectedSubtaskConversations = useMemo(() => {
+    const parentTaskId = selected?.taskThread?.taskmanagerTaskId;
+    if (!parentTaskId) return [];
+    return conversations
+      .filter((conversation) => conversation.taskThread?.parentTaskId === parentTaskId)
+      .sort((a, b) => (a.taskThread?.taskNumber ?? "").localeCompare(b.taskThread?.taskNumber ?? "", undefined, { numeric: true }));
+  }, [conversations, selected]);
   const showAgentFab = !selected;
 
   function resolveAgentTargetFromSnapshot(
@@ -3373,12 +3469,17 @@ function MessengerShell({ session }: { session: Session }) {
       : baseModelText;
     if (!text && !modelText && !attachment) return;
     const expectsAgentReply = shouldExpectTaskManagerAgentReply(selected, modelText || text);
+    const taskManagerMentioned = isTaskConversation(selected) && hasOrbitaMention(modelText || text);
     if (Platform.OS === "web") {
-      console.info("[orbita-web-send] reply target", {
+      console.info("[orbita-web-send] message payload", {
         conversationId: selected.id,
         replyToMessageId: replyTo?.messageId ?? null,
         replyToBody: replyTo?.body?.slice(0, 180) ?? null,
         body: text.slice(0, 180),
+        modelText: modelText.slice(0, 180),
+        isTaskThread: Boolean(selected.taskThread),
+        taskManagerMentioned,
+        expectsAgentReply,
       });
     }
     stopTyping(selected.id);
@@ -3467,7 +3568,8 @@ function MessengerShell({ session }: { session: Session }) {
         clientMessageId: tempId,
         replyToMessageId: replyTo?.messageId ?? null,
         replyTo,
-        ...(modelText && modelText !== text ? { taskManagerText: modelText } : {}),
+        taskManagerMentioned,
+        ...((modelText && modelText !== text) || taskManagerMentioned ? { taskManagerText: modelText || text } : {}),
       });
       const mergedMessage = mergeAttachmentWaveforms(result.message, optimisticMessage);
       setSelectedMessages((current) => {
@@ -3531,7 +3633,7 @@ function MessengerShell({ session }: { session: Session }) {
           replyToMessageId: replyTo?.messageId ?? null,
           senderId: profile.id,
           status: "queued",
-          taskManagerText: modelText && modelText !== text ? modelText : undefined,
+          taskManagerText: (modelText && modelText !== text) || taskManagerMentioned ? modelText || text : undefined,
           userId: profile.id,
         });
         const queuedMessage = { ...optimisticMessage, localState: "queued" as const };
@@ -3746,7 +3848,10 @@ function MessengerShell({ session }: { session: Session }) {
                 messages={selectedMessages.filter((message) => message.conversationId === selected.id)}
                 messagesLoading={loadingMessagesFor === selected.id}
                 onAddMembers={() => setMembersOpen(true)}
+                onCreateSubtask={() => setSubtaskParentConversation(selected)}
                 onMessageActions={setMessageActionTarget}
+                onOpenMemberDirect={openContactConversation}
+                onOpenSubtask={(conversationId) => selectConversation(conversationId)}
                 onReplyToMessage={setReplyingToMessage}
                 onLoadOlder={() => loadOlderMessages(selected.id)}
                 onOpenAttachmentMenu={() => setAttachmentMenuOpen(true)}
@@ -3761,6 +3866,7 @@ function MessengerShell({ session }: { session: Session }) {
                 }}
                 setDraft={handleDraftChange}
                 replyingToMessage={replyingToMessage?.conversationId === selected.id ? replyingToMessage : null}
+                subtaskConversations={selectedSubtaskConversations}
                 typingText={typingStatusText(selectedTypingParticipants)}
                 unsavedPeer={selectedUnsavedPeer}
               />
@@ -3846,6 +3952,30 @@ function MessengerShell({ session }: { session: Session }) {
           });
         }}
         visible={membersOpen}
+      />
+      <CreateTaskThreadSubtaskModal
+        contacts={subtaskAssigneeCandidates}
+        onClose={() => setSubtaskParentConversation(null)}
+        onCreate={async (input) => {
+          if (!subtaskParentConversation) return;
+          setBusy(true);
+          setError("");
+          try {
+            await messengerApi.createTaskThreadSubtask({
+              conversationId: subtaskParentConversation.id,
+              ...input,
+            });
+            setSubtaskParentConversation(null);
+            await loadBootstrap();
+          } catch (nextError) {
+            setError(nextError instanceof Error ? nextError.message : "Unable to create subtask.");
+            throw nextError;
+          } finally {
+            setBusy(false);
+          }
+        }}
+        parent={subtaskParentConversation}
+        visible={Boolean(subtaskParentConversation)}
       />
       <StatusModal
         onClose={() => setStatusOpen(false)}
@@ -5575,6 +5705,9 @@ function ChatPane({
   messagesLoading,
   onMessageActions,
   onReplyToMessage,
+  onCreateSubtask,
+  onOpenMemberDirect,
+  onOpenSubtask,
   onOpenAttachmentMenu,
   onTakePhoto,
   draft,
@@ -5589,6 +5722,7 @@ function ChatPane({
   loadingOlder,
   onLoadOlder,
   replyingToMessage,
+  subtaskConversations,
   typingText,
   unsavedPeer,
 }: {
@@ -5601,6 +5735,9 @@ function ChatPane({
   messagesLoading: boolean;
   onMessageActions: (target: NonNullable<MessageActionTarget>) => void;
   onReplyToMessage: (message: ChatMessage) => void;
+  onCreateSubtask: () => void;
+  onOpenMemberDirect: (profileId: string) => void | Promise<void>;
+  onOpenSubtask: (conversationId: string) => void;
   onOpenAttachmentMenu: () => void;
   onTakePhoto: () => void;
   draft: string;
@@ -5620,6 +5757,7 @@ function ChatPane({
   loadingOlder: boolean;
   onLoadOlder: () => void;
   replyingToMessage: ChatMessage | null;
+  subtaskConversations: BackendConversation[];
   typingText: string;
   unsavedPeer: UnsavedPeer | null;
 }) {
@@ -5639,6 +5777,8 @@ function ChatPane({
   const nativeWaveformPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const nativeStartWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [quickPromptOpen, setQuickPromptOpen] = useState(false);
+  const [subtaskPanelOpen, setSubtaskPanelOpen] = useState(false);
+  const [membersPanelOpen, setMembersPanelOpen] = useState(false);
   const canTriggerOlderRef = useRef(false);
   const contentHeightRef = useRef(0);
   const isNearLatestRef = useRef(true);
@@ -5655,9 +5795,16 @@ function ChatPane({
   const isTaskThreadConversation = Boolean(taskThread);
   const mentionQuery = isTaskThreadConversation ? orbitaMentionQuery(draft) : null;
   const showOrbitaMentionSuggestion = mentionQuery !== null;
+  const showComposerMentionHighlight = isTaskThreadConversation && hasOrbitaMention(draft);
+  const composerKeyboardGap = keyboardInset ? KEYBOARD_COMPOSER_GAP : Math.max(bottomInset, KEYBOARD_COMPOSER_GAP);
   const isArchivedTaskThread = isCompletedTaskThreadStatus(taskThread?.status);
   const archivedTaskTitle = isArchivedTaskThread ? taskThreadArchiveTitle(taskThread?.status) : "";
   const archivedTaskLabel = isArchivedTaskThread ? taskThreadStatusLabel(taskThread?.status) : "";
+  const resolvedSubtasks = subtaskConversations.filter((conversation) => isCompletedTaskThreadStatus(conversation.taskThread?.status)).length;
+  const visibleMembers = useMemo(
+    () => conversation.participants.filter((participant) => participant.about?.trim().toLowerCase() !== "task manager agent"),
+    [conversation.participants],
+  );
 
   const scrollToLatest = useCallback((animated = true) => {
     const scroll = () => {
@@ -5784,6 +5931,7 @@ function ChatPane({
     previousMessageCountRef.current = 0;
     followAgentExchangeUntilRef.current = 0;
     setQuickPromptOpen(false);
+    setSubtaskPanelOpen(false);
   }, [conversation.id]);
 
   useEffect(() => {
@@ -6135,7 +6283,7 @@ function ChatPane({
         styles.chatPane,
         isDarkTheme && styles.chatPaneDark,
         !isWide && styles.chatPaneMobile,
-        !isWide && { paddingBottom: keyboardInset || Math.max(bottomInset, KEYBOARD_COMPOSER_GAP) },
+        !isWide && { paddingBottom: composerKeyboardGap },
       ]}
     >
       {quickPromptOpen ? (
@@ -6154,16 +6302,34 @@ function ChatPane({
           <Avatar avatarUrl={conversation.avatarUrl} isBot={isAgentConversation} name={conversation.title} />
           <View style={styles.chatRowBody}>
             <Text numberOfLines={1} style={styles.chatHeaderTitle}>{conversation.title}</Text>
-            <Text style={[styles.chatHeaderSub, Boolean(typingText) && styles.chatHeaderSubTyping]}>
-              {agentThinking
-                ? `${conversation.title.split(" ")[0] || "Agent"} is thinking...`
-                : typingText
-                  ? typingText
-                  : conversationSubtitle(conversation)}
-            </Text>
+            <Pressable
+              disabled={Boolean(agentThinking || typingText) || conversation.kind === "direct"}
+              onPress={() => setMembersPanelOpen(true)}
+              style={({ pressed }) => [styles.chatHeaderSubButton, pressed && styles.pressablePressed]}
+            >
+              <Text style={[styles.chatHeaderSub, Boolean(typingText) && styles.chatHeaderSubTyping]}>
+                {agentThinking
+                  ? `${conversation.title.split(" ")[0] || "Agent"} is thinking...`
+                  : typingText
+                    ? typingText
+                    : conversationSubtitle(conversation)}
+              </Text>
+            </Pressable>
           </View>
         </View>
         <View style={[styles.headerActions, styles.chatHeaderActions]}>
+          {isTaskThreadConversation ? (
+            <Pressable
+              accessibilityLabel="Open subtasks"
+              onPress={() => setSubtaskPanelOpen((value) => !value)}
+              style={({ pressed }) => [styles.subtasksHeaderPill, pressed && styles.pressablePressed]}
+            >
+              <Ionicons color="#0B7F68" name="git-branch-outline" size={16} />
+              <Text style={styles.subtasksHeaderPillText}>
+                {resolvedSubtasks}/{subtaskConversations.length} subtasks
+              </Text>
+            </Pressable>
+          ) : null}
           {conversation.kind === "group" || conversation.taskThread ? (
             <IconButton icon="person-add-outline" label="Add members" onPress={onAddMembers} />
           ) : null}
@@ -6195,6 +6361,24 @@ function ChatPane({
           </View>
         </View>
       ) : null}
+      {subtaskPanelOpen && isTaskThreadConversation ? (
+        <TaskThreadSubtasksPanel
+          onCreateSubtask={onCreateSubtask}
+          onOpenSubtask={onOpenSubtask}
+          subtasks={subtaskConversations}
+        />
+      ) : null}
+      <MembersListModal
+        currentUserId={currentUserId}
+        members={visibleMembers}
+        onClose={() => setMembersPanelOpen(false)}
+        onOpenMember={async (memberId) => {
+          setMembersPanelOpen(false);
+          await onOpenMemberDirect(memberId);
+        }}
+        title={isTaskThreadConversation ? "Task members" : "Group members"}
+        visible={membersPanelOpen}
+      />
       <ScrollView
         contentContainerStyle={[
           styles.messageList,
@@ -6489,29 +6673,46 @@ function ChatPane({
                   <Ionicons color={isDarkTheme ? "rgba(233,237,239,0.62)" : colors.faint} name="return-down-forward-outline" size={17} />
                 </Pressable>
               ) : null}
-              <TextInput
-                blurOnSubmit={false}
-                scrollEnabled={false}
-                multiline
-                onChangeText={setDraft}
-                onKeyPress={(event) => {
-                  if (Platform.OS !== "web") return;
-                  const webEvent = event as unknown as {
-                    nativeEvent: { key?: string; shiftKey?: boolean };
-                    preventDefault?: () => void;
-                  };
-                  if (webEvent.nativeEvent.key !== "Enter" || webEvent.nativeEvent.shiftKey) return;
-                  webEvent.preventDefault?.();
-                  onSend();
-                }}
-                onSubmitEditing={() => {
-                  if (Platform.OS !== "web") onSend();
-                }}
-                placeholder="Message"
-                placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
-                style={[styles.composerInput, isDarkTheme && styles.composerInputDark, attachment && styles.composerInputWithAttachment]}
-                value={draft}
-              />
+              <View style={[styles.composerInputShell, isDarkTheme && styles.composerInputShellDark, attachment && styles.composerInputWithAttachment]}>
+                {showComposerMentionHighlight ? (
+                  <View pointerEvents="none" style={styles.composerInputOverlay}>
+                    <Text style={[styles.composerInputOverlayText, isDarkTheme && styles.composerInputOverlayTextDark]}>
+                      {renderComposerMentionText(draft, isDarkTheme)}
+                    </Text>
+                  </View>
+                ) : null}
+                <TextInput
+                  blurOnSubmit={false}
+                  cursorColor={isDarkTheme ? "#FFFFFF" : themeColors.primaryDark}
+                  scrollEnabled={false}
+                  selectionColor={isDarkTheme ? themeColors.accent : themeColors.primaryDark}
+                  multiline
+                  onChangeText={setDraft}
+                  onKeyPress={(event) => {
+                    if (Platform.OS !== "web") return;
+                    const webEvent = event as unknown as {
+                      nativeEvent: { key?: string; shiftKey?: boolean };
+                      preventDefault?: () => void;
+                    };
+                    if (webEvent.nativeEvent.key !== "Enter" || webEvent.nativeEvent.shiftKey) return;
+                    webEvent.preventDefault?.();
+                    onSend();
+                  }}
+                  onSubmitEditing={() => {
+                    if (Platform.OS !== "web") onSend();
+                  }}
+                  placeholder="Message"
+                  placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
+                  style={[
+                    styles.composerInput,
+                    styles.composerInputField,
+                    isDarkTheme && styles.composerInputDark,
+                    attachment && styles.composerInputWithAttachment,
+                    showComposerMentionHighlight && styles.composerInputTransparentText,
+                  ]}
+                  value={draft}
+                />
+              </View>
             </View>
             {composerCanSend ? (
               <Pressable
@@ -6580,6 +6781,76 @@ function ComposerReplyPreview({
       <Pressable onPress={onRemove} style={({ pressed }) => [styles.composerAttachmentClose, pressed && styles.pressablePressed]}>
         <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name="close" size={16} />
       </Pressable>
+    </View>
+  );
+}
+
+function TaskThreadSubtasksPanel({
+  onCreateSubtask,
+  onOpenSubtask,
+  subtasks,
+}: {
+  onCreateSubtask: () => void;
+  onOpenSubtask: (conversationId: string) => void;
+  subtasks: BackendConversation[];
+}) {
+  const { isDarkTheme, themeColors } = useAppTheme();
+  const resolvedCount = subtasks.filter((conversation) => isCompletedTaskThreadStatus(conversation.taskThread?.status)).length;
+  return (
+    <View style={[styles.subtasksPanel, isDarkTheme && styles.subtasksPanelDark]}>
+      <View style={styles.subtasksPanelHeader}>
+        <View>
+          <Text style={[styles.subtasksPanelTitle, isDarkTheme && styles.subtasksPanelTitleDark]}>Subtasks</Text>
+          <Text style={[styles.subtasksPanelMeta, isDarkTheme && styles.subtasksPanelMetaDark]}>
+            {resolvedCount}/{subtasks.length} resolved
+          </Text>
+        </View>
+        <Pressable
+          accessibilityLabel="Create subtask"
+          onPress={onCreateSubtask}
+          style={({ pressed }) => [styles.subtasksCreateButton, { backgroundColor: themeColors.primaryDark }, pressed && styles.pressablePressed]}
+        >
+          <Ionicons color="#FFFFFF" name="add" size={16} />
+          <Text style={styles.subtasksCreateButtonText}>Subtask</Text>
+        </Pressable>
+      </View>
+      {subtasks.length ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.subtasksScroller}>
+          {subtasks.map((conversation) => {
+            const thread = conversation.taskThread;
+            const completed = isCompletedTaskThreadStatus(thread?.status);
+            return (
+              <Pressable
+                key={conversation.id}
+                onPress={() => onOpenSubtask(conversation.id)}
+                style={({ pressed }) => [
+                  styles.subtaskCard,
+                  isDarkTheme && styles.subtaskCardDark,
+                  completed && styles.subtaskCardResolved,
+                  pressed && styles.pressablePressed,
+                ]}
+              >
+                <Text numberOfLines={1} style={[styles.subtaskCardNumber, isDarkTheme && styles.subtaskCardNumberDark]}>
+                  {thread?.taskNumber ?? "TASK"}
+                </Text>
+                <Text numberOfLines={2} style={[styles.subtaskCardTitle, isDarkTheme && styles.subtaskCardTitleDark]}>
+                  {thread?.title ?? conversation.title}
+                </Text>
+                <View style={styles.subtaskCardFooter}>
+                  <View style={[styles.taskStatusDot, thread?.status === "in_progress" && styles.taskStatusDotProgress, completed && styles.taskStatusDotDone]} />
+                  <Text style={[styles.subtaskCardStatus, isDarkTheme && styles.subtaskCardStatusDark]}>
+                    {taskThreadStatusLabel(thread?.status)}
+                  </Text>
+                </View>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      ) : (
+        <Text style={[styles.subtasksEmptyText, isDarkTheme && styles.subtasksEmptyTextDark]}>
+          No subtasks yet. Create one when this task needs smaller tracked work.
+        </Text>
+      )}
     </View>
   );
 }
@@ -7097,8 +7368,11 @@ function NewChatModal({
   const [phone, setPhone] = useState("");
   const [nickname, setNickname] = useState("");
   const [notice, setNotice] = useState("");
+  const [adding, setAdding] = useState(false);
 
   async function addContact() {
+    if (adding) return;
+    setAdding(true);
     try {
       await messengerApi.addContactByPhone(phone, nickname.trim() || undefined);
       setPhone("");
@@ -7107,6 +7381,8 @@ function NewChatModal({
       await onContactAdded();
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Unable to add contact.");
+    } finally {
+      setAdding(false);
     }
   }
 
@@ -7130,10 +7406,17 @@ function NewChatModal({
               value={nickname}
             />
             <Pressable
+              disabled={adding || !phone.trim()}
               onPress={addContact}
-              style={({ pressed }) => [styles.primaryButton, styles.fullWidthButton, pressed && styles.pressablePressed]}
+              style={({ pressed }) => [
+                styles.primaryButton,
+                styles.fullWidthButton,
+                pressed && styles.pressablePressed,
+                (adding || !phone.trim()) && styles.buttonDisabled,
+              ]}
             >
-              <Text style={styles.primaryText}>Add contact</Text>
+              {adding ? <ActivityIndicator color="#FFFFFF" size="small" /> : null}
+              <Text style={styles.primaryText}>{adding ? "Adding..." : "Add contact"}</Text>
             </Pressable>
           </View>
           {notice ? <Text style={styles.noticeText}>{notice}</Text> : null}
@@ -7314,6 +7597,67 @@ function AddMembersModal({
   );
 }
 
+function MembersListModal({
+  currentUserId,
+  members,
+  onClose,
+  onOpenMember,
+  title,
+  visible,
+}: {
+  currentUserId: string;
+  members: Array<BackendProfile & { role?: "owner" | "admin" | "member" }>;
+  onClose: () => void;
+  onOpenMember: (memberId: string) => void | Promise<void>;
+  title: string;
+  visible: boolean;
+}) {
+  const { themeColors } = useAppTheme();
+  return (
+    <KeyboardAwareModal onClose={onClose} visible={visible}>
+      <Text style={styles.modalTitle}>{title}</Text>
+      <Text style={styles.modalSubtitle}>
+        {members.length} member{members.length === 1 ? "" : "s"}
+      </Text>
+      <ScrollView style={styles.modalList}>
+        {members.length ? members.map((member) => {
+          const isSelf = member.id === currentUserId;
+          return (
+            <Pressable
+              key={member.id}
+              disabled={isSelf}
+              onPress={() => onOpenMember(member.id)}
+              style={({ pressed }) => [
+                styles.modalRow,
+                pressed && styles.modalRowPressed,
+                isSelf && styles.memberRowDisabled,
+              ]}
+            >
+              <Avatar
+                avatarUrl={member.avatarUrl}
+                isBot={false}
+                name={member.displayName}
+              />
+              <View style={styles.chatRowBody}>
+                <Text style={styles.chatTitle}>{isSelf ? "You" : member.displayName}</Text>
+                <Text style={styles.chatPreview}>
+                  {[member.role ? member.role : "", member.phone ?? ""].filter(Boolean).join(" - ") || "Member"}
+                </Text>
+              </View>
+              {isSelf ? (
+                <Text style={styles.memberSelfTag}>You</Text>
+              ) : (
+                <Ionicons color={themeColors.primaryDark} name="chatbubble-outline" size={21} />
+              )}
+            </Pressable>
+          );
+        }) : <EmptyState compact icon="people-outline" title="No members" copy="No members are available for this chat." />}
+      </ScrollView>
+      <ModalActions onCancel={onClose} />
+    </KeyboardAwareModal>
+  );
+}
+
 function TaskThreadMembersModal({
   conversation,
   onClose,
@@ -7371,6 +7715,156 @@ function TaskThreadMembersModal({
         }) : <EmptyState compact icon="people-outline" title="No employees available" copy="All linked employees are already in this thread." />}
       </ScrollView>
       <ModalActions onCancel={onClose} onSubmit={submit} submitLabel="Add" disabled={!selected.length} />
+    </KeyboardAwareModal>
+  );
+}
+
+function CreateTaskThreadSubtaskModal({
+  contacts,
+  onClose,
+  onCreate,
+  parent,
+  visible,
+}: {
+  contacts: BackendProfile[];
+  onClose: () => void;
+  onCreate: (input: {
+    assigneeOrbitaUserId: string;
+    title: string;
+    description?: string;
+    dueDate?: string | null;
+    memberOrbitaUserIds?: string[];
+  }) => Promise<void>;
+  parent: BackendConversation | null;
+  visible: boolean;
+}) {
+  const [title, setTitle] = useState("");
+  const [assigneeId, setAssigneeId] = useState("");
+  const [dueParts, setDueParts] = useState(defaultDueDateParts);
+  const [description, setDescription] = useState("");
+  const [members, setMembers] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!visible) {
+      setTitle("");
+      setAssigneeId("");
+      setDueParts(defaultDueDateParts());
+      setDescription("");
+      setMembers([]);
+      return;
+    }
+    setAssigneeId((current) => current || contacts[0]?.id || "");
+  }, [contacts, visible]);
+
+  function toggleMember(id: string) {
+    if (id === assigneeId) return;
+    setMembers((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]));
+  }
+
+  async function submit() {
+    if (!title.trim() || !assigneeId) return;
+    await onCreate({
+      assigneeOrbitaUserId: assigneeId,
+      title: title.trim(),
+      ...(description.trim() ? { description: description.trim() } : {}),
+      dueDate: dueDatePartsToIso(dueParts.date, dueParts.time),
+      memberOrbitaUserIds: members,
+    });
+  }
+
+  return (
+    <KeyboardAwareModal onClose={onClose} visible={visible}>
+      <Text style={styles.modalTitle}>Create subtask</Text>
+      <Text numberOfLines={2} style={styles.modalSubtitle}>
+        Under {parent?.taskThread?.taskNumber ?? "task"} - {parent?.taskThread?.title ?? parent?.title ?? ""}
+      </Text>
+      <TextInput
+        autoFocus={Platform.OS !== "web"}
+        onChangeText={setTitle}
+        placeholder="Subtask title"
+        placeholderTextColor={colors.faint}
+        style={styles.modalInput}
+        value={title}
+      />
+      <Text style={styles.modalFieldLabel}>Assignee</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.assigneeChipRow}>
+        {contacts.map((contact) => {
+          const active = contact.id === assigneeId;
+          return (
+            <Pressable
+              key={contact.id}
+              onPress={() => {
+                setAssigneeId(contact.id);
+                setMembers((current) => current.filter((id) => id !== contact.id));
+              }}
+              style={({ pressed }) => [
+                styles.assigneeChip,
+                active && styles.assigneeChipActive,
+                pressed && styles.pressablePressed,
+              ]}
+            >
+              <Text style={[styles.assigneeChipText, active && styles.assigneeChipTextActive]}>{contact.displayName}</Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+      <Text style={styles.modalFieldLabel}>Due date and time</Text>
+      <View style={styles.dateTimeGrid}>
+        <View style={styles.dateTimeInputWrap}>
+          <Ionicons color={colors.muted} name="calendar-outline" size={17} />
+          <TextInput
+            {...(Platform.OS === "web" ? ({ type: "date" } as Record<string, unknown>) : {})}
+            onChangeText={(date) => setDueParts((current) => ({ ...current, date }))}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor={colors.faint}
+            style={styles.dateTimeInput}
+            value={dueParts.date}
+          />
+        </View>
+        <View style={styles.dateTimeInputWrap}>
+          <Ionicons color={colors.muted} name="time-outline" size={17} />
+          <TextInput
+            onChangeText={(time) => setDueParts((current) => ({ ...current, time }))}
+            placeholder="6:00 PM"
+            placeholderTextColor={colors.faint}
+            style={styles.dateTimeInput}
+            value={dueParts.time}
+          />
+        </View>
+      </View>
+      <View style={styles.dateTimeQuickRow}>
+        <Pressable
+          onPress={() => setDueParts(defaultDueDateParts())}
+          style={({ pressed }) => [styles.dateTimeChip, pressed && styles.pressablePressed]}
+        >
+          <Text style={styles.dateTimeChipText}>Today 6 PM</Text>
+        </Pressable>
+        <Pressable
+          onPress={() => {
+            const tomorrow = new Date();
+            tomorrow.setDate(tomorrow.getDate() + 1);
+            tomorrow.setHours(18, 0, 0, 0);
+            const yyyy = String(tomorrow.getFullYear());
+            const mm = String(tomorrow.getMonth() + 1).padStart(2, "0");
+            const dd = String(tomorrow.getDate()).padStart(2, "0");
+            setDueParts({ date: `${yyyy}-${mm}-${dd}`, time: "6:00 PM" });
+          }}
+          style={({ pressed }) => [styles.dateTimeChip, pressed && styles.pressablePressed]}
+        >
+          <Text style={styles.dateTimeChipText}>Tomorrow 6 PM</Text>
+        </Pressable>
+      </View>
+      <TextInput
+        multiline
+        onChangeText={setDescription}
+        placeholder="Description"
+        placeholderTextColor={colors.faint}
+        style={[styles.modalInput, styles.statusInput]}
+        value={description}
+      />
+      <Text style={styles.modalFieldLabel}>Extra thread members</Text>
+      <ContactPicker contacts={contacts.filter((contact) => contact.id !== assigneeId)} selected={members} toggle={toggleMember} />
+      <ModalActions onCancel={onClose} onSubmit={submit} submitLabel="Create" disabled={!title.trim() || !assigneeId} />
     </KeyboardAwareModal>
   );
 }
@@ -7675,21 +8169,47 @@ function ModalActions({
 }: {
   disabled?: boolean;
   onCancel: () => void;
-  onSubmit?: () => void;
+  onSubmit?: () => void | Promise<void>;
   submitLabel?: string;
 }) {
+  const [submitting, setSubmitting] = useState(false);
+  const mountedRef = useRef(true);
+  const blocked = Boolean(disabled || submitting);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  async function submit() {
+    if (blocked || !onSubmit) return;
+    setSubmitting(true);
+    try {
+      await onSubmit();
+    } finally {
+      if (mountedRef.current) setSubmitting(false);
+    }
+  }
+
   return (
     <View style={styles.modalActions}>
-      <Pressable onPress={onCancel} style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressablePressed]}>
+      <Pressable
+        disabled={submitting}
+        onPress={onCancel}
+        style={({ pressed }) => [styles.secondaryButton, pressed && styles.pressablePressed, submitting && styles.buttonDisabled]}
+      >
         <Text style={styles.secondaryText}>Cancel</Text>
       </Pressable>
       {onSubmit ? (
         <Pressable
-          disabled={disabled}
-          onPress={disabled ? undefined : onSubmit}
-          style={({ pressed }) => [styles.primaryButton, pressed && styles.pressablePressed, disabled && styles.buttonDisabled]}
+          disabled={blocked}
+          onPress={submit}
+          style={({ pressed }) => [styles.primaryButton, pressed && styles.pressablePressed, blocked && styles.buttonDisabled]}
         >
-          <Text style={styles.primaryText}>{submitLabel ?? "Save"}</Text>
+          {submitting ? <ActivityIndicator color="#FFFFFF" size="small" /> : null}
+          <Text style={styles.primaryText}>{submitting ? `${submitLabel ?? "Save"}...` : submitLabel ?? "Save"}</Text>
         </Pressable>
       ) : null}
     </View>
@@ -8763,7 +9283,18 @@ const styles = StyleSheet.create({
   chatHeaderDark: { backgroundColor: "#202C33", borderBottomColor: "rgba(6,207,156,0.12)" },
   chatHeaderMain: { flex: 1, minWidth: 0 },
   chatHeaderActions: { flexShrink: 0 },
+  subtasksHeaderPill: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    backgroundColor: "rgba(255,255,255,0.86)",
+  },
+  subtasksHeaderPillText: { color: "#0B7F68", fontSize: 12, fontWeight: "800" },
   chatHeaderTitle: { color: "#FFFFFF", fontSize: 17, fontWeight: "700" },
+  chatHeaderSubButton: { alignSelf: "flex-start", borderRadius: 6 },
   chatHeaderSub: { color: "rgba(255,255,255,0.76)", fontSize: 12 },
   chatHeaderSubTyping: { color: "#FFFFFF", fontWeight: "600" },
   archivedTaskBanner: {
@@ -8811,6 +9342,58 @@ const styles = StyleSheet.create({
   },
   archivedTaskBannerCopy: { color: colors.muted, fontSize: 12, fontWeight: "600" },
   archivedTaskBannerCopyDark: { color: "rgba(233,237,239,0.62)" },
+  subtasksPanel: {
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(0,168,132,0.12)",
+    backgroundColor: "rgba(255,255,255,0.92)",
+  },
+  subtasksPanelDark: {
+    borderBottomColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "#111B21",
+  },
+  subtasksPanelHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  subtasksPanelTitle: { color: colors.ink, fontSize: 14, fontWeight: "800" },
+  subtasksPanelTitleDark: { color: "#E9EDEF" },
+  subtasksPanelMeta: { color: colors.muted, fontSize: 12, fontWeight: "700", marginTop: 2 },
+  subtasksPanelMetaDark: { color: "rgba(233,237,239,0.62)" },
+  subtasksCreateButton: {
+    minHeight: 34,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: 11,
+    borderRadius: 17,
+  },
+  subtasksCreateButtonText: { color: "#FFFFFF", fontSize: 12, fontWeight: "800" },
+  subtasksScroller: { gap: 8, paddingRight: 16 },
+  subtaskCard: {
+    width: 184,
+    minHeight: 106,
+    justifyContent: "space-between",
+    gap: 8,
+    padding: 11,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "rgba(0,168,132,0.18)",
+    backgroundColor: colors.accentSoft,
+  },
+  subtaskCardDark: {
+    borderColor: "rgba(6,207,156,0.20)",
+    backgroundColor: "rgba(6,207,156,0.10)",
+  },
+  subtaskCardResolved: { opacity: 0.78 },
+  subtaskCardNumber: { color: colors.primaryDark, fontSize: 11, fontWeight: "900" },
+  subtaskCardNumberDark: { color: colors.accent },
+  subtaskCardTitle: { color: colors.ink, fontSize: 13, fontWeight: "800", lineHeight: 18 },
+  subtaskCardTitleDark: { color: "#E9EDEF" },
+  subtaskCardFooter: { flexDirection: "row", alignItems: "center", gap: 6 },
+  subtaskCardStatus: { color: colors.muted, fontSize: 11, fontWeight: "800", textTransform: "capitalize" },
+  subtaskCardStatusDark: { color: "rgba(233,237,239,0.68)" },
+  subtasksEmptyText: { color: colors.muted, fontSize: 13, fontWeight: "700" },
+  subtasksEmptyTextDark: { color: "rgba(233,237,239,0.62)" },
   messageList: { flexGrow: 1, padding: 18, gap: 12, backgroundColor: colors.page },
   messageListDark: { backgroundColor: "#0B141A" },
   olderMessagesLoader: {
@@ -9215,22 +9798,60 @@ const styles = StyleSheet.create({
   composerReplyNameDark: { color: colors.accent },
   composerReplyText: { color: colors.muted, fontSize: 12, lineHeight: 17 },
   composerReplyTextDark: { color: "rgba(255,255,255,0.66)" },
+  composerInputShell: {
+    minHeight: 44,
+    maxHeight: 110,
+    borderRadius: 22,
+    backgroundColor: "#F0F2F5",
+    overflow: "hidden",
+    position: "relative",
+  },
+  composerInputShellDark: { backgroundColor: "rgba(255,255,255,0.08)" },
   composerInput: {
     height: 44,
     minHeight: 44,
     maxHeight: 110,
-    borderRadius: 22,
     paddingHorizontal: 16,
     paddingTop: Platform.select({ android: 0, default: 11 }),
     paddingBottom: Platform.select({ android: 0, default: 11 }),
     color: colors.ink,
     fontSize: 16,
     lineHeight: 22,
-    backgroundColor: "#F0F2F5",
+    backgroundColor: "transparent",
     textAlignVertical: "center",
     includeFontPadding: false,
   },
-  composerInputDark: { color: "#FFFFFF", backgroundColor: "rgba(255,255,255,0.08)" },
+  composerInputDark: { color: "#FFFFFF", backgroundColor: "transparent" },
+  composerInputField: { position: "relative", zIndex: 2 },
+  composerInputOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 1,
+  },
+  composerInputOverlayText: {
+    height: 44,
+    minHeight: 44,
+    maxHeight: 110,
+    paddingHorizontal: 16,
+    paddingTop: Platform.select({ android: 0, default: 11 }),
+    paddingBottom: Platform.select({ android: 0, default: 11 }),
+    color: colors.ink,
+    fontSize: 16,
+    lineHeight: 22,
+    textAlignVertical: "center",
+    includeFontPadding: false,
+  },
+  composerInputOverlayTextDark: { color: "#FFFFFF" },
+  composerInputTransparentText: { color: "transparent" },
+  composerInputMention: {
+    borderRadius: 7,
+    backgroundColor: "rgba(0, 168, 132, 0.18)",
+    color: colors.primaryDark,
+    fontWeight: "800",
+  },
+  composerInputMentionDark: {
+    backgroundColor: "rgba(6, 207, 156, 0.18)",
+    color: colors.accent,
+  },
   composerInputWithAttachment: { minHeight: 44 },
   composerAttachment: {
     flexDirection: "row",
@@ -9563,6 +10184,8 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   modalTitle: { color: colors.ink, fontSize: 22, fontWeight: "700" },
+  modalSubtitle: { color: colors.muted, fontSize: 13, fontWeight: "700", lineHeight: 18 },
+  modalFieldLabel: { color: colors.muted, fontSize: 12, fontWeight: "800", textTransform: "uppercase" },
   modalInput: {
     minHeight: 46,
     borderRadius: radii.sm,
@@ -9572,10 +10195,64 @@ const styles = StyleSheet.create({
     color: colors.ink,
     backgroundColor: colors.page,
   },
+  dateTimeGrid: { flexDirection: "row", gap: 10 },
+  dateTimeInputWrap: {
+    flex: 1,
+    minHeight: 46,
+    minWidth: 0,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: colors.line,
+    paddingHorizontal: 12,
+    backgroundColor: colors.page,
+  },
+  dateTimeInput: {
+    flex: 1,
+    minWidth: 0,
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: "700",
+    paddingVertical: 0,
+  },
+  dateTimeQuickRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: -6 },
+  dateTimeChip: {
+    minHeight: 30,
+    justifyContent: "center",
+    paddingHorizontal: 10,
+    borderRadius: 15,
+    backgroundColor: "rgba(0,168,132,0.11)",
+  },
+  dateTimeChipText: { color: colors.primaryDark, fontSize: 12, fontWeight: "800" },
+  assigneeChipRow: { gap: 8, paddingVertical: 2, paddingRight: 8 },
+  assigneeChip: {
+    minHeight: 34,
+    justifyContent: "center",
+    paddingHorizontal: 12,
+    borderRadius: 17,
+    borderWidth: 1,
+    borderColor: "rgba(0,168,132,0.16)",
+    backgroundColor: colors.page,
+  },
+  assigneeChipActive: { borderColor: colors.primaryDark, backgroundColor: colors.primaryDark },
+  assigneeChipText: { color: colors.ink, fontSize: 12, fontWeight: "800" },
+  assigneeChipTextActive: { color: "#FFFFFF" },
   newContactForm: { gap: 10 },
   statusInput: { minHeight: 130, textAlignVertical: "top", paddingTop: 12 },
   modalList: { maxHeight: 430, minHeight: 120, flexShrink: 1 },
   modalRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 8, paddingVertical: 10, borderRadius: 14 },
+  memberRowDisabled: { opacity: 0.72 },
+  memberSelfTag: {
+    color: colors.primaryDark,
+    fontSize: 12,
+    fontWeight: "900",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,168,132,0.12)",
+  },
   newChatContactList: { maxHeight: 430, minHeight: 120, flexShrink: 1 },
   newChatContactListContent: { gap: 8, paddingVertical: 2 },
   newChatContactRow: {
@@ -9709,6 +10386,8 @@ const styles = StyleSheet.create({
     height: 42,
     paddingHorizontal: 16,
     borderRadius: radii.sm,
+    flexDirection: "row",
+    gap: 8,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.page,
@@ -9718,6 +10397,8 @@ const styles = StyleSheet.create({
     height: 42,
     paddingHorizontal: 18,
     borderRadius: radii.sm,
+    flexDirection: "row",
+    gap: 8,
     alignItems: "center",
     justifyContent: "center",
     backgroundColor: colors.primaryDark,

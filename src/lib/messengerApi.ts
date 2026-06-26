@@ -23,6 +23,8 @@ type ApiAction =
   | "create_group"
   | "add_group_members"
   | "add_task_thread_members"
+  | "list_taskmanager_org_members"
+  | "create_task_thread_subtask"
   | "notify_task_thread_status_changed"
   | "list_messages"
   | "mark_conversation_read"
@@ -261,6 +263,19 @@ export const messengerApi = {
       memberIds,
     });
   },
+  listTaskmanagerOrgMembers(conversationId: string) {
+    return callApi<{ members: BackendProfile[] }>("list_taskmanager_org_members", { conversationId });
+  },
+  createTaskThreadSubtask(input: {
+    conversationId: string;
+    assigneeOrbitaUserId: string;
+    title: string;
+    description?: string;
+    dueDate?: string | null;
+    memberOrbitaUserIds?: string[];
+  }) {
+    return callApi<{ task: unknown; conversation?: BackendConversation | null }>("create_task_thread_subtask", input);
+  },
   notifyTaskThreadStatusChanged(input: { conversationId: string; status: string }) {
     return callApi<{ message?: BackendMessage; notified: boolean; reason?: string }>("notify_task_thread_status_changed", input);
   },
@@ -283,6 +298,7 @@ export const messengerApi = {
     replyToMessageId?: string | null;
     replyTo?: BackendMessage["replyTo"];
     taskManagerText?: string;
+    taskManagerMentioned?: boolean;
   }) {
     return callApi<{
       message: BackendMessage;
