@@ -287,7 +287,10 @@ export const messengerApi = {
     return callApi<{
       message: BackendMessage;
       taskManagerForward?: { forwarded: boolean; reason?: string };
-    }>("send_message", input);
+    }>("send_message", {
+      ...input,
+      clientPlatform: Platform.OS === "web" ? "web" : "mobile",
+    });
   },
   forwardMessage(input: { messageId: string; destinationConversationIds: string[] }) {
     return callApi<{ messages: BackendMessage[] }>("forward_messages", input);

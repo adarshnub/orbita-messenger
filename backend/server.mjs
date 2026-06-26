@@ -249,6 +249,13 @@ function optionalString(payload, key) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeClientPlatform(value) {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "web") return "web";
+  if (["ios", "android", "native", "mobile"].includes(normalized)) return "mobile";
+  return "";
+}
+
 function stringArray(payload, key) {
   const value = payload[key];
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
@@ -2375,6 +2382,7 @@ async function forwardTaskmanagerInbound(
   message,
   attachments = [],
   taskManagerTextOverride = "",
+  clientPlatform = "",
 ) {
   const webhookUrl = process.env.TASK_MANAGER_ORBITA_WEBHOOK_URL;
   const secret = process.env.TASK_MANAGER_ORBITA_SECRET;
@@ -2407,6 +2415,7 @@ async function forwardTaskmanagerInbound(
       userConnection: TASK_MANAGER_ORBITA_CHANNEL,
       conversationId,
       orbitaUserId: senderId,
+      clientPlatform,
       messageId: message.id,
       kind: message.kind,
       text: taskManagerTextOverride || message.body || undefined,
@@ -2521,6 +2530,7 @@ async function forwardTaskmanagerInbound(
     userConnection: TASK_MANAGER_ORBITA_CHANNEL,
     conversationId,
     orbitaUserId: senderId,
+    clientPlatform,
     messageId: message.id,
     kind: message.kind,
     text: taskManagerTextOverride || message.body || undefined,
@@ -3148,6 +3158,7 @@ async function handleAction(user, action, payload, req) {
     const body = optionalString(payload, "body").slice(0, 5000);
     const clientMessageId = optionalString(payload, "clientMessageId").slice(0, 128);
     const taskManagerText = optionalString(payload, "taskManagerText").slice(0, 5000);
+    const clientPlatform = normalizeClientPlatform(optionalString(payload, "clientPlatform"));
     const attachmentId = optionalString(payload, "attachmentId");
     const replyToMessageId = optionalString(payload, "replyToMessageId");
     await getConversation(user.id, conversationId);
@@ -3215,6 +3226,7 @@ async function handleAction(user, action, payload, req) {
       mappedMessage,
       attachments,
       taskManagerText,
+      clientPlatform,
     ).catch((error) => {
       const reason = errorMessage(error);
       console.error(reason, error);
