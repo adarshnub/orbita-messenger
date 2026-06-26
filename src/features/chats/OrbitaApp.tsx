@@ -677,8 +677,31 @@ function taskManagerReplyText(reply: BackendReplyPreview | null, messageText: st
   return quote ? `[Replying to quoted message: ${quote}]\n${messageText}` : messageText;
 }
 
+function hasOrbitaMention(text: string) {
+  return /(^|[\s([{"'`])@orbita\b/i.test(text);
+}
+
 function isTaskConversation(conversation: BackendConversation) {
   return Boolean(conversation.taskThread);
+}
+
+function shouldExpectTaskManagerAgentReply(conversation: BackendConversation, text: string) {
+  if (!isTaskManagerAgentConversation(conversation)) return false;
+  return !isTaskConversation(conversation) || hasOrbitaMention(text);
+}
+
+function orbitaMentionQuery(text: string) {
+  const match = text.match(/(?:^|\s)@([a-z0-9_]*)$/i);
+  if (!match) return null;
+  const query = match[1] ?? "";
+  return "orbita".startsWith(query.toLowerCase()) ? query : null;
+}
+
+function insertOrbitaMention(text: string) {
+  if (/(?:^|\s)@[a-z0-9_]*$/i.test(text)) {
+    return text.replace(/(^|\s)@[a-z0-9_]*$/i, (_match, prefix) => `${prefix}@orbita `);
+  }
+  return `${text}${text && !/\s$/.test(text) ? " " : ""}@orbita `;
 }
 
 function shouldShowSenderIdentity(conversation: BackendConversation) {
@@ -1294,7 +1317,9 @@ function renderMessageFormatting(text: string, mine: boolean, isDarkTheme: boole
   let match: RegExpExecArray | null;
 
   while ((match = formatPattern.exec(text))) {
-    if (match.index > cursor) nodes.push(text.slice(cursor, match.index));
+    if (match.index > cursor) {
+      nodes.push(...renderMessageMentions(text.slice(cursor, match.index), mine, isDarkTheme, `${keyPrefix}-plain-${cursor}`));
+    }
 
     const code = match[2];
     const strong = match[4] || match[6];
@@ -1318,6 +1343,31 @@ function renderMessageFormatting(text: string, mine: boolean, isDarkTheme: boole
         </Text>,
       );
     }
+    cursor = match.index + match[0].length;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(...renderMessageMentions(text.slice(cursor), mine, isDarkTheme, `${keyPrefix}-plain-${cursor}`));
+  }
+  return nodes;
+}
+
+function renderMessageMentions(text: string, mine: boolean, isDarkTheme: boolean, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const mentionPattern = /@orbita\b/gi;
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = mentionPattern.exec(text))) {
+    if (match.index > cursor) nodes.push(text.slice(cursor, match.index));
+    nodes.push(
+      <Text
+        key={`${keyPrefix}-mention-${match.index}`}
+        style={[styles.messageMention, mine && styles.messageMentionMine, isDarkTheme && styles.messageMentionDark]}
+      >
+        {match[0]}
+      </Text>,
+    );
     cursor = match.index + match[0].length;
   }
 
@@ -2843,7 +2893,11 @@ function MessengerShell({ session }: { session: Session }) {
           replaceLocalMessageWithServerMessage(queued.conversationId, queued.localId, mergedMessage);
           void hapticMessageSent();
           const conversation = conversationsRef.current.find((item) => item.id === queued.conversationId);
-          if (conversation && isTaskManagerAgentConversation(conversation) && result.taskManagerForward?.forwarded !== false) {
+          if (
+            conversation &&
+            shouldExpectTaskManagerAgentReply(conversation, queued.taskManagerText || queued.body) &&
+            result.taskManagerForward?.forwarded !== false
+          ) {
             setAgentThinkingFor((current) => ({ ...current, [queued.conversationId]: mergedMessage.createdAt }));
           }
         } catch (nextError) {
@@ -3318,6 +3372,7 @@ function MessengerShell({ session }: { session: Session }) {
       ? taskManagerReplyText(replyTo, baseModelText || text)
       : baseModelText;
     if (!text && !modelText && !attachment) return;
+    const expectsAgentReply = shouldExpectTaskManagerAgentReply(selected, modelText || text);
     if (Platform.OS === "web") {
       console.info("[orbita-web-send] reply target", {
         conversationId: selected.id,
@@ -3376,7 +3431,7 @@ function MessengerShell({ session }: { session: Session }) {
     });
     void upsertCachedMessage(profile.id, optimisticMessage).catch(() => undefined);
     updateConversationPreview(optimisticMessage);
-    if (isTaskManagerAgentConversation(selected)) {
+    if (expectsAgentReply) {
       setAgentThinkingFor((current) => ({ ...current, [selected.id]: optimisticMessage.createdAt }));
     }
 
@@ -3429,7 +3484,7 @@ function MessengerShell({ session }: { session: Session }) {
       void replaceCachedMessage(profile.id, selected.id, tempId, mergedMessage).catch(() => undefined);
       updateConversationPreview(mergedMessage);
       void hapticMessageSent();
-      if (isTaskManagerAgentConversation(selected)) {
+      if (expectsAgentReply) {
         if (result.taskManagerForward?.forwarded === false) {
           setAgentThinkingFor((current) => {
             const next = { ...current };
@@ -3512,7 +3567,7 @@ function MessengerShell({ session }: { session: Session }) {
         delete next[selected.id];
         return next;
       });
-      if (isTaskManagerAgentConversation(selected)) {
+      if (expectsAgentReply) {
         const raw = nextError instanceof Error ? nextError.message : "Unable to send message.";
         setError(userFacingTaskManagerError(raw));
       } else {
@@ -5597,6 +5652,9 @@ function ChatPane({
   const isAgentConversation = isTaskManagerAgentConversation(conversation);
   const showSenderIdentity = shouldShowSenderIdentity(conversation);
   const taskThread = conversation.taskThread;
+  const isTaskThreadConversation = Boolean(taskThread);
+  const mentionQuery = isTaskThreadConversation ? orbitaMentionQuery(draft) : null;
+  const showOrbitaMentionSuggestion = mentionQuery !== null;
   const isArchivedTaskThread = isCompletedTaskThreadStatus(taskThread?.status);
   const archivedTaskTitle = isArchivedTaskThread ? taskThreadArchiveTitle(taskThread?.status) : "";
   const archivedTaskLabel = isArchivedTaskThread ? taskThreadStatusLabel(taskThread?.status) : "";
@@ -6406,6 +6464,30 @@ function ChatPane({
               ) : null}
               {attachment ? (
                 <ComposerAttachmentPreview attachment={attachment} onRemove={onRemoveAttachment} />
+              ) : null}
+              {showOrbitaMentionSuggestion ? (
+                <Pressable
+                  accessibilityLabel="Mention Orbita"
+                  onPress={() => setDraft(insertOrbitaMention(draft))}
+                  style={({ pressed }) => [
+                    styles.mentionSuggestion,
+                    isDarkTheme && styles.mentionSuggestionDark,
+                    pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+                  ]}
+                >
+                  <View style={[styles.mentionSuggestionAvatar, isDarkTheme && styles.mentionSuggestionAvatarDark]}>
+                    <Ionicons color={isDarkTheme ? "#111B21" : "#FFFFFF"} name="sparkles-outline" size={16} />
+                  </View>
+                  <View style={styles.mentionSuggestionBody}>
+                    <Text style={[styles.mentionSuggestionName, isDarkTheme && styles.mentionSuggestionNameDark]}>
+                      Orbita
+                    </Text>
+                    <Text style={[styles.mentionSuggestionHandle, isDarkTheme && styles.mentionSuggestionHandleDark]}>
+                      @orbita
+                    </Text>
+                  </View>
+                  <Ionicons color={isDarkTheme ? "rgba(233,237,239,0.62)" : colors.faint} name="return-down-forward-outline" size={17} />
+                </Pressable>
               ) : null}
               <TextInput
                 blurOnSubmit={false}
@@ -8840,6 +8922,22 @@ const styles = StyleSheet.create({
   messageLink: { color: colors.primaryDark, fontWeight: "700", textDecorationLine: "underline" },
   messageLinkMine: { color: colors.primaryDark },
   messageLinkMineDark: { color: "#53BDEB" },
+  messageMention: {
+    paddingHorizontal: 5,
+    borderRadius: 7,
+    overflow: "hidden",
+    color: colors.primaryDark,
+    fontWeight: "800",
+    backgroundColor: "rgba(0,168,132,0.16)",
+  },
+  messageMentionMine: {
+    color: colors.primaryDark,
+    backgroundColor: "rgba(0,128,105,0.14)",
+  },
+  messageMentionDark: {
+    color: colors.accent,
+    backgroundColor: "rgba(6,207,156,0.18)",
+  },
   messageCode: {
     paddingHorizontal: 5,
     borderRadius: 5,
@@ -9061,6 +9159,36 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   quickPromptItemTextDark: { color: "#FFFFFF" },
+  mentionSuggestion: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(0,168,132,0.22)",
+    backgroundColor: "#E7FCEB",
+  },
+  mentionSuggestionDark: {
+    borderColor: "rgba(6,207,156,0.22)",
+    backgroundColor: "rgba(6,207,156,0.12)",
+  },
+  mentionSuggestionAvatar: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.primaryDark,
+  },
+  mentionSuggestionAvatarDark: { backgroundColor: colors.accent },
+  mentionSuggestionBody: { flex: 1, minWidth: 0 },
+  mentionSuggestionName: { color: colors.ink, fontSize: 14, fontWeight: "800" },
+  mentionSuggestionNameDark: { color: "#FFFFFF" },
+  mentionSuggestionHandle: { color: colors.primaryDark, fontSize: 12, fontWeight: "800", marginTop: 1 },
+  mentionSuggestionHandleDark: { color: colors.accent },
   composerAccessoryButton: {
     width: 40,
     height: 40,

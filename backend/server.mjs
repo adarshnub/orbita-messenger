@@ -256,6 +256,18 @@ function normalizeClientPlatform(value) {
   return "";
 }
 
+function hasOrbitaMention(text) {
+  return /(^|[\s([{"'`])@orbita\b/i.test(String(text ?? ""));
+}
+
+function stripOrbitaMention(text) {
+  return String(text ?? "")
+    .replace(/(^|[\s([{"'`])@orbita\b[:,]?\s*/gi, (match, prefix) => prefix || "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function stringArray(payload, key) {
   const value = payload[key];
   return Array.isArray(value) ? value.filter((item) => typeof item === "string") : [];
@@ -2376,6 +2388,19 @@ async function loadTaskThreadForwardingContext(conversationId, senderId) {
   };
 }
 
+async function loadConversationKind(conversationId) {
+  const { data, error } = await supabase
+    .from("conversations")
+    .select("kind, title")
+    .eq("id", conversationId)
+    .maybeSingle();
+  if (error) throw error;
+  return {
+    kind: typeof data?.kind === "string" ? data.kind : "",
+    title: typeof data?.title === "string" ? data.title : "",
+  };
+}
+
 async function forwardTaskmanagerInbound(
   conversationId,
   senderId,
@@ -2395,11 +2420,17 @@ async function forwardTaskmanagerInbound(
     return { forwarded: false, reason: taskThreadContext.reason };
   }
   if (taskThreadContext) {
+    const outboundText = taskManagerTextOverride || message.body || "";
+    if (!hasOrbitaMention(outboundText) && !hasOrbitaMention(message.body)) {
+      return { forwarded: false, reason: "Task thread message did not mention @orbita." };
+    }
+    const taskThreadText = stripOrbitaMention(outboundText) || stripOrbitaMention(message.body) || outboundText;
     const replyFields = replyToPayloadFields(message);
     console.info("[orbita-taskmanager-forward] task thread payload", {
       conversationId,
       messageId: message.id,
       taskmanagerTaskId: taskThreadContext.taskmanagerTaskId,
+      mentionTriggered: true,
       replyToMessageId: replyFields.replyToMessageId ?? null,
       replyToBody: typeof replyFields.replyTo?.body === "string" ? replyFields.replyTo.body.slice(0, 180) : null,
     });
@@ -2418,7 +2449,7 @@ async function forwardTaskmanagerInbound(
       clientPlatform,
       messageId: message.id,
       kind: message.kind,
-      text: taskManagerTextOverride || message.body || undefined,
+      text: taskThreadText || undefined,
       ...replyFields,
       attachment: attachments[0] ?? null,
       attachments,
@@ -2441,6 +2472,17 @@ async function forwardTaskmanagerInbound(
     }
 
     return { forwarded: true };
+  }
+
+  const conversationKind = await loadConversationKind(conversationId);
+  if (conversationKind.kind !== "direct") {
+    console.info("[orbita-taskmanager-forward] skipped non-direct fallback", {
+      conversationId,
+      kind: conversationKind.kind,
+      title: conversationKind.title,
+      reason: "Only direct agent conversations can use direct-agent forwarding.",
+    });
+    return { forwarded: false, reason: "Only @orbita mentions in linked task threads are forwarded to the agent." };
   }
 
   const { data: link, error } = await supabase
