@@ -1,7 +1,8 @@
 import { BackendAttachment, BackendMessage } from "./backendTypes";
 
 export function formatDurationMs(durationMs?: number | null) {
-  const totalSeconds = Math.max(0, Math.round((durationMs ?? 0) / 1000));
+  const safeDurationMs = Number.isFinite(durationMs) ? durationMs ?? 0 : 0;
+  const totalSeconds = Math.max(0, Math.round(safeDurationMs / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}:${String(seconds).padStart(2, "0")}`;

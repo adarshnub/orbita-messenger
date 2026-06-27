@@ -462,9 +462,22 @@ function normalizeWaveformSamples(value, maxCount = 64) {
   const samples = source
     .map((sample) => Number(sample))
     .filter((sample) => Number.isFinite(sample))
-    .slice(0, maxCount)
-    .map((sample) => Math.min(1, Math.max(0.08, sample)));
-  return samples.length ? samples : null;
+    .map((sample) => Math.min(1, Math.max(0, sample)));
+  if (!samples.length) return null;
+  if (samples.length <= maxCount) {
+    return samples.map((sample) => Math.min(1, Math.max(0.08, sample)));
+  }
+
+  const result = [];
+  for (let index = 0; index < maxCount; index += 1) {
+    const start = Math.floor((index / maxCount) * samples.length);
+    const end = Math.max(start + 1, Math.floor(((index + 1) / maxCount) * samples.length));
+    const bucket = samples.slice(start, end);
+    const peak = bucket.reduce((max, sample) => Math.max(max, sample), 0);
+    const average = bucket.reduce((sum, sample) => sum + sample, 0) / bucket.length;
+    result.push(Math.min(1, Math.max(0.08, peak * 0.72 + average * 0.28)));
+  }
+  return result.length ? result : null;
 }
 
 function attachmentLabel(messageKind, attachment) {

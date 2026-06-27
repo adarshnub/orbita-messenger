@@ -482,7 +482,10 @@ function normalizeWaveSamples(samples?: number[] | null, targetCount = 22) {
 
   const min = Math.min(...resampled);
   const max = Math.max(...resampled);
-  if (max - min < 0.004) return [];
+  if (max <= 0.01) return [];
+  if (max - min < 0.004) {
+    return resampled.map((sample) => clamp(0.16 + (sample / max) * 0.72, 0.12, 0.88));
+  }
   const range = Math.max(0.015, max - min);
   return resampled.map((sample) => clamp(0.1 + ((sample - min) / range) * 0.9, 0.08, 1));
 }
@@ -6153,6 +6156,14 @@ function ChatPane({
     setVoiceRecorderPaused(true);
   }
 
+  function resetVoiceRecorderState() {
+    setVoiceRecorderVisible(false);
+    setVoiceRecorderPaused(false);
+    setVoiceRecorderBusy(false);
+    setVoiceNativeDurationMs(0);
+    voiceRecordingBackendRef.current = null;
+  }
+
   async function finishVoiceRecording() {
     if (!voiceRecorderVisible || voiceRecorderBusy) return null;
     setVoiceRecorderBusy(true);
@@ -6204,12 +6215,10 @@ function ChatPane({
       playsInSilentMode: true,
       interruptionMode: "duckOthers",
     }).catch(() => undefined);
-    setVoiceRecorderVisible(false);
-    setVoiceRecorderPaused(false);
-    setVoiceRecorderBusy(false);
-    setVoiceNativeDurationMs(0);
-    voiceRecordingBackendRef.current = null;
-    if (!result?.uri) return null;
+    if (!result?.uri) {
+      resetVoiceRecorderState();
+      return null;
+    }
     const extension = result.mimeType === "audio/wav" ? ".wav" : expoVoiceExtension(result.mimeType);
     return {
       localId: `voice-${Date.now()}`,
@@ -6239,18 +6248,20 @@ function ChatPane({
         interruptionMode: "duckOthers",
       }).catch(() => undefined);
     }
-    setVoiceRecorderVisible(false);
-    setVoiceRecorderPaused(false);
-    setVoiceRecorderBusy(false);
-    setVoiceNativeDurationMs(0);
-    voiceRecordingBackendRef.current = null;
+    resetVoiceRecorderState();
     setVoiceWaveSamples(Array(VOICE_WAVEFORM_BARS).fill(0.14));
   }
 
   async function sendVoiceAttachment() {
     const pendingVoice = await finishVoiceRecording();
     if (!pendingVoice) return;
-    await onSend("voice", draft, pendingVoice);
+    let sendPromise: Promise<void> | void;
+    try {
+      sendPromise = onSend("voice", draft, pendingVoice);
+    } finally {
+      resetVoiceRecorderState();
+    }
+    await sendPromise;
   }
 
   async function sendQuickPrompt(item: (typeof AGENT_QUICK_PROMPTS)[number]) {
@@ -6966,9 +6977,11 @@ function AudioAttachmentCard({
   const status = useAudioPlayerStatus(player);
   const bars = useMemo(() => normalizeWaveSamples(attachment.waveformSamples, 22), [attachment.waveformSamples]);
   const hasWaveform = bars.length > 0;
-  const durationLabel = status.duration
-    ? formatDurationMs(status.duration * 1000)
-    : formatDurationMs(attachment.durationMs);
+  const playerDurationSeconds = Number.isFinite(status.duration) && status.duration > 0 ? status.duration : null;
+  const currentTimeSeconds = Number.isFinite(status.currentTime) ? status.currentTime : 0;
+  const playedRatio = playerDurationSeconds ? clamp(currentTimeSeconds / Math.max(playerDurationSeconds, 0.01), 0, 1) : 0;
+  const activeBarIndex = status.playing ? Math.min(bars.length - 1, Math.floor(playedRatio * bars.length)) : -1;
+  const durationLabel = formatDurationMs(playerDurationSeconds ? playerDurationSeconds * 1000 : attachment.durationMs);
 
   return (
     <View style={[styles.audioAttachment, mine && (isDarkTheme ? styles.audioAttachmentMineDark : styles.audioAttachmentMine)]}>
@@ -6978,7 +6991,7 @@ function AudioAttachmentCard({
             player.pause();
             return;
           }
-          if ((status.currentTime || 0) >= (status.duration || 0)) {
+          if (playerDurationSeconds && currentTimeSeconds >= playerDurationSeconds) {
             void player.seekTo(0);
           }
           player.play();
@@ -6994,15 +7007,15 @@ function AudioAttachmentCard({
       <View style={styles.chatRowBody}>
         <View style={styles.audioWaveRow}>
           {hasWaveform ? bars.map((bar, index) => {
-            const playedRatio = status.duration ? (status.currentTime || 0) / Math.max(status.duration, 0.01) : 0;
             const isPlayed = index / bars.length <= playedRatio;
+            const isActive = index === activeBarIndex;
             return (
               <View
                 key={`${attachment.id}-${index}`}
                 style={[
                   styles.audioWaveBar,
                   {
-                    height: waveLevelToBarHeight(bar, 8, 30),
+                    height: waveLevelToBarHeight(isActive ? Math.min(1, bar + 0.16) : bar, 8, 30),
                     backgroundColor: mine
                       ? isPlayed
                         ? isDarkTheme
