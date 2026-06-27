@@ -10,6 +10,7 @@ import {
   useAudioRecorderState,
 } from "expo-audio";
 import * as DeviceContacts from "expo-contacts";
+import Constants from "expo-constants";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import * as Notifications from "expo-notifications";
@@ -416,6 +417,15 @@ function initials(name: string) {
 
 function formatTime(iso: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+}
+
+function appVersionLabel() {
+  const version =
+    Constants.nativeAppVersion ??
+    Constants.expoConfig?.version ??
+    "0.1.0";
+  const build = Constants.nativeBuildVersion ?? Constants.expoConfig?.android?.versionCode?.toString();
+  return build ? `Version ${version} (build ${build})` : `Version ${version}`;
 }
 
 function defaultDueDateParts() {
@@ -7290,6 +7300,7 @@ function SettingsPanel({
         ["key-outline", "Account", "Phone OTP session stored by Supabase Auth"],
         ["lock-closed-outline", "Privacy", "Profile and contact visibility enforced by RLS"],
         ["cloud-upload-outline", "Storage", "Media buckets are configured in Supabase"],
+        ["information-circle-outline", "App version", appVersionLabel()],
       ].map(([icon, title, copy]) => (
         <View key={title} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
           <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name={icon as keyof typeof Ionicons.glyphMap} size={22} />

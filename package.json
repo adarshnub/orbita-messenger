@@ -10,6 +10,7 @@
     "start": "expo start",
     "backend": "node backend/server.mjs",
     "android": "expo run:android",
+    "build:android:preview": "eas build --platform android --profile preview",
     "build:android:playstore": "eas build --platform android --profile production",
     "submit:android:playstore": "eas submit --platform android --profile production --latest",
     "ios": "expo run:ios",
