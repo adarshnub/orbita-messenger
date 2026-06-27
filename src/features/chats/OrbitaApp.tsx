@@ -427,7 +427,13 @@ function appVersionLabel() {
     Constants.expoConfig?.version ??
     "0.1.0";
   const build = Constants.nativeBuildVersion ?? Constants.expoConfig?.android?.versionCode?.toString();
-  return build ? `Version ${version} (build ${build})` : `Version ${version}`;
+  if (!build) return `Version ${version}`;
+
+  const numericBuild = Number.parseInt(build, 10);
+  const visibleVersion = Number.isFinite(numericBuild)
+    ? version.replace(/^(\d+)\.(\d+)\.\d+/, `$1.$2.${numericBuild}`)
+    : version;
+  return `Version ${visibleVersion} (build ${build})`;
 }
 
 function defaultDueDateParts() {
