@@ -440,3 +440,205 @@ Orbita backend listening on http://0.0.0.0:8787
 {"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"286fff89-5842-4376-8272-6cd7e7c2b76e","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
 {"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"5e25ecb9-9d82-48a2-a636-4e496f90cfcf","ticketIds":["019f07d3-c9ac-7421-b3ef-a61ec0c54a66"],"source":"send_agent_message"}
 {"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"5e25ecb9-9d82-48a2-a636-4e496f90cfcf","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
+[orbita-send-message] reply target {
+  conversationId: '1ed07a94-b460-45a5-85c5-189763824e49',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1782543205262-ywmz1yv7y4m',
+  bodyPreview: 'Hey',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"acb2997f-2cfb-4136-be01-44d84ec1c1e7","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '1ed07a94-b460-45a5-85c5-189763824e49',
+  messageId: 'acb2997f-2cfb-4136-be01-44d84ec1c1e7',
+  taskmanagerUserId: 'usr_de672fefa2f1494985ba84b8239db4b8',
+  replyToMessageId: null,
+  replyToBody: null
+}
+{"event":"service.send_agent_message","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","taskmanagerOrgId":"org_83e774793b304e10b49b96f8041fd1f7","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8","requesterTaskmanagerUserId":null}
+{"event":"service.send_agent_message","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","taskmanagerOrgId":"org_83e774793b304e10b49b96f8041fd1f7","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"99670287-0420-4def-bfc3-58be57e0716b","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"send_agent_message"}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"96126bd1-54ae-4dcf-acaf-fa71243c795c","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"99670287-0420-4def-bfc3-58be57e0716b","ticketIds":["019f07da-f397-7798-a3ea-9048c4651f96"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"99670287-0420-4def-bfc3-58be57e0716b","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"96126bd1-54ae-4dcf-acaf-fa71243c795c","ticketIds":["019f07da-f47e-756f-8187-e21df80c6f42"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"96126bd1-54ae-4dcf-acaf-fa71243c795c","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
+[orbita-send-message] reply target {
+  conversationId: '1ed07a94-b460-45a5-85c5-189763824e49',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1782543244385-j6vcsv26msd',
+  bodyPreview: 'Oma',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"c433afa3-9bab-4f23-a12a-20c6d641bb0d","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '1ed07a94-b460-45a5-85c5-189763824e49',
+  messageId: 'c433afa3-9bab-4f23-a12a-20c6d641bb0d',
+  taskmanagerUserId: 'usr_de672fefa2f1494985ba84b8239db4b8',
+  replyToMessageId: null,
+  replyToBody: null
+}
+{"event":"service.send_agent_message","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","taskmanagerOrgId":"org_83e774793b304e10b49b96f8041fd1f7","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8","requesterTaskmanagerUserId":null}
+[orbita-send-message] reply target {
+  conversationId: '1ed07a94-b460-45a5-85c5-189763824e49',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1782543254135-9avr8glwxlh',
+  bodyPreview: 'Okay',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"0678bd91-9474-4bf7-8f00-5c354f21b749","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"0678bd91-9474-4bf7-8f00-5c354f21b749","ticketIds":["019f07db-8ca8-723c-8937-14c028f99df1"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"0678bd91-9474-4bf7-8f00-5c354f21b749","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
+{"event":"push.no_recipients","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"d7a681ff-388f-4ec7-817f-80a8f403ae1a","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '1ed07a94-b460-45a5-85c5-189763824e49',
+  messageId: 'd7a681ff-388f-4ec7-817f-80a8f403ae1a',
+  taskmanagerUserId: 'usr_de672fefa2f1494985ba84b8239db4b8',
+  replyToMessageId: null,
+  replyToBody: null
+}
+{"event":"service.send_agent_message","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","taskmanagerOrgId":"org_83e774793b304e10b49b96f8041fd1f7","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8","requesterTaskmanagerUserId":null}
+{"event":"service.send_agent_message","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","taskmanagerOrgId":"org_83e774793b304e10b49b96f8041fd1f7","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"9ea09c33-0d93-4961-8642-aa9b58ef7ef4","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"9ea09c33-0d93-4961-8642-aa9b58ef7ef4","ticketIds":["019f07db-c290-7444-9d6e-dbebb42045b3"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"9ea09c33-0d93-4961-8642-aa9b58ef7ef4","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"c51a9d17-4d76-4b6a-8521-17df57454aa2","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"send_agent_message"}
+{"event":"service.send_agent_message","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","taskmanagerOrgId":"org_83e774793b304e10b49b96f8041fd1f7","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8","requesterTaskmanagerUserId":null}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"c51a9d17-4d76-4b6a-8521-17df57454aa2","ticketIds":["019f07db-c708-7689-b4e5-6ea288bde894"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"c51a9d17-4d76-4b6a-8521-17df57454aa2","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"34336fdd-36cc-4df9-9daf-d85c4875ff33","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"34336fdd-36cc-4df9-9daf-d85c4875ff33","ticketIds":["019f07db-ca88-7498-a721-fbe9d1974c96"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"34336fdd-36cc-4df9-9daf-d85c4875ff33","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'voice',
+  kind: 'voice',
+  filename: 'voice-note-1782543291414.m4a',
+  mimeType: 'audio/mp4',
+  byteLength: 135954,
+  durationMs: 7720,
+  waveformSamples: 48
+}
+[orbita-media-upload] staged {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  attachmentId: 'f15ccb77-2d44-43de-960f-c20b0b40292a',
+  kind: 'voice',
+  bucket: 'voice-notes',
+  byteLength: 135954
+}
+[orbita-send-message] reply target {
+  conversationId: '1ed07a94-b460-45a5-85c5-189763824e49',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1782543291414-2ko41elpque',
+  bodyPreview: '',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"1f085b2e-6b30-4e3b-9ac6-edbd69ddb521","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '1ed07a94-b460-45a5-85c5-189763824e49',
+  messageId: '1f085b2e-6b30-4e3b-9ac6-edbd69ddb521',
+  taskmanagerUserId: 'usr_de672fefa2f1494985ba84b8239db4b8',
+  replyToMessageId: null,
+  replyToBody: null
+}
+{"event":"service.send_agent_message","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","taskmanagerOrgId":"org_83e774793b304e10b49b96f8041fd1f7","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"c91bfd14-74dd-4194-bd8d-01d225020269","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"c91bfd14-74dd-4194-bd8d-01d225020269","ticketIds":["019f07dc-741d-73cc-bfea-67b2614fcc13"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"c91bfd14-74dd-4194-bd8d-01d225020269","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
+{"event":"push.sending","conversationId":"f73de5af-8a05-4d6b-a12e-9a0671f6f66b","messageId":"87cb7477-ddb8-4ed1-b63d-b5a770a4caaa","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"task_thread_context"}
+{"event":"push.ticket_ok","conversationId":"f73de5af-8a05-4d6b-a12e-9a0671f6f66b","messageId":"87cb7477-ddb8-4ed1-b63d-b5a770a4caaa","ticketIds":["019f07dc-766e-7120-a4b9-102bcdc2fc55"],"source":"task_thread_context"}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"5c533953-1eca-4d6e-8328-aad5e3c00e4b","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"5c533953-1eca-4d6e-8328-aad5e3c00e4b","ticketIds":["019f07dc-80ea-762b-ac57-a3f0b08b6090"],"source":"task_thread_source_created"}
+{"event":"service.send_agent_message","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","taskmanagerOrgId":"org_83e774793b304e10b49b96f8041fd1f7","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"40b1bbdb-72da-4200-8d16-ade197e1df5a","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"40b1bbdb-72da-4200-8d16-ade197e1df5a","ticketIds":["019f07dc-8e0b-76ed-999c-9f9a1b1b82eb"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"40b1bbdb-72da-4200-8d16-ade197e1df5a","taskmanagerUserId":"usr_de672fefa2f1494985ba84b8239db4b8"}
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'voice',
+  kind: 'voice',
+  filename: 'voice-note-1782543344235.m4a',
+  mimeType: 'audio/mp4',
+  byteLength: 153228,
+  durationMs: 8835,
+  waveformSamples: 48
+}
+[orbita-media-upload] staged {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  attachmentId: '40bdeb12-6aaf-44d9-a1b1-f1f95d09d343',
+  kind: 'voice',
+  bucket: 'voice-notes',
+  byteLength: 153228
+}
+[orbita-send-message] reply target {
+  conversationId: '86ac0108-ed5b-4429-92d1-da729e487301',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1782543344235-vh80cfrcnb',
+  bodyPreview: '',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"b68e8ada-4742-4005-a691-3cbf21e48763","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '86ac0108-ed5b-4429-92d1-da729e487301',
+  messageId: 'b68e8ada-4742-4005-a691-3cbf21e48763',
+  taskmanagerUserId: 'usr_68e9f18481b047519391c30cfde4a11d',
+  replyToMessageId: null,
+  replyToBody: null
+}
+{"event":"service.send_agent_message","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","taskmanagerOrgId":"org_cf1dea39e2e34037a8ee6373845958e8","taskmanagerUserId":"usr_68e9f18481b047519391c30cfde4a11d","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"39e92778-df7c-43c4-8014-e89c4acf1c6d","messageId":"9e2b2838-d9d3-4506-b95c-dc5dc8bc450e","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Care and cure","source":"task_thread_context"}
+{"event":"push.ticket_ok","conversationId":"39e92778-df7c-43c4-8014-e89c4acf1c6d","messageId":"9e2b2838-d9d3-4506-b95c-dc5dc8bc450e","ticketIds":["019f07dd-31a0-765f-ba1b-d1d2968f46d6"],"source":"task_thread_context"}
+{"event":"push.sending","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"2cdd6413-f659-4deb-8426-06622afdaaff","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Care and cure","source":"send_agent_message"}
+{"event":"push.sending","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"dd2d510a-bdbd-4d12-ad00-5e4a0bc4b1bd","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Care and cure","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"2cdd6413-f659-4deb-8426-06622afdaaff","ticketIds":["019f07dd-38f0-76a8-8d9a-953fdb375efa"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"2cdd6413-f659-4deb-8426-06622afdaaff","taskmanagerUserId":"usr_68e9f18481b047519391c30cfde4a11d"}
+{"event":"push.ticket_ok","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"dd2d510a-bdbd-4d12-ad00-5e4a0bc4b1bd","ticketIds":["019f07dd-3a30-761b-8bec-a3fa09b4ec7c"],"source":"task_thread_source_created"}
+{"event":"service.send_agent_message","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","taskmanagerOrgId":"org_cf1dea39e2e34037a8ee6373845958e8","taskmanagerUserId":"usr_68e9f18481b047519391c30cfde4a11d","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"d80b5f92-2066-4394-ba15-7be5024160f2","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Care and cure","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"d80b5f92-2066-4394-ba15-7be5024160f2","ticketIds":["019f07dd-41c1-748d-b5a1-b5bb57419c97"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"d80b5f92-2066-4394-ba15-7be5024160f2","taskmanagerUserId":"usr_68e9f18481b047519391c30cfde4a11d"}

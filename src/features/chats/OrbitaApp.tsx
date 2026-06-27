@@ -163,9 +163,6 @@ const KEYBOARD_COMPOSER_GAP = 18;
 const KEYBOARD_SAFETY_GAP = Platform.OS === "android" ? 8 : 10;
 const COMPOSER_INPUT_MIN_HEIGHT = 44;
 const COMPOSER_INPUT_MAX_HEIGHT = 118;
-const EDGE_SWIPE_WIDTH = 34;
-const EDGE_SWIPE_TRIGGER = 72;
-const EDGE_SWIPE_VERTICAL_LIMIT = 64;
 const MESSAGE_RECONCILE_WINDOW_MS = 12_000;
 const TYPING_REFRESH_MS = 2_400;
 const TYPING_IDLE_MS = 1_900;
@@ -772,12 +769,13 @@ function searchableText(values: Array<string | null | undefined>) {
   return values.filter(Boolean).join(" ").trim().toLowerCase();
 }
 
-function keyboardClearance(_height?: number, bottomInset = 0, keyboardTop?: number, windowHeight?: number) {
+function keyboardClearance(height?: number, bottomInset = 0, keyboardTop?: number, windowHeight?: number) {
+  const keyboardHeight = Math.max(0, Math.round(height ?? 0));
   const hasKeyboardTop = typeof keyboardTop === "number" && keyboardTop > 0 && typeof windowHeight === "number";
-  if (!hasKeyboardTop) return 0;
-  const overlap = Math.max(0, Math.round(windowHeight - keyboardTop));
-  if (overlap < 80) return 0;
-  return Math.max(0, overlap - bottomInset + KEYBOARD_SAFETY_GAP);
+  const overlap = hasKeyboardTop ? Math.max(0, Math.round(windowHeight - keyboardTop)) : 0;
+  const effectiveKeyboardHeight = overlap >= 80 ? overlap : keyboardHeight;
+  if (effectiveKeyboardHeight < 80) return 0;
+  return Math.max(0, effectiveKeyboardHeight - bottomInset + KEYBOARD_SAFETY_GAP);
 }
 
 function useKeyboardClearance(enabled = true) {
@@ -1186,6 +1184,14 @@ function SwipeableMessageBubble({
   const frameRef = useRef<View | null>(null);
   const translateX = useRef(new Animated.Value(0)).current;
   const replyTriggeredRef = useRef(false);
+  const triggerReply = useCallback(() => {
+    if (replyTriggeredRef.current) return;
+    replyTriggeredRef.current = true;
+    onReply();
+    setTimeout(() => {
+      replyTriggeredRef.current = false;
+    }, 420);
+  }, [onReply]);
   const openActions = useCallback(() => {
     const fallback = () => onActions({ message });
     const frame = frameRef.current;
@@ -1201,29 +1207,35 @@ function SwipeableMessageBubble({
     () =>
       PanResponder.create({
         onMoveShouldSetPanResponder: (_event, gestureState) => {
-          const mostlyHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.35;
-          const correctDirection = mine ? gestureState.dx < -12 : gestureState.dx > 12;
+          const mostlyHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.15;
+          const correctDirection = gestureState.dx > (Platform.OS === "web" ? 12 : 7);
           return mostlyHorizontal && correctDirection;
         },
+        onMoveShouldSetPanResponderCapture: (_event, gestureState) => {
+          const mostlyHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.15;
+          return mostlyHorizontal && gestureState.dx > (Platform.OS === "web" ? 12 : 7);
+        },
         onPanResponderMove: (_event, gestureState) => {
-          const x = mine ? clamp(gestureState.dx, -58, 0) : clamp(gestureState.dx, 0, 58);
+          const x = clamp(gestureState.dx, 0, 56);
           translateX.setValue(x);
+          const mostlyHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.02;
+          if (Platform.OS !== "web" && mostlyHorizontal && gestureState.dx >= 12 && Math.abs(gestureState.dy) <= 42) {
+            triggerReply();
+          }
         },
         onPanResponderRelease: (_event, gestureState) => {
-          const correctDistance = mine ? gestureState.dx <= -52 : gestureState.dx >= 52;
-          const shouldReply = correctDistance && Math.abs(gestureState.dy) <= 38;
+          const mostlyHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.05;
+          const correctDistance = gestureState.dx >= (Platform.OS === "web" ? 48 : 14);
+          const fastRightSwipe = Platform.OS !== "web" && gestureState.dx >= 10 && gestureState.vx >= 0.14;
+          const shouldReply = mostlyHorizontal && (correctDistance || fastRightSwipe) && Math.abs(gestureState.dy) <= 48;
           Animated.spring(translateX, {
             bounciness: 5,
             speed: 18,
             toValue: 0,
             useNativeDriver: true,
           }).start();
-          if (shouldReply && !replyTriggeredRef.current) {
-            replyTriggeredRef.current = true;
-            onReply();
-            setTimeout(() => {
-              replyTriggeredRef.current = false;
-            }, 260);
+          if (shouldReply) {
+            triggerReply();
           }
         },
         onPanResponderTerminate: () => {
@@ -1236,11 +1248,11 @@ function SwipeableMessageBubble({
         },
         onShouldBlockNativeResponder: () => false,
       }),
-    [mine, onReply, translateX],
+    [triggerReply, translateX],
   );
   const replyOpacity = translateX.interpolate({
-    inputRange: mine ? [-58, -24, 0] : [0, 24, 58],
-    outputRange: mine ? [1, 0.65, 0] : [0, 0.65, 1],
+    inputRange: [0, 10, 56],
+    outputRange: [0, 0.65, 1],
   });
 
   return (
@@ -1249,7 +1261,7 @@ function SwipeableMessageBubble({
         pointerEvents="none"
         style={[
           styles.replySwipeCue,
-          mine ? styles.replySwipeCueMine : styles.replySwipeCueTheirs,
+          styles.replySwipeCueTheirs,
           isDarkTheme && styles.replySwipeCueDark,
           { opacity: replyOpacity },
         ]}
@@ -5877,7 +5889,9 @@ function ChatPane({
   const mentionQuery = isTaskThreadConversation ? orbitaMentionQuery(draft) : null;
   const showOrbitaMentionSuggestion = mentionQuery !== null;
   const showComposerMentionHighlight = isTaskThreadConversation && hasOrbitaMention(draft);
-  const composerKeyboardGap = Math.max(bottomInset, KEYBOARD_COMPOSER_GAP);
+  const composerKeyboardGap = keyboardInset > 0
+    ? keyboardInset
+    : Math.max(bottomInset, KEYBOARD_COMPOSER_GAP);
   const compactHeader = !isWide && width < 390;
   const isArchivedTaskThread = isCompletedTaskThreadStatus(taskThread?.status);
   const archivedTaskTitle = isArchivedTaskThread ? taskThreadArchiveTitle(taskThread?.status) : "";
@@ -6353,33 +6367,8 @@ function ChatPane({
     setComposerInputHeight((current) => (Math.abs(current - normalizedHeight) > 1 ? normalizedHeight : current));
   }, []);
 
-  const edgeSwipeResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onMoveShouldSetPanResponder: (_event, gestureState) => {
-          if (isWide || Platform.OS === "web") return false;
-
-          const startsAtLeftEdge = gestureState.x0 <= EDGE_SWIPE_WIDTH;
-          const startsAtRightEdge = gestureState.x0 >= width - EDGE_SWIPE_WIDTH;
-          const inwardFromLeft = startsAtLeftEdge && gestureState.dx > 14;
-          const inwardFromRight = startsAtRightEdge && gestureState.dx < -14;
-          const mostlyHorizontal = Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.2;
-
-          return (inwardFromLeft || inwardFromRight) && mostlyHorizontal;
-        },
-        onPanResponderRelease: (_event, gestureState) => {
-          const enoughDistance = Math.abs(gestureState.dx) >= EDGE_SWIPE_TRIGGER;
-          const controlledVerticalDrift = Math.abs(gestureState.dy) <= EDGE_SWIPE_VERTICAL_LIMIT;
-          if (enoughDistance && controlledVerticalDrift) onBack();
-        },
-        onShouldBlockNativeResponder: () => false,
-      }),
-    [isWide, onBack, width],
-  );
-
   const chatPane = (
     <View
-      {...(!isWide ? edgeSwipeResponder.panHandlers : {})}
       style={[
         styles.chatPane,
         isDarkTheme && styles.chatPaneDark,
@@ -6861,18 +6850,6 @@ function ChatPane({
       </View>
     </View>
   );
-
-  if (!isWide && Platform.OS !== "web") {
-    return (
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
-        keyboardVerticalOffset={0}
-        style={styles.chatKeyboardAvoider}
-      >
-        {chatPane}
-      </KeyboardAvoidingView>
-    );
-  }
 
   return chatPane;
 }
