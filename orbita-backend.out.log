@@ -642,3 +642,309 @@ Orbita backend listening on http://0.0.0.0:8787
 {"event":"push.sending","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"d80b5f92-2066-4394-ba15-7be5024160f2","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Care and cure","source":"send_agent_message"}
 {"event":"push.ticket_ok","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"d80b5f92-2066-4394-ba15-7be5024160f2","ticketIds":["019f07dd-41c1-748d-b5a1-b5bb57419c97"],"source":"send_agent_message"}
 {"event":"service.send_agent_message_inserted","conversationId":"86ac0108-ed5b-4429-92d1-da729e487301","messageId":"d80b5f92-2066-4394-ba15-7be5024160f2","taskmanagerUserId":"usr_68e9f18481b047519391c30cfde4a11d"}
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'voice',
+  kind: 'voice',
+  filename: 'voice-note-1782544517614.m4a',
+  mimeType: 'audio/mp4',
+  byteLength: 66483,
+  durationMs: 4132,
+  waveformSamples: 48
+}
+[orbita-media-upload] staged {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  attachmentId: '01c352b3-80aa-48c6-bbed-786463d74427',
+  kind: 'voice',
+  bucket: 'voice-notes',
+  byteLength: 66483
+}
+[orbita-send-message] reply target {
+  conversationId: '01a8e6e6-d61e-414d-8c29-0d17f48fd761',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1782544517623-01h34efffath',
+  bodyPreview: '',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"fe52ec70-fe72-4dd3-878b-e42f07984006","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-send-message] reply target {
+  conversationId: '01a8e6e6-d61e-414d-8c29-0d17f48fd761',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1782544525109-bxvnwef2q8k',
+  bodyPreview: '@orbita',
+  taskManagerTextPreview: '[Replying to quoted message: Voice note]\n@orbita',
+  taskManagerMentioned: true,
+  bodyHasMention: true,
+  taskManagerTextHasMention: true,
+  replyToMessageId: 'fe52ec70-fe72-4dd3-878b-e42f07984006',
+  resolvedReplyToMessageId: 'fe52ec70-fe72-4dd3-878b-e42f07984006',
+  storedReplyToMessageId: 'fe52ec70-fe72-4dd3-878b-e42f07984006',
+  replyToBody: 'Voice note',
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+[orbita-taskmanager-forward] task thread payload {
+  conversationId: '01a8e6e6-d61e-414d-8c29-0d17f48fd761',
+  messageId: 'b7cdbb3b-60e8-4ef5-85b7-0cd0fcf12831',
+  taskmanagerTaskId: 'tsk_ca00fffb5c584496abd57c6afc260575',
+  mentionTriggered: true,
+  taskManagerMentioned: true,
+  outboundHasMention: true,
+  bodyHasMention: true,
+  textPreview: '[Replying to quoted message: Voice note]\n@orbita',
+  replyToMessageId: 'fe52ec70-fe72-4dd3-878b-e42f07984006',
+  replyToBody: 'Voice note'
+}
+{"event":"push.no_recipients","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"b7cdbb3b-60e8-4ef5-85b7-0cd0fcf12831","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+{"event":"service.send_task_thread_agent_message","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","taskmanagerTaskId":"tsk_ca00fffb5c584496abd57c6afc260575"}
+{"event":"service.send_task_thread_agent_message","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","taskmanagerTaskId":"tsk_ca00fffb5c584496abd57c6afc260575"}
+{"event":"push.sending","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"2614ed4c-7ed5-4c0c-9338-b33cad067f53","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_task_thread_agent_message"}
+{"event":"push.sending","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"ce519625-de6a-4744-ae68-9c3339b3a070","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_task_thread_agent_message"}
+{"event":"push.ticket_ok","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"2614ed4c-7ed5-4c0c-9338-b33cad067f53","ticketIds":["019f07ef-0c9a-752f-94a0-075f6c93cb4f"],"source":"send_task_thread_agent_message"}
+{"event":"push.ticket_ok","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"ce519625-de6a-4744-ae68-9c3339b3a070","ticketIds":["019f07ef-0e17-73ed-9c40-d38fcd47d6ec"],"source":"send_task_thread_agent_message"}
+[orbita-send-message] reply target {
+  conversationId: '01a8e6e6-d61e-414d-8c29-0d17f48fd761',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1782544564320-kp88knim7jk',
+  bodyPreview: 'Fixed the keyboard overlap issue',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"319ef3a8-48b7-4f20-a026-3c0f44fbd977","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-send-message] reply target {
+  conversationId: '01a8e6e6-d61e-414d-8c29-0d17f48fd761',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1782544574854-yimcaaveid',
+  bodyPreview: '@orbita',
+  taskManagerTextPreview: '[Replying to quoted message: Fixed the keyboard overlap issue]\n@orbita',
+  taskManagerMentioned: true,
+  bodyHasMention: true,
+  taskManagerTextHasMention: true,
+  replyToMessageId: '319ef3a8-48b7-4f20-a026-3c0f44fbd977',
+  resolvedReplyToMessageId: '319ef3a8-48b7-4f20-a026-3c0f44fbd977',
+  storedReplyToMessageId: '319ef3a8-48b7-4f20-a026-3c0f44fbd977',
+  replyToBody: 'Fixed the keyboard overlap issue',
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+[orbita-taskmanager-forward] task thread payload {
+  conversationId: '01a8e6e6-d61e-414d-8c29-0d17f48fd761',
+  messageId: '4dcb4f03-2712-4020-9f0a-2e4798a3530b',
+  taskmanagerTaskId: 'tsk_ca00fffb5c584496abd57c6afc260575',
+  mentionTriggered: true,
+  taskManagerMentioned: true,
+  outboundHasMention: true,
+  bodyHasMention: true,
+  textPreview: '[Replying to quoted message: Fixed the keyboard overlap issue]\n@orbita',
+  replyToMessageId: '319ef3a8-48b7-4f20-a026-3c0f44fbd977',
+  replyToBody: 'Fixed the keyboard overlap issue'
+}
+{"event":"push.no_recipients","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"4dcb4f03-2712-4020-9f0a-2e4798a3530b","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+{"event":"service.send_task_thread_agent_message","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","taskmanagerTaskId":"tsk_ca00fffb5c584496abd57c6afc260575"}
+{"event":"push.sending","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"55e64b76-c371-48eb-b669-aa2ecc2a0cc9","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_task_thread_agent_message"}
+{"event":"push.ticket_ok","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"55e64b76-c371-48eb-b669-aa2ecc2a0cc9","ticketIds":["019f07ef-cef0-7429-b01a-b0f72616dbf4"],"source":"send_task_thread_agent_message"}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"2f05698c-3b04-4ba3-b1b8-ea3b57c98c8e","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_source_created"}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"9c079591-f394-47a0-a6c2-cc15427c8f61","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_source_status_changed"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"2f05698c-3b04-4ba3-b1b8-ea3b57c98c8e","ticketIds":["019f07ef-efc9-70ed-955d-896b5e4cbe97"],"source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"9c079591-f394-47a0-a6c2-cc15427c8f61","ticketIds":["019f07ef-f18f-7782-b773-8365bc5fe6e2"],"source":"task_thread_source_status_changed"}
+{"event":"service.send_task_thread_agent_message","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","taskmanagerTaskId":"tsk_ca00fffb5c584496abd57c6afc260575"}
+{"event":"push.sending","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"09c65020-931f-4ae7-b4e9-c0ce098e1e36","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_task_thread_agent_message"}
+{"event":"push.ticket_ok","conversationId":"01a8e6e6-d61e-414d-8c29-0d17f48fd761","messageId":"09c65020-931f-4ae7-b4e9-c0ce098e1e36","ticketIds":["019f07f0-a020-74fa-aa69-2c8580731dd9"],"source":"send_task_thread_agent_message"}
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'voice',
+  kind: 'voice',
+  filename: 'voice-note-1782544640509.m4a',
+  mimeType: 'audio/mp4',
+  byteLength: 138208,
+  durationMs: 8571,
+  waveformSamples: 48
+}
+[orbita-media-upload] staged {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  attachmentId: '64b5c1ee-9cec-4b24-be24-e526b6abd9c6',
+  kind: 'voice',
+  bucket: 'voice-notes',
+  byteLength: 138208
+}
+[orbita-send-message] reply target {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1782544640509-6jfnm5usux8',
+  bodyPreview: '',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"1aebf1e7-7f02-44f8-9d4c-d11ecda022b2","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  messageId: '1aebf1e7-7f02-44f8-9d4c-d11ecda022b2',
+  taskmanagerUserId: 'usr_817d42388ec04ec2ad8dcddf3b585237',
+  replyToMessageId: null,
+  replyToBody: null
+}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"7d75e652-b236-4b79-9e1c-431b6ed29914","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"7d75e652-b236-4b79-9e1c-431b6ed29914","ticketIds":["019f07f0-d02f-743d-9882-7d9d8503a19c"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"7d75e652-b236-4b79-9e1c-431b6ed29914","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+{"event":"push.sending","conversationId":"130b483d-4fbf-4aae-b5a9-7806215911b7","messageId":"21dcd0e7-ac67-4d0a-9a16-88ba1109e18d","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_context"}
+{"event":"push.ticket_ok","conversationId":"130b483d-4fbf-4aae-b5a9-7806215911b7","messageId":"21dcd0e7-ac67-4d0a-9a16-88ba1109e18d","ticketIds":["019f07f0-d8f1-771d-94ab-8a7492174046"],"source":"task_thread_context"}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"bd35d4cb-a7be-4176-aedb-54f9f5177883","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"bd35d4cb-a7be-4176-aedb-54f9f5177883","ticketIds":["019f07f0-dd07-715b-b46f-3cc004cafda6"],"source":"task_thread_source_created"}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"44193f35-ea49-49b0-8b51-8b42c2c3365d","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"44193f35-ea49-49b0-8b51-8b42c2c3365d","ticketIds":["019f07f0-e5c7-763b-abaf-a86d637860b4"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"44193f35-ea49-49b0-8b51-8b42c2c3365d","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+[orbita-send-message] reply target {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-0b6815d5-45c3-469e-a0e8-470fa142016d',
+  bodyPreview: 'create a task to fix issue task getting created as subtask',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"5f916d81-ed80-4278-9c74-965798c82ab5","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  messageId: '5f916d81-ed80-4278-9c74-965798c82ab5',
+  taskmanagerUserId: 'usr_817d42388ec04ec2ad8dcddf3b585237',
+  replyToMessageId: null,
+  replyToBody: null
+}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"096d0d9e-1c7a-41c9-9768-c97e71e7aecd","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"096d0d9e-1c7a-41c9-9768-c97e71e7aecd","ticketIds":["019f0852-dc57-7288-adb8-97a1909e4749"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"096d0d9e-1c7a-41c9-9768-c97e71e7aecd","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+{"event":"push.sending","conversationId":"c5e06996-b47a-4ce0-824e-f6787c91713c","messageId":"ead066e1-9cee-43bf-b854-f45e81b78b6c","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_context"}
+{"event":"push.ticket_ok","conversationId":"c5e06996-b47a-4ce0-824e-f6787c91713c","messageId":"ead066e1-9cee-43bf-b854-f45e81b78b6c","ticketIds":["019f0852-e6b6-722f-8964-d0d493e42332"],"source":"task_thread_context"}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"fb6fe2ca-fa98-4f0a-8066-158c48213695","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"fb6fe2ca-fa98-4f0a-8066-158c48213695","ticketIds":["019f0852-e9c2-7788-baa9-20fccb913ca7"],"source":"task_thread_source_created"}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"029bc7ee-ead6-4b16-b223-f955f7676ffb","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"029bc7ee-ead6-4b16-b223-f955f7676ffb","ticketIds":["019f0852-f0eb-722c-86a9-c3d248c07a84"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"029bc7ee-ead6-4b16-b223-f955f7676ffb","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+[orbita-send-message] reply target {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-3c41c0fe-2416-4b6e-ae7e-ff68d27809f6',
+  bodyPreview: 'create a task to test task creation and assign to adarsh',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"52cf0215-6265-42b6-bde6-2bc18c92267e","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  messageId: '52cf0215-6265-42b6-bde6-2bc18c92267e',
+  taskmanagerUserId: 'usr_817d42388ec04ec2ad8dcddf3b585237',
+  replyToMessageId: null,
+  replyToBody: null
+}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"aec37766-0b22-466d-be23-d63fd73827ce","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"aec37766-0b22-466d-be23-d63fd73827ce","ticketIds":["019f0853-7b8e-75b4-b066-096a8dfdc998"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"aec37766-0b22-466d-be23-d63fd73827ce","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+{"event":"push.sending","conversationId":"34a428a0-a72f-43b8-8f21-55502c8b6886","messageId":"960abd1b-3abe-4978-825e-704305b3ab88","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_context"}
+{"event":"push.ticket_ok","conversationId":"34a428a0-a72f-43b8-8f21-55502c8b6886","messageId":"960abd1b-3abe-4978-825e-704305b3ab88","ticketIds":["019f0853-80c3-76d3-a3c8-4567f5eb46e7"],"source":"task_thread_context"}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"4fc1e02f-b65a-41e2-9642-356895dda520","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"4fc1e02f-b65a-41e2-9642-356895dda520","ticketIds":["019f0853-830e-7371-94a7-68bbb5756902"],"source":"task_thread_source_created"}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"d306a684-c020-4665-ad7f-b683862f84c5","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"d306a684-c020-4665-ad7f-b683862f84c5","ticketIds":["019f0853-898e-74e8-af4d-ef4afb9e78b6"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"d306a684-c020-4665-ad7f-b683862f84c5","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+[orbita-send-message] reply target {
+  conversationId: '34a428a0-a72f-43b8-8f21-55502c8b6886',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-b7b87959-dd56-454f-add0-45dd056f6414',
+  bodyPreview: 'done its working',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"34a428a0-a72f-43b8-8f21-55502c8b6886","messageId":"ca764c60-316a-42bf-b950-08749755893a","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-send-message] reply target {
+  conversationId: '34a428a0-a72f-43b8-8f21-55502c8b6886',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-2dd06f53-0187-4d7e-8b67-61a36ea568df',
+  bodyPreview: '@orbita',
+  taskManagerTextPreview: '[Replying to quoted message: done its working]\n@orbita',
+  taskManagerMentioned: true,
+  bodyHasMention: true,
+  taskManagerTextHasMention: true,
+  replyToMessageId: 'ca764c60-316a-42bf-b950-08749755893a',
+  resolvedReplyToMessageId: 'ca764c60-316a-42bf-b950-08749755893a',
+  storedReplyToMessageId: 'ca764c60-316a-42bf-b950-08749755893a',
+  replyToBody: 'done its working',
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+[orbita-taskmanager-forward] task thread payload {
+  conversationId: '34a428a0-a72f-43b8-8f21-55502c8b6886',
+  messageId: 'c682fb2c-afa0-4ce5-8514-c935bd58fe80',
+  taskmanagerTaskId: 'tsk_38b97bf080d24889bc15f33abfec68f9',
+  mentionTriggered: true,
+  taskManagerMentioned: true,
+  outboundHasMention: true,
+  bodyHasMention: true,
+  textPreview: '[Replying to quoted message: done its working]\n@orbita',
+  replyToMessageId: 'ca764c60-316a-42bf-b950-08749755893a',
+  replyToBody: 'done its working'
+}
+{"event":"push.no_recipients","conversationId":"34a428a0-a72f-43b8-8f21-55502c8b6886","messageId":"c682fb2c-afa0-4ce5-8514-c935bd58fe80","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+{"event":"service.send_task_thread_agent_message","conversationId":"34a428a0-a72f-43b8-8f21-55502c8b6886","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","taskmanagerTaskId":"tsk_38b97bf080d24889bc15f33abfec68f9"}
+{"event":"push.sending","conversationId":"34a428a0-a72f-43b8-8f21-55502c8b6886","messageId":"6d141976-4a3c-4b5b-affa-dcd40aeb75ef","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_task_thread_agent_message"}
+{"event":"push.ticket_ok","conversationId":"34a428a0-a72f-43b8-8f21-55502c8b6886","messageId":"6d141976-4a3c-4b5b-affa-dcd40aeb75ef","ticketIds":["019f0854-a62c-75fb-89e5-8a4823272922"],"source":"send_task_thread_agent_message"}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"fb197c5a-4570-4f95-ba79-e27169bed5d5","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"fb197c5a-4570-4f95-ba79-e27169bed5d5","ticketIds":["019f0854-aabd-7608-9821-414dbf77bce5"],"source":"task_thread_source_created"}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"35d7ef54-a510-4310-b819-db46e1777b18","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_source_status_changed"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"35d7ef54-a510-4310-b819-db46e1777b18","ticketIds":["019f0854-afc7-70ea-99ec-1fd39af7bfe2"],"source":"task_thread_source_status_changed"}
+{"event":"service.send_task_thread_agent_message","conversationId":"34a428a0-a72f-43b8-8f21-55502c8b6886","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","taskmanagerTaskId":"tsk_38b97bf080d24889bc15f33abfec68f9"}
+{"event":"push.sending","conversationId":"34a428a0-a72f-43b8-8f21-55502c8b6886","messageId":"eeab5254-40c1-446b-8972-19fc8cc2385b","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_task_thread_agent_message"}
+{"event":"push.ticket_ok","conversationId":"34a428a0-a72f-43b8-8f21-55502c8b6886","messageId":"eeab5254-40c1-446b-8972-19fc8cc2385b","ticketIds":["019f0854-bd57-7649-99dc-97865dbf8d75"],"source":"send_task_thread_agent_message"}

@@ -33,7 +33,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 });
 
 const TASK_MANAGER_ORBITA_CHANNEL = "orbita";
-const TASK_MANAGER_WEBHOOK_TIMEOUT_MS = 8_000;
+const TASK_MANAGER_WEBHOOK_TIMEOUT_MS = 20_000;
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
 const PUSH_DEBUG = process.env.ORBITA_PUSH_DEBUG === "1";
 const TASK_ACK_SYSTEM_KIND = "task_acknowledgement";

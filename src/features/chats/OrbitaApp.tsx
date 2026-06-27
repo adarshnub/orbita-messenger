@@ -10,6 +10,7 @@ import {
   useAudioRecorder,
   useAudioRecorderState,
 } from "expo-audio";
+import * as Clipboard from "expo-clipboard";
 import * as DeviceContacts from "expo-contacts";
 import Constants from "expo-constants";
 import * as DocumentPicker from "expo-document-picker";
@@ -168,7 +169,7 @@ const TYPING_REFRESH_MS = 2_400;
 const TYPING_IDLE_MS = 1_900;
 const TYPING_EXPIRE_MS = 4_800;
 const AGENT_THINKING_POLL_MS = 3_500;
-const AGENT_THINKING_TIMEOUT_MS = 45_000;
+const AGENT_THINKING_TIMEOUT_MS = 120_000;
 const AGENT_FOLLOW_LATEST_MS = 90_000;
 const CHAT_PAGE_SIZE = 24;
 const VOICE_WAVEFORM_BARS = 48;
@@ -7979,6 +7980,8 @@ function CreateTaskThreadSubtaskModal({
   const [dueParts, setDueParts] = useState(defaultDueDateParts);
   const [description, setDescription] = useState("");
   const [members, setMembers] = useState<string[]>([]);
+  const { height } = useWindowDimensions();
+  const extraMembersMaxHeight = Math.max(104, Math.min(220, Math.floor(height * 0.24)));
 
   useEffect(() => {
     if (!visible) {
@@ -8014,92 +8017,104 @@ function CreateTaskThreadSubtaskModal({
       <Text numberOfLines={2} style={styles.modalSubtitle}>
         Under {parent?.taskThread?.taskNumber ?? "task"} - {parent?.taskThread?.title ?? parent?.title ?? ""}
       </Text>
-      <TextInput
-        autoFocus={Platform.OS !== "web"}
-        onChangeText={setTitle}
-        placeholder="Subtask title"
-        placeholderTextColor={colors.faint}
-        style={styles.modalInput}
-        value={title}
-      />
-      <Text style={styles.modalFieldLabel}>Assignee</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.assigneeChipRow}>
-        {contacts.map((contact) => {
-          const active = contact.id === assigneeId;
-          return (
-            <Pressable
-              key={contact.id}
-              onPress={() => {
-                setAssigneeId(contact.id);
-                setMembers((current) => current.filter((id) => id !== contact.id));
-              }}
-              style={({ pressed }) => [
-                styles.assigneeChip,
-                active && styles.assigneeChipActive,
-                pressed && styles.pressablePressed,
-              ]}
-            >
-              <Text style={[styles.assigneeChipText, active && styles.assigneeChipTextActive]}>{contact.displayName}</Text>
-            </Pressable>
-          );
-        })}
+      <ScrollView
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+        style={styles.subtaskModalScroll}
+        contentContainerStyle={styles.subtaskModalContent}
+      >
+        <TextInput
+          autoFocus={Platform.OS !== "web"}
+          onChangeText={setTitle}
+          placeholder="Subtask title"
+          placeholderTextColor={colors.faint}
+          style={styles.modalInput}
+          value={title}
+        />
+        <Text style={styles.modalFieldLabel}>Assignee</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.assigneeChipRow}>
+          {contacts.map((contact) => {
+            const active = contact.id === assigneeId;
+            return (
+              <Pressable
+                key={contact.id}
+                onPress={() => {
+                  setAssigneeId(contact.id);
+                  setMembers((current) => current.filter((id) => id !== contact.id));
+                }}
+                style={({ pressed }) => [
+                  styles.assigneeChip,
+                  active && styles.assigneeChipActive,
+                  pressed && styles.pressablePressed,
+                ]}
+              >
+                <Text style={[styles.assigneeChipText, active && styles.assigneeChipTextActive]}>{contact.displayName}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+        <Text style={styles.modalFieldLabel}>Due date and time</Text>
+        <View style={styles.dateTimeGrid}>
+          <View style={styles.dateTimeInputWrap}>
+            <Ionicons color={colors.muted} name="calendar-outline" size={17} />
+            <TextInput
+              {...(Platform.OS === "web" ? ({ type: "date" } as Record<string, unknown>) : {})}
+              onChangeText={(date) => setDueParts((current) => ({ ...current, date }))}
+              placeholder="YYYY-MM-DD"
+              placeholderTextColor={colors.faint}
+              style={styles.dateTimeInput}
+              value={dueParts.date}
+            />
+          </View>
+          <View style={styles.dateTimeInputWrap}>
+            <Ionicons color={colors.muted} name="time-outline" size={17} />
+            <TextInput
+              onChangeText={(time) => setDueParts((current) => ({ ...current, time }))}
+              placeholder="6:00 PM"
+              placeholderTextColor={colors.faint}
+              style={styles.dateTimeInput}
+              value={dueParts.time}
+            />
+          </View>
+        </View>
+        <View style={styles.dateTimeQuickRow}>
+          <Pressable
+            onPress={() => setDueParts(defaultDueDateParts())}
+            style={({ pressed }) => [styles.dateTimeChip, pressed && styles.pressablePressed]}
+          >
+            <Text style={styles.dateTimeChipText}>Today 6 PM</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              const tomorrow = new Date();
+              tomorrow.setDate(tomorrow.getDate() + 1);
+              tomorrow.setHours(18, 0, 0, 0);
+              const yyyy = String(tomorrow.getFullYear());
+              const mm = String(tomorrow.getMonth() + 1).padStart(2, "0");
+              const dd = String(tomorrow.getDate()).padStart(2, "0");
+              setDueParts({ date: `${yyyy}-${mm}-${dd}`, time: "6:00 PM" });
+            }}
+            style={({ pressed }) => [styles.dateTimeChip, pressed && styles.pressablePressed]}
+          >
+            <Text style={styles.dateTimeChipText}>Tomorrow 6 PM</Text>
+          </Pressable>
+        </View>
+        <TextInput
+          multiline
+          onChangeText={setDescription}
+          placeholder="Description"
+          placeholderTextColor={colors.faint}
+          style={[styles.modalInput, styles.statusInput]}
+          value={description}
+        />
+        <Text style={styles.modalFieldLabel}>Extra thread members</Text>
+        <ContactPicker
+          contacts={contacts.filter((contact) => contact.id !== assigneeId)}
+          maxHeight={extraMembersMaxHeight}
+          selected={members}
+          toggle={toggleMember}
+        />
       </ScrollView>
-      <Text style={styles.modalFieldLabel}>Due date and time</Text>
-      <View style={styles.dateTimeGrid}>
-        <View style={styles.dateTimeInputWrap}>
-          <Ionicons color={colors.muted} name="calendar-outline" size={17} />
-          <TextInput
-            {...(Platform.OS === "web" ? ({ type: "date" } as Record<string, unknown>) : {})}
-            onChangeText={(date) => setDueParts((current) => ({ ...current, date }))}
-            placeholder="YYYY-MM-DD"
-            placeholderTextColor={colors.faint}
-            style={styles.dateTimeInput}
-            value={dueParts.date}
-          />
-        </View>
-        <View style={styles.dateTimeInputWrap}>
-          <Ionicons color={colors.muted} name="time-outline" size={17} />
-          <TextInput
-            onChangeText={(time) => setDueParts((current) => ({ ...current, time }))}
-            placeholder="6:00 PM"
-            placeholderTextColor={colors.faint}
-            style={styles.dateTimeInput}
-            value={dueParts.time}
-          />
-        </View>
-      </View>
-      <View style={styles.dateTimeQuickRow}>
-        <Pressable
-          onPress={() => setDueParts(defaultDueDateParts())}
-          style={({ pressed }) => [styles.dateTimeChip, pressed && styles.pressablePressed]}
-        >
-          <Text style={styles.dateTimeChipText}>Today 6 PM</Text>
-        </Pressable>
-        <Pressable
-          onPress={() => {
-            const tomorrow = new Date();
-            tomorrow.setDate(tomorrow.getDate() + 1);
-            tomorrow.setHours(18, 0, 0, 0);
-            const yyyy = String(tomorrow.getFullYear());
-            const mm = String(tomorrow.getMonth() + 1).padStart(2, "0");
-            const dd = String(tomorrow.getDate()).padStart(2, "0");
-            setDueParts({ date: `${yyyy}-${mm}-${dd}`, time: "6:00 PM" });
-          }}
-          style={({ pressed }) => [styles.dateTimeChip, pressed && styles.pressablePressed]}
-        >
-          <Text style={styles.dateTimeChipText}>Tomorrow 6 PM</Text>
-        </Pressable>
-      </View>
-      <TextInput
-        multiline
-        onChangeText={setDescription}
-        placeholder="Description"
-        placeholderTextColor={colors.faint}
-        style={[styles.modalInput, styles.statusInput]}
-        value={description}
-      />
-      <Text style={styles.modalFieldLabel}>Extra thread members</Text>
-      <ContactPicker contacts={contacts.filter((contact) => contact.id !== assigneeId)} selected={members} toggle={toggleMember} />
       <ModalActions onCancel={onClose} onSubmit={submit} submitLabel="Create" disabled={!title.trim() || !assigneeId} />
     </KeyboardAwareModal>
   );
@@ -8107,16 +8122,18 @@ function CreateTaskThreadSubtaskModal({
 
 function ContactPicker({
   contacts,
+  maxHeight,
   selected,
   toggle,
 }: {
   contacts: BackendProfile[];
+  maxHeight?: number;
   selected: string[];
   toggle: (id: string) => void;
 }) {
   const { themeColors } = useAppTheme();
   return (
-    <ScrollView style={styles.modalList}>
+    <ScrollView keyboardShouldPersistTaps="handled" style={[styles.modalList, maxHeight ? { maxHeight } : null]}>
       {contacts.length ? contacts.map((contact) => (
         <Pressable
           key={contact.id}
@@ -8227,11 +8244,15 @@ function MessageActionsModal({
     Math.max(viewportMargin, width - menuWidth - viewportMargin),
   );
   const copyMessage = () => {
-    if (!message?.body) return;
-    if (Platform.OS === "web" && typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      void navigator.clipboard.writeText(message.body).catch(() => undefined);
-    }
-    onClose();
+    const copyText = messagePreviewText(message).trim();
+    if (!copyText) return;
+    void Clipboard.setStringAsync(copyText)
+      .catch(async () => {
+        if (Platform.OS === "web" && typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(copyText);
+        }
+      })
+      .finally(onClose);
   };
   const actions: Array<{
     icon: keyof typeof Ionicons.glyphMap;
@@ -10488,6 +10509,8 @@ const styles = StyleSheet.create({
   assigneeChipTextActive: { color: "#FFFFFF" },
   newContactForm: { gap: 10 },
   statusInput: { minHeight: 130, textAlignVertical: "top", paddingTop: 12 },
+  subtaskModalScroll: { flexShrink: 1 },
+  subtaskModalContent: { gap: 12, paddingBottom: 4 },
   modalList: { maxHeight: 430, minHeight: 120, flexShrink: 1 },
   modalRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 8, paddingVertical: 10, borderRadius: 14 },
   memberRowDisabled: { opacity: 0.72 },

@@ -486,3 +486,15 @@ fetch failed StorageUnknownError: fetch failed
     }
   }
 }
+TypeError: fetch failed {
+  message: 'TypeError: fetch failed',
+  details: 'TypeError: fetch failed\n' +
+    '\n' +
+    'Caused by: ConnectTimeoutError: Connect Timeout Error (attempted addresses: 172.64.149.246:443, timeout: 10000ms) (UND_ERR_CONNECT_TIMEOUT)\n' +
+    'ConnectTimeoutError: Connect Timeout Error (attempted addresses: 172.64.149.246:443, timeout: 10000ms)\n' +
+    '    at onConnectTimeout (node:internal/deps/undici/undici:2602:28)\n' +
+    '    at Immediate._onImmediate (node:internal/deps/undici/undici:2568:35)\n' +
+    '    at process.processImmediate (node:internal/timers:483:21)',
+  hint: '',
+  code: ''
+}
