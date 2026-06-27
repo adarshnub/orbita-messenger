@@ -12,7 +12,8 @@ import { supabase } from "./supabase";
 
 const rawOrbitaApiUrl = process.env.EXPO_PUBLIC_ORBITA_API_URL?.replace(/\/$/, "");
 const orbitaApiUrl = resolveOrbitaApiUrl(rawOrbitaApiUrl);
-const API_TIMEOUT_MS = 12_000;
+const API_TIMEOUT_MS = 25_000;
+const MEDIA_UPLOAD_TIMEOUT_MS = 60_000;
 
 type ApiAction =
   | "bootstrap"
@@ -127,7 +128,7 @@ async function uploadBackendMedia<T>(form: FormData, token: string, endpoint = "
 
 async function backendUploadRequest(path: string, token: string, form: FormData) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS);
   let response: Response;
   try {
     response = await fetch(`${orbitaApiUrl}${path}`, {

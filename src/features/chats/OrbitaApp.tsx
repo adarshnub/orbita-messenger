@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { FinishMode, PlayerState, UpdateFrequency, Waveform, type IWaveformRef } from "@simform_solutions/react-native-audio-waveform";
 import { Link } from "expo-router";
 import {
   RecordingPresets,
@@ -29,6 +30,7 @@ import {
   LayoutAnimation,
   Linking,
   Modal,
+  NativeModules,
   PanResponder,
   Platform,
   Pressable,
@@ -149,7 +151,7 @@ type ForwardTarget = {
   title: string;
   subtitle: string;
 };
-type VoiceRecordingBackend = "expo" | "native";
+type VoiceRecordingBackend = "expo" | "native" | "simform";
 type ChatListContact = BackendProfile & { existingConversationId?: string };
 type UnsavedPeer = {
   defaultName: string;
@@ -158,7 +160,9 @@ type UnsavedPeer = {
 type AdminSectionId = "overview" | "employees" | "departments" | "tasks" | "chats" | "reports" | "settings";
 
 const KEYBOARD_COMPOSER_GAP = 18;
-const KEYBOARD_SAFETY_GAP = Platform.OS === "android" ? 34 : 14;
+const KEYBOARD_SAFETY_GAP = Platform.OS === "android" ? 8 : 10;
+const COMPOSER_INPUT_MIN_HEIGHT = 44;
+const COMPOSER_INPUT_MAX_HEIGHT = 118;
 const EDGE_SWIPE_WIDTH = 34;
 const EDGE_SWIPE_TRIGGER = 72;
 const EDGE_SWIPE_VERTICAL_LIMIT = 64;
@@ -768,16 +772,12 @@ function searchableText(values: Array<string | null | undefined>) {
   return values.filter(Boolean).join(" ").trim().toLowerCase();
 }
 
-function keyboardClearance(height?: number, bottomInset = 0, keyboardTop?: number, windowHeight?: number) {
-  const keyboardHeight = Math.max(0, Math.round(height ?? 0));
+function keyboardClearance(_height?: number, bottomInset = 0, keyboardTop?: number, windowHeight?: number) {
   const hasKeyboardTop = typeof keyboardTop === "number" && keyboardTop > 0 && typeof windowHeight === "number";
-  const overlap =
-    hasKeyboardTop
-      ? Math.max(0, Math.round(windowHeight - keyboardTop))
-      : 0;
-  const neededClearance = hasKeyboardTop ? overlap : keyboardHeight;
-  if (!neededClearance) return 0;
-  return neededClearance + bottomInset + KEYBOARD_SAFETY_GAP;
+  if (!hasKeyboardTop) return 0;
+  const overlap = Math.max(0, Math.round(windowHeight - keyboardTop));
+  if (overlap < 80) return 0;
+  return Math.max(0, overlap - bottomInset + KEYBOARD_SAFETY_GAP);
 }
 
 function useKeyboardClearance(enabled = true) {
@@ -3553,6 +3553,15 @@ function MessengerShell({ session }: { session: Session }) {
     let webAttachmentFile: File | undefined;
     try {
       if (attachment) {
+        if (__DEV__) {
+          console.info("[orbita-send] uploading attachment", {
+            conversationId: selected.id,
+            kind: attachment.kind,
+            mimeType: attachment.mimeType,
+            durationMs: attachment.durationMs ?? null,
+            sizeBytes: attachment.sizeBytes ?? null,
+          });
+        }
         if (Platform.OS === "web") {
           const blob = await (await fetch(attachment.uri)).blob();
           webAttachmentFile = new File([blob], attachment.name, { type: attachment.mimeType });
@@ -3571,8 +3580,23 @@ function MessengerShell({ session }: { session: Session }) {
                 },
         });
         attachmentId = uploadResult.attachment.id;
+        if (__DEV__) {
+          console.info("[orbita-send] attachment uploaded", {
+            conversationId: selected.id,
+            kind: attachment.kind,
+            attachmentId,
+          });
+        }
       }
 
+      if (__DEV__) {
+        console.info("[orbita-send] sending message", {
+          conversationId: selected.id,
+          kind: resolvedKind,
+          hasAttachment: Boolean(attachmentId),
+          clientMessageId: tempId,
+        });
+      }
       const result = await messengerApi.sendMessage({
         conversationId: selected.id,
         kind: resolvedKind,
@@ -3584,6 +3608,13 @@ function MessengerShell({ session }: { session: Session }) {
         taskManagerMentioned,
         ...((modelText && modelText !== text) || taskManagerMentioned ? { taskManagerText: modelText || text } : {}),
       });
+      if (__DEV__) {
+        console.info("[orbita-send] message accepted", {
+          conversationId: selected.id,
+          messageId: result.message.id,
+          taskManagerForwarded: result.taskManagerForward?.forwarded ?? null,
+        });
+      }
       const mergedMessage = mergeAttachmentWaveforms(result.message, optimisticMessage);
       setSelectedMessages((current) => {
         const withoutTemp = current.filter(
@@ -3614,7 +3645,39 @@ function MessengerShell({ session }: { session: Session }) {
       scheduleBootstrapRefresh();
       scheduleMessageRefresh(selected.id);
     } catch (nextError) {
-      const shouldQueue = isNetworkSendError(nextError);
+      if (__DEV__) {
+        console.warn("[orbita-send] message failed", {
+          conversationId: selected.id,
+          kind: resolvedKind,
+          hasAttachment: Boolean(attachment),
+          error: nextError instanceof Error ? nextError.message : String(nextError),
+        });
+      }
+      const shouldQueue = Platform.OS === "web" && isNetworkSendError(nextError);
+      const failedAttachmentKind = attachment?.kind ?? null;
+      const mayHaveReachedBackend =
+        Platform.OS !== "web" &&
+        (failedAttachmentKind === "voice" || failedAttachmentKind === "audio") &&
+        isNetworkSendError(nextError);
+      if (mayHaveReachedBackend) {
+        const pendingServerMessage = { ...optimisticMessage, localState: undefined };
+        void upsertCachedMessage(profile.id, pendingServerMessage).catch(() => undefined);
+        setSelectedMessages((current) => {
+          const next = current.map((message) =>
+            message.id === tempId ? pendingServerMessage : message,
+          );
+          messagesByConversationRef.current = {
+            ...messagesByConversationRef.current,
+            [selected.id]: next,
+          };
+          return next;
+        });
+        updateConversationPreview(pendingServerMessage);
+        scheduleMessageRefresh(selected.id);
+        scheduleBootstrapRefresh();
+        setError("Voice note is still syncing. Pull to refresh if it does not update shortly.");
+        return;
+      }
       if (shouldQueue) {
         let queuedAttachment: QueuedOutgoingMessage["attachment"] = null;
         if (attachment) {
@@ -3664,8 +3727,9 @@ function MessengerShell({ session }: { session: Session }) {
         setError("Message queued. It will send when Orbita is back online.");
         return;
       }
-      if (attachment) setComposerAttachment(attachment);
-      if (replyTarget) setReplyingToMessage(replyTarget);
+      const canRestoreAttachmentDraft = attachment && attachment.kind !== "voice" && attachment.kind !== "audio";
+      if (canRestoreAttachmentDraft) setComposerAttachment(attachment);
+      if (replyTarget && canRestoreAttachmentDraft) setReplyingToMessage(replyTarget);
       void markCachedMessageFailed(profile.id, optimisticMessage).catch(() => undefined);
       setSelectedMessages((current) => {
         const next = current.map((message) =>
@@ -5787,11 +5851,15 @@ function ChatPane({
   const [voiceWaveSamples, setVoiceWaveSamples] = useState<number[]>(() => Array(VOICE_WAVEFORM_BARS).fill(0.14));
   const stopWebWaveAnalyserRef = useRef<(() => void) | null>(null);
   const voiceRecordingBackendRef = useRef<VoiceRecordingBackend | null>(null);
+  const simformRecorderRef = useRef<IWaveformRef>(null);
   const nativeWaveformPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const nativeStartWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [quickPromptOpen, setQuickPromptOpen] = useState(false);
   const [subtaskPanelOpen, setSubtaskPanelOpen] = useState(false);
   const [membersPanelOpen, setMembersPanelOpen] = useState(false);
+  const [composerInputHeight, setComposerInputHeight] = useState(COMPOSER_INPUT_MIN_HEIGHT);
+  const [simformRecorderStartPending, setSimformRecorderStartPending] = useState(false);
+  const [simformElapsedMs, setSimformElapsedMs] = useState(0);
   const canTriggerOlderRef = useRef(false);
   const contentHeightRef = useRef(0);
   const isNearLatestRef = useRef(true);
@@ -5809,7 +5877,8 @@ function ChatPane({
   const mentionQuery = isTaskThreadConversation ? orbitaMentionQuery(draft) : null;
   const showOrbitaMentionSuggestion = mentionQuery !== null;
   const showComposerMentionHighlight = isTaskThreadConversation && hasOrbitaMention(draft);
-  const composerKeyboardGap = keyboardInset ? KEYBOARD_COMPOSER_GAP : Math.max(bottomInset, KEYBOARD_COMPOSER_GAP);
+  const composerKeyboardGap = Math.max(bottomInset, KEYBOARD_COMPOSER_GAP);
+  const compactHeader = !isWide && width < 390;
   const isArchivedTaskThread = isCompletedTaskThreadStatus(taskThread?.status);
   const archivedTaskTitle = isArchivedTaskThread ? taskThreadArchiveTitle(taskThread?.status) : "";
   const archivedTaskLabel = isArchivedTaskThread ? taskThreadStatusLabel(taskThread?.status) : "";
@@ -5950,6 +6019,10 @@ function ChatPane({
   useEffect(() => {
     if (keyboardInset) scrollToLatest(false);
   }, [keyboardInset, scrollToLatest]);
+
+  useEffect(() => {
+    if (!draft) setComposerInputHeight(COMPOSER_INPUT_MIN_HEIGHT);
+  }, [draft]);
 
   useEffect(() => {
     return () => {
@@ -6270,8 +6343,15 @@ function ChatPane({
   }
 
   const composerCanSend = Boolean(draft.trim() || attachment);
+  const composerInputScrollEnabled = composerInputHeight >= COMPOSER_INPUT_MAX_HEIGHT - 1;
   const voiceElapsedMs = voiceRecordingBackendRef.current === "expo" ? recorderState.durationMillis : voiceNativeDurationMs;
   const voiceElapsedLabel = formatDurationMs(voiceElapsedMs);
+
+  const handleComposerInputContentSizeChange = useCallback((event: { nativeEvent: { contentSize: { height: number } } }) => {
+    const measuredHeight = Math.ceil(event.nativeEvent.contentSize.height);
+    const normalizedHeight = clamp(measuredHeight, COMPOSER_INPUT_MIN_HEIGHT, COMPOSER_INPUT_MAX_HEIGHT);
+    setComposerInputHeight((current) => (Math.abs(current - normalizedHeight) > 1 ? normalizedHeight : current));
+  }, []);
 
   const edgeSwipeResponder = useMemo(
     () =>
@@ -6297,7 +6377,7 @@ function ChatPane({
     [isWide, onBack, width],
   );
 
-  return (
+  const chatPane = (
     <View
       {...(!isWide ? edgeSwipeResponder.panHandlers : {})}
       style={[
@@ -6322,13 +6402,13 @@ function ChatPane({
           {!isWide ? <IconButton icon="arrow-back" label="Back to chats" onPress={onBack} /> : null}
           <Avatar avatarUrl={conversation.avatarUrl} isBot={isAgentConversation} name={conversation.title} />
           <View style={styles.chatRowBody}>
-            <Text numberOfLines={1} style={styles.chatHeaderTitle}>{conversation.title}</Text>
+            <Text numberOfLines={1} style={[styles.chatHeaderTitle, compactHeader && styles.chatHeaderTitleCompact]}>{conversation.title}</Text>
             <Pressable
               disabled={Boolean(agentThinking || typingText) || conversation.kind === "direct"}
               onPress={() => setMembersPanelOpen(true)}
               style={({ pressed }) => [styles.chatHeaderSubButton, pressed && styles.pressablePressed]}
             >
-              <Text style={[styles.chatHeaderSub, Boolean(typingText) && styles.chatHeaderSubTyping]}>
+              <Text numberOfLines={1} style={[styles.chatHeaderSub, compactHeader && styles.chatHeaderSubCompact, Boolean(typingText) && styles.chatHeaderSubTyping]}>
                 {agentThinking
                   ? `${conversation.title.split(" ")[0] || "Agent"} is thinking...`
                   : typingText
@@ -6343,10 +6423,10 @@ function ChatPane({
             <Pressable
               accessibilityLabel="Open subtasks"
               onPress={() => setSubtaskPanelOpen((value) => !value)}
-              style={({ pressed }) => [styles.subtasksHeaderPill, pressed && styles.pressablePressed]}
+              style={({ pressed }) => [styles.subtasksHeaderPill, compactHeader && styles.subtasksHeaderPillCompact, pressed && styles.pressablePressed]}
             >
-              <Ionicons color="#0B7F68" name="git-branch-outline" size={16} />
-              <Text style={styles.subtasksHeaderPillText}>
+              <Ionicons color="#0B7F68" name="git-branch-outline" size={compactHeader ? 14 : 16} />
+              <Text numberOfLines={1} style={[styles.subtasksHeaderPillText, compactHeader && styles.subtasksHeaderPillTextCompact]}>
                 {resolvedSubtasks}/{subtaskConversations.length} subtasks
               </Text>
             </Pressable>
@@ -6355,7 +6435,6 @@ function ChatPane({
             <IconButton icon="person-add-outline" label="Add members" onPress={onAddMembers} />
           ) : null}
           {unsavedPeer ? <IconButton icon="person-add-outline" label="Save contact" onPress={onSaveContact} /> : null}
-          <IconButton icon="call-outline" label="Voice call" />
         </View>
       </View>
       {isArchivedTaskThread ? (
@@ -6697,7 +6776,14 @@ function ChatPane({
               <View style={[styles.composerInputShell, isDarkTheme && styles.composerInputShellDark, attachment && styles.composerInputWithAttachment]}>
                 {showComposerMentionHighlight ? (
                   <View pointerEvents="none" style={styles.composerInputOverlay}>
-                    <Text style={[styles.composerInputOverlayText, isDarkTheme && styles.composerInputOverlayTextDark]}>
+                    <Text
+                      style={[
+                        styles.composerInputOverlayText,
+                        isDarkTheme && styles.composerInputOverlayTextDark,
+                        composerInputHeight > COMPOSER_INPUT_MIN_HEIGHT && styles.composerInputMultiline,
+                        { height: composerInputHeight },
+                      ]}
+                    >
                       {renderComposerMentionText(draft, isDarkTheme)}
                     </Text>
                   </View>
@@ -6705,7 +6791,8 @@ function ChatPane({
                 <TextInput
                   blurOnSubmit={false}
                   cursorColor={isDarkTheme ? "#FFFFFF" : themeColors.primaryDark}
-                  scrollEnabled={false}
+                  onContentSizeChange={handleComposerInputContentSizeChange}
+                  scrollEnabled={composerInputScrollEnabled}
                   selectionColor={isDarkTheme ? themeColors.accent : themeColors.primaryDark}
                   multiline
                   onChangeText={setDraft}
@@ -6729,7 +6816,8 @@ function ChatPane({
                     styles.composerInputField,
                     isDarkTheme && styles.composerInputDark,
                     attachment && styles.composerInputWithAttachment,
-                    showComposerMentionHighlight && styles.composerInputTransparentText,
+                    composerInputHeight > COMPOSER_INPUT_MIN_HEIGHT && styles.composerInputMultiline,
+                    { height: composerInputHeight },
                   ]}
                   value={draft}
                 />
@@ -6773,6 +6861,20 @@ function ChatPane({
       </View>
     </View>
   );
+
+  if (!isWide && Platform.OS !== "web") {
+    return (
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={0}
+        style={styles.chatKeyboardAvoider}
+      >
+        {chatPane}
+      </KeyboardAvoidingView>
+    );
+  }
+
+  return chatPane;
 }
 
 function ComposerReplyPreview({
@@ -6965,7 +7067,140 @@ function MessageAttachmentCard({
   );
 }
 
+function canUseNativeAudioWaveform() {
+  return Platform.OS !== "web" && Boolean(NativeModules.AudioWaveform);
+}
+
+function normalizeNativeDurationMs(value: number | null | undefined) {
+  if (!Number.isFinite(value) || !value || value <= 0) return null;
+  return value < 1000 ? value * 1000 : value;
+}
+
+function normalizeLocalAudioUri(uri: string) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(uri)) return uri;
+  return `file://${uri}`;
+}
+
+function simformVoiceMimeType(uri: string) {
+  const normalized = uri.toLowerCase();
+  if (normalized.endsWith(".m4a")) return "audio/m4a";
+  if (normalized.endsWith(".mp4")) return "audio/mp4";
+  if (normalized.endsWith(".3gp")) return "audio/3gpp";
+  if (normalized.endsWith(".webm")) return "audio/webm";
+  return Platform.OS === "ios" ? "audio/m4a" : "audio/mp4";
+}
+
+function parseSimformStopResult(value: unknown): { uri: string; durationMs: number | null } | null {
+  if (Array.isArray(value)) {
+    const uri = typeof value[0] === "string" ? value[0] : null;
+    const durationValue = typeof value[1] === "number" ? value[1] : Number(value[1]);
+    return uri ? { uri: normalizeLocalAudioUri(uri), durationMs: normalizeNativeDurationMs(durationValue) } : null;
+  }
+  if (typeof value === "string" && value.trim()) {
+    return { uri: normalizeLocalAudioUri(value), durationMs: null };
+  }
+  return null;
+}
+
 function AudioAttachmentCard({
+  attachment,
+  mine,
+}: {
+  attachment: BackendAttachment;
+  mine: boolean;
+}) {
+  if (canUseNativeAudioWaveform()) {
+    return <NativeWaveformAudioAttachmentCard attachment={attachment} mine={mine} />;
+  }
+  return <FallbackAudioAttachmentCard attachment={attachment} mine={mine} />;
+}
+
+function NativeWaveformAudioAttachmentCard({
+  attachment,
+  mine,
+}: {
+  attachment: BackendAttachment;
+  mine: boolean;
+}) {
+  const { isDarkTheme, themeColors } = useAppTheme();
+  const waveformRef = useRef<IWaveformRef>(null);
+  const [playerState, setPlayerState] = useState<PlayerState>(PlayerState.stopped);
+  const [nativeDurationMs, setNativeDurationMs] = useState<number | null>(() => normalizeNativeDurationMs(attachment.durationMs));
+  const [fallback, setFallback] = useState(false);
+  const [loadingWaveform, setLoadingWaveform] = useState(false);
+  const isPlaying = playerState === PlayerState.playing;
+  const durationLabel = formatDurationMs(nativeDurationMs ?? attachment.durationMs);
+
+  useEffect(() => {
+    return () => {
+      void waveformRef.current?.stopPlayer?.().catch(() => undefined);
+    };
+  }, []);
+
+  if (fallback) return <FallbackAudioAttachmentCard attachment={attachment} mine={mine} />;
+
+  async function togglePlayback() {
+    try {
+      if (playerState === PlayerState.playing) {
+        await waveformRef.current?.pausePlayer();
+        return;
+      }
+      if (playerState === PlayerState.paused) {
+        await waveformRef.current?.resumePlayer({ finishMode: FinishMode.stop });
+        return;
+      }
+      await waveformRef.current?.startPlayer({ finishMode: FinishMode.stop });
+    } catch {
+      setFallback(true);
+    }
+  }
+
+  return (
+    <View style={[styles.audioAttachment, mine && (isDarkTheme ? styles.audioAttachmentMineDark : styles.audioAttachmentMine)]}>
+      <Pressable
+        disabled={loadingWaveform}
+        onPress={() => {
+          void togglePlayback();
+        }}
+        style={({ pressed }) => [
+          styles.audioPlayButton,
+          mine && (isDarkTheme ? styles.audioPlayButtonMineDark : styles.audioPlayButtonMine),
+          pressed && styles.pressablePressed,
+          loadingWaveform && styles.buttonDisabled,
+        ]}
+      >
+        {loadingWaveform ? (
+          <ActivityIndicator color={mine ? (isDarkTheme ? "#E9EDEF" : themeColors.primaryDark) : "#FFFFFF"} size="small" />
+        ) : (
+          <Ionicons color={mine ? (isDarkTheme ? "#E9EDEF" : themeColors.primaryDark) : "#FFFFFF"} name={isPlaying ? "pause" : "play"} size={17} />
+        )}
+      </Pressable>
+      <View style={styles.chatRowBody}>
+        <Waveform
+          ref={waveformRef}
+          mode="static"
+          path={attachment.url}
+          candleSpace={2}
+          candleWidth={4}
+          candleHeightScale={5}
+          containerStyle={styles.nativeAudioWaveform}
+          waveColor={mine ? (isDarkTheme ? "rgba(233,237,239,0.42)" : "rgba(17,27,33,0.34)") : "#D1D7DB"}
+          scrubColor={mine ? (isDarkTheme ? "#E9EDEF" : themeColors.primaryDark) : themeColors.primaryDark}
+          onChangeWaveformLoadState={setLoadingWaveform}
+          onCurrentProgressChange={(_progress, songDuration) => {
+            const normalizedDuration = normalizeNativeDurationMs(songDuration);
+            if (normalizedDuration) setNativeDurationMs(normalizedDuration);
+          }}
+          onError={() => setFallback(true)}
+          onPlayerStateChange={setPlayerState}
+        />
+        <Text style={[styles.audioDuration, mine && (isDarkTheme ? styles.audioDurationMineDark : styles.audioDurationMine)]}>{durationLabel}</Text>
+      </View>
+    </View>
+  );
+}
+
+function FallbackAudioAttachmentCard({
   attachment,
   mine,
 }: {
@@ -9292,6 +9527,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#0B141A",
     shadowColor: "#000000",
   },
+  chatKeyboardAvoider: { flex: 1, minWidth: 0 },
   chatPaneMobile: { width: "100%", maxWidth: "100%", borderRadius: 0, borderWidth: 0 },
   chatHeader: {
     minHeight: 74,
@@ -9305,21 +9541,25 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   chatHeaderDark: { backgroundColor: "#202C33", borderBottomColor: "rgba(6,207,156,0.12)" },
-  chatHeaderMain: { flex: 1, minWidth: 0 },
-  chatHeaderActions: { flexShrink: 0 },
+  chatHeaderMain: { flex: 1, minWidth: 0, gap: 8 },
+  chatHeaderActions: { flexShrink: 0, gap: 7 },
   subtasksHeaderPill: {
-    minHeight: 40,
+    minHeight: 38,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
+    gap: 5,
+    paddingHorizontal: 10,
     borderRadius: 20,
     backgroundColor: "rgba(255,255,255,0.86)",
   },
+  subtasksHeaderPillCompact: { minHeight: 34, paddingHorizontal: 8, gap: 4 },
   subtasksHeaderPillText: { color: "#0B7F68", fontSize: 12, fontWeight: "800" },
-  chatHeaderTitle: { color: "#FFFFFF", fontSize: 17, fontWeight: "700" },
+  subtasksHeaderPillTextCompact: { fontSize: 11 },
+  chatHeaderTitle: { color: "#FFFFFF", fontSize: 16, fontWeight: "700" },
+  chatHeaderTitleCompact: { fontSize: 15 },
   chatHeaderSubButton: { alignSelf: "flex-start", borderRadius: 6 },
   chatHeaderSub: { color: "rgba(255,255,255,0.76)", fontSize: 12 },
+  chatHeaderSubCompact: { fontSize: 11 },
   chatHeaderSubTyping: { color: "#FFFFFF", fontWeight: "600" },
   archivedTaskBanner: {
     minHeight: 52,
@@ -9617,6 +9857,7 @@ const styles = StyleSheet.create({
   audioWaveMissing: { flex: 1, height: 3, borderRadius: 999, backgroundColor: "#D1D7DB" },
   audioWaveMissingMine: { backgroundColor: "rgba(17,27,33,0.28)" },
   audioWaveMissingDark: { backgroundColor: "rgba(233,237,239,0.32)" },
+  nativeAudioWaveform: { height: 32, width: "100%" },
   audioDuration: { color: colors.muted, fontSize: 11, marginTop: 4 },
   audioDurationMine: { color: colors.muted },
   audioDurationMineDark: { color: "rgba(233,237,239,0.78)" },
@@ -9823,8 +10064,8 @@ const styles = StyleSheet.create({
   composerReplyText: { color: colors.muted, fontSize: 12, lineHeight: 17 },
   composerReplyTextDark: { color: "rgba(255,255,255,0.66)" },
   composerInputShell: {
-    minHeight: 44,
-    maxHeight: 110,
+    minHeight: COMPOSER_INPUT_MIN_HEIGHT,
+    maxHeight: COMPOSER_INPUT_MAX_HEIGHT,
     borderRadius: 22,
     backgroundColor: "#F0F2F5",
     overflow: "hidden",
@@ -9832,9 +10073,9 @@ const styles = StyleSheet.create({
   },
   composerInputShellDark: { backgroundColor: "rgba(255,255,255,0.08)" },
   composerInput: {
-    height: 44,
+    height: COMPOSER_INPUT_MIN_HEIGHT,
     minHeight: 44,
-    maxHeight: 110,
+    maxHeight: COMPOSER_INPUT_MAX_HEIGHT,
     paddingHorizontal: 16,
     paddingTop: Platform.select({ android: 0, default: 11 }),
     paddingBottom: Platform.select({ android: 0, default: 11 }),
@@ -9847,34 +10088,39 @@ const styles = StyleSheet.create({
   },
   composerInputDark: { color: "#FFFFFF", backgroundColor: "transparent" },
   composerInputField: { position: "relative", zIndex: 2 },
+  composerInputMultiline: {
+    textAlignVertical: "top",
+    paddingTop: 11,
+    paddingBottom: 11,
+  },
   composerInputOverlay: {
     ...StyleSheet.absoluteFillObject,
     zIndex: 1,
   },
   composerInputOverlayText: {
-    height: 44,
+    height: COMPOSER_INPUT_MIN_HEIGHT,
     minHeight: 44,
-    maxHeight: 110,
+    maxHeight: COMPOSER_INPUT_MAX_HEIGHT,
     paddingHorizontal: 16,
     paddingTop: Platform.select({ android: 0, default: 11 }),
     paddingBottom: Platform.select({ android: 0, default: 11 }),
-    color: colors.ink,
+    color: "transparent",
     fontSize: 16,
     lineHeight: 22,
     textAlignVertical: "center",
     includeFontPadding: false,
   },
-  composerInputOverlayTextDark: { color: "#FFFFFF" },
+  composerInputOverlayTextDark: { color: "transparent" },
   composerInputTransparentText: { color: "transparent" },
   composerInputMention: {
     borderRadius: 7,
     backgroundColor: "rgba(0, 168, 132, 0.18)",
-    color: colors.primaryDark,
+    color: "transparent",
     fontWeight: "800",
   },
   composerInputMentionDark: {
     backgroundColor: "rgba(6, 207, 156, 0.18)",
-    color: colors.accent,
+    color: "transparent",
   },
   composerInputWithAttachment: { minHeight: 44 },
   composerAttachment: {

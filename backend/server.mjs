@@ -33,6 +33,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 });
 
 const TASK_MANAGER_ORBITA_CHANNEL = "orbita";
+const TASK_MANAGER_WEBHOOK_TIMEOUT_MS = 8_000;
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
 const PUSH_DEBUG = process.env.ORBITA_PUSH_DEBUG === "1";
 const TASK_ACK_SYSTEM_KIND = "task_acknowledgement";
@@ -480,6 +481,33 @@ function normalizeWaveformSamples(value, maxCount = 64) {
   return result.length ? result : null;
 }
 
+async function postTaskmanagerWebhook(webhookUrl, raw, secret) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TASK_MANAGER_WEBHOOK_TIMEOUT_MS);
+  try {
+    return await fetch(webhookUrl, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "x-orbita-signature": `sha256=${hmacSha256(raw, secret)}`,
+      },
+      body: raw,
+    });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      return {
+        ok: true,
+        status: 202,
+        text: async () => JSON.stringify({ accepted: true, pending: true }),
+      };
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function attachmentLabel(messageKind, attachment) {
   if (!attachment) return "";
   if (messageKind === "voice" || messageKind === "audio") return "Voice note";
@@ -888,6 +916,17 @@ async function uploadMediaAttachment(userId, form) {
   const bucket = storageBucketForMessageKind(kind);
   const objectPath = `${userId}/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${filename}`;
 
+  console.info("[orbita-media-upload] received", {
+    userId,
+    requestedKind,
+    kind,
+    filename,
+    mimeType,
+    byteLength: buffer.byteLength,
+    durationMs: Number.isFinite(durationMs) ? durationMs : null,
+    waveformSamples: waveformSamples?.length ?? 0,
+  });
+
   const { error: uploadError } = await supabase.storage.from(bucket).upload(objectPath, buffer, {
     contentType: mimeType,
     upsert: false,
@@ -916,6 +955,14 @@ async function uploadMediaAttachment(userId, form) {
     await supabase.storage.from(bucket).remove([objectPath]).catch(() => undefined);
     throw error;
   }
+
+  console.info("[orbita-media-upload] staged", {
+    userId,
+    attachmentId: data.id,
+    kind,
+    bucket,
+    byteLength: buffer.byteLength,
+  });
 
   return {
     attachment: mapAttachment(data, await signedAttachmentUrl(data, 12 * 60 * 60)),
@@ -2532,14 +2579,7 @@ async function forwardTaskmanagerInbound(
       sentAt: message.createdAt ?? new Date().toISOString(),
     });
 
-    const response = await fetch(webhookUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-orbita-signature": `sha256=${hmacSha256(raw, secret)}`,
-      },
-      body: raw,
-    });
+    const response = await postTaskmanagerWebhook(webhookUrl, raw, secret);
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       const reason = `Task Manager Orbita webhook failed: ${response.status} ${text}`;
@@ -2560,7 +2600,8 @@ async function forwardTaskmanagerInbound(
   }
 
   const conversationKind = await loadConversationKind(conversationId);
-  if (conversationKind.kind !== "direct") {
+  const isDirectAgentConversationKind = conversationKind.kind === "direct" || conversationKind.kind === "taskmanager";
+  if (!isDirectAgentConversationKind) {
     console.info("[orbita-taskmanager-forward] skipped non-direct fallback", {
       conversationId,
       kind: conversationKind.kind,
@@ -2667,14 +2708,7 @@ async function forwardTaskmanagerInbound(
     sentAt: message.createdAt ?? new Date().toISOString(),
   });
 
-  const response = await fetch(webhookUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-orbita-signature": `sha256=${hmacSha256(raw, secret)}`,
-    },
-    body: raw,
-  });
+  const response = await postTaskmanagerWebhook(webhookUrl, raw, secret);
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     const reason = `Task Manager Orbita webhook failed: ${response.status} ${text}`;
@@ -3491,24 +3525,53 @@ async function handleAction(user, action, payload, req) {
       ? await loadAttachmentRowsForMessageIds([message.id]).then((map) => map.get(message.id) ?? [])
       : [];
     const mappedMessage = mapMessage(message, attachments);
-    const taskManagerForward = await forwardTaskmanagerInbound(
-      conversationId,
-      user.id,
-      mappedMessage,
-      attachments,
-      taskManagerText,
-      clientPlatform,
-      taskManagerMentioned,
-    ).catch((error) => {
-      const reason = errorMessage(error);
-      console.error(reason, error);
-      return { forwarded: false, reason };
-    });
-    const taskAcknowledgement = await maybeSendTaskAcknowledgementMessage(conversationId, user.id, body).catch((error) => {
-      const reason = errorMessage(error);
-      console.error(reason, error);
-      return { error: reason };
-    });
+    const runTaskmanagerPostSend = async () => {
+      const taskManagerForward = await forwardTaskmanagerInbound(
+        conversationId,
+        user.id,
+        mappedMessage,
+        attachments,
+        taskManagerText,
+        clientPlatform,
+        taskManagerMentioned,
+      ).catch((error) => {
+        const reason = errorMessage(error);
+        console.error(reason, error);
+        return { forwarded: false, reason };
+      });
+      const taskAcknowledgement = await maybeSendTaskAcknowledgementMessage(conversationId, user.id, body).catch((error) => {
+        const reason = errorMessage(error);
+        console.error(reason, error);
+        return { error: reason };
+      });
+      return { taskAcknowledgement, taskManagerForward };
+    };
+
+    if (attachmentRow) {
+      void runTaskmanagerPostSend().then((result) => {
+        console.info("[orbita-send-message] async post-send completed", {
+          conversationId,
+          messageId: mappedMessage.id,
+          kind,
+          taskManagerForwarded: result.taskManagerForward?.forwarded ?? null,
+          taskAcknowledged: Boolean(result.taskAcknowledgement?.message),
+        });
+      }).catch((error) => {
+        console.error("[orbita-send-message] async post-send failed", {
+          conversationId,
+          messageId: mappedMessage.id,
+          kind,
+          error: errorMessage(error),
+        });
+      });
+      return {
+        message: mappedMessage,
+        taskManagerForward: { forwarded: true, pending: true },
+        taskAcknowledgement: { pending: true },
+      };
+    }
+
+    const { taskAcknowledgement, taskManagerForward } = await runTaskmanagerPostSend();
 
     return { message: mappedMessage, taskManagerForward, taskAcknowledgement };
   }
