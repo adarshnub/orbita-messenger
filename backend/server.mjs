@@ -3287,14 +3287,37 @@ async function handleAction(user, action, payload, req) {
     const conversationId = requiredString(payload, "conversationId");
     await getConversation(user.id, conversationId);
     const taskThreadContext = await loadTaskThreadForwardingContext(conversationId, user.id);
-    if (!taskThreadContext || taskThreadContext.skip) {
-      throw new Error(taskThreadContext?.reason || "Only task thread members can list organization members.");
+    let taskmanagerOrgId = taskThreadContext && !taskThreadContext.skip ? taskThreadContext.taskmanagerOrgId : "";
+    if (!taskmanagerOrgId) {
+      const { data: directLink, error: directLinkError } = await supabase
+        .from("taskmanager_agent_links")
+        .select("taskmanager_org_id")
+        .eq("conversation_id", conversationId)
+        .eq("orbita_user_id", user.id)
+        .eq("enabled", true)
+        .maybeSingle();
+      if (directLinkError) throw directLinkError;
+      taskmanagerOrgId = directLink?.taskmanager_org_id ?? "";
+    }
+    if (!taskmanagerOrgId) {
+      const { data: userLink, error: userLinkError } = await supabase
+        .from("taskmanager_agent_links")
+        .select("taskmanager_org_id")
+        .eq("orbita_user_id", user.id)
+        .eq("enabled", true)
+        .limit(1)
+        .maybeSingle();
+      if (userLinkError) throw userLinkError;
+      taskmanagerOrgId = userLink?.taskmanager_org_id ?? "";
+    }
+    if (!taskmanagerOrgId) {
+      throw new Error("This account is not linked to a Task Manager organization.");
     }
 
     const { data: links, error: linkError } = await supabase
       .from("taskmanager_agent_links")
       .select("orbita_user_id")
-      .eq("taskmanager_org_id", taskThreadContext.taskmanagerOrgId)
+      .eq("taskmanager_org_id", taskmanagerOrgId)
       .eq("enabled", true);
     if (linkError) throw linkError;
 

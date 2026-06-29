@@ -274,7 +274,12 @@ const ACCENT_THEMES: Array<{
     darkAccentSoft: "rgba(251,191,36,0.16)",
   },
 ];
-const AGENT_QUICK_PROMPTS: Array<{ id: string; label: string; prompt: string }> = [
+type QuickPrompt = { id: string; label: string; prompt: string };
+type MentionCandidate =
+  | { id: "orbita"; kind: "orbita"; displayName: string; handle: string; subtitle: string }
+  | { id: string; kind: "member"; displayName: string; handle: string; subtitle: string; profile: BackendProfile };
+
+const AGENT_QUICK_PROMPTS: QuickPrompt[] = [
   {
     id: "team_overdue_widget",
     label: "My Team - Overdue Tasks",
@@ -295,6 +300,32 @@ const AGENT_QUICK_PROMPTS: Array<{ id: string; label: string; prompt: string }> 
     label: "Only Overdue Items",
     prompt:
       "List overdue tasks for people reporting to me with due date and overdue duration for each task.",
+  },
+];
+const TASK_THREAD_QUICK_PROMPTS: QuickPrompt[] = [
+  {
+    id: "task_status",
+    label: "Task status",
+    prompt: "@orbita what is the current status of this task?",
+  },
+  {
+    id: "create_subtask",
+    label: "Create subtask",
+    prompt:
+      "@orbita create a subtask under this task. Ask me one question at a time. " +
+      "First ask for the subtask title or name. Then ask who it should be assigned to. " +
+      "Then tell me the default due date is today at 6 PM and ask if I need a different deadline. " +
+      "After collecting those details, create the subtask.",
+  },
+  {
+    id: "summarize_task",
+    label: "Summarize thread",
+    prompt: "@orbita summarize this task thread and list the next action.",
+  },
+  {
+    id: "mark_task_done",
+    label: "Mark done",
+    prompt: "@orbita mark this task as completed.",
   },
 ];
 
@@ -645,6 +676,15 @@ function isAgentProgressMessage(message: Pick<BackendMessage, "attachments" | "b
   );
 }
 
+function isSubtaskCreationConfirmationMessage(message: Pick<BackendMessage, "attachments" | "body">) {
+  if (message.attachments?.length) return false;
+  const normalized = message.body.trim().toLowerCase();
+  return /\bcreated\s+(?:subtask\s+)?task-\d+-\d+\b/i.test(message.body) || (
+    normalized.includes("subtask") &&
+    (normalized.includes("created") || normalized.includes("was created"))
+  );
+}
+
 function userFacingTaskManagerError(reason?: string) {
   const normalized = (reason ?? "").trim().toLowerCase();
   if (normalized.includes("conversation is not linked to task manager")) {
@@ -748,6 +788,10 @@ function hasOrbitaMention(text: string) {
   return /(^|[\s([{"'`])@orbita\b/i.test(text);
 }
 
+function hasAnyMention(text: string) {
+  return /(^|[\s([{"'`])@[a-z0-9_]+\b/i.test(text);
+}
+
 function isTaskConversation(conversation: BackendConversation) {
   return Boolean(conversation.taskThread);
 }
@@ -757,18 +801,26 @@ function shouldExpectTaskManagerAgentReply(conversation: BackendConversation, te
   return !isTaskConversation(conversation) || hasOrbitaMention(text);
 }
 
-function orbitaMentionQuery(text: string) {
+function activeMentionQuery(text: string) {
   const match = text.match(/(?:^|\s)@([a-z0-9_]*)$/i);
   if (!match) return null;
-  const query = match[1] ?? "";
-  return "orbita".startsWith(query.toLowerCase()) ? query : null;
+  return match[1] ?? "";
 }
 
-function insertOrbitaMention(text: string) {
+function insertMentionToken(text: string, handle: string) {
+  const cleanHandle = handle.replace(/^@+/, "");
   if (/(?:^|\s)@[a-z0-9_]*$/i.test(text)) {
-    return text.replace(/(^|\s)@[a-z0-9_]*$/i, (_match, prefix) => `${prefix}@orbita `);
+    return text.replace(/(^|\s)@[a-z0-9_]*$/i, (_match, prefix) => `${prefix}@${cleanHandle} `);
   }
-  return `${text}${text && !/\s$/.test(text) ? " " : ""}@orbita `;
+  return `${text}${text && !/\s$/.test(text) ? " " : ""}@${cleanHandle} `;
+}
+
+function mentionHandleForProfile(profile: BackendProfile) {
+  const namePart = profile.displayName.trim().split(/\s+/)[0] ?? "";
+  const normalizedName = namePart.replace(/[^a-z0-9_]/gi, "");
+  if (normalizedName) return normalizedName;
+  const phoneDigits = (profile.phone ?? "").replace(/\D/g, "");
+  return phoneDigits ? `user${phoneDigits.slice(-4)}` : "member";
 }
 
 function shouldShowSenderIdentity(conversation: BackendConversation) {
@@ -1432,7 +1484,7 @@ function renderMessageFormatting(text: string, mine: boolean, isDarkTheme: boole
 
 function renderMessageMentions(text: string, mine: boolean, isDarkTheme: boolean, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const mentionPattern = /@orbita\b/gi;
+  const mentionPattern = /@[a-z0-9_]+\b/gi;
   let cursor = 0;
   let match: RegExpExecArray | null;
 
@@ -1455,7 +1507,7 @@ function renderMessageMentions(text: string, mine: boolean, isDarkTheme: boolean
 
 function renderComposerMentionText(text: string, isDarkTheme: boolean): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const mentionPattern = /@orbita\b/gi;
+  const mentionPattern = /@[a-z0-9_]+\b/gi;
   let cursor = 0;
   let match: RegExpExecArray | null;
 
@@ -2001,7 +2053,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [profile, setProfile] = useState<BackendProfile | null>(null);
   const [contacts, setContacts] = useState<BackendProfile[]>([]);
   const [conversations, setConversations] = useState<BackendConversation[]>([]);
-  const [taskOrgMembersByConversationId, setTaskOrgMembersByConversationId] = useState<Record<string, BackendProfile[]>>({});
+  const [orgMembersByConversationId, setOrgMembersByConversationId] = useState<Record<string, BackendProfile[]>>({});
   const [statuses, setStatuses] = useState<BackendStatus[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [selectedMessages, setSelectedMessages] = useState<ChatMessage[]>([]);
@@ -3218,26 +3270,26 @@ function MessengerShell({ session }: { session: Session }) {
     : null;
 
   useEffect(() => {
-    if (!selected?.taskThread) return undefined;
-    if (taskOrgMembersByConversationId[selected.id]) return undefined;
+    if (!selected) return undefined;
+    if (orgMembersByConversationId[selected.id]) return undefined;
     let cancelled = false;
     messengerApi.listTaskmanagerOrgMembers(selected.id)
       .then((result) => {
         if (cancelled) return;
-        setTaskOrgMembersByConversationId((current) => ({
+        setOrgMembersByConversationId((current) => ({
           ...current,
           [selected.id]: result.members,
         }));
       })
       .catch((nextError) => {
-        if (!cancelled) {
+        if (!cancelled && selected.taskThread) {
           setError(nextError instanceof Error ? nextError.message : "Unable to load organization members.");
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [selected?.id, selected?.taskThread, taskOrgMembersByConversationId]);
+  }, [orgMembersByConversationId, selected]);
 
   const forwardTargets = useMemo<ForwardTarget[]>(() => {
     const conversationTargets = conversations
@@ -3280,11 +3332,11 @@ function MessengerShell({ session }: { session: Session }) {
   );
   const taskMemberCandidates = useMemo<BackendProfile[]>(() => {
     if (!selected?.taskThread) return [];
-    return (taskOrgMembersByConversationId[selected.id] ?? selected.participants)
+    return (orgMembersByConversationId[selected.id] ?? selected.participants)
       .filter((profile) => profile.id !== profileId)
       .filter((profile) => profile.about?.trim().toLowerCase() !== "task manager agent")
       .sort((a, b) => a.displayName.localeCompare(b.displayName));
-  }, [profileId, selected, taskOrgMembersByConversationId]);
+  }, [orgMembersByConversationId, profileId, selected]);
   const subtaskAssigneeCandidates = useMemo<BackendProfile[]>(() => {
     const byId = new Map<string, BackendProfile>();
     const addCandidate = (candidate: BackendProfile | null | undefined) => {
@@ -3302,10 +3354,10 @@ function MessengerShell({ session }: { session: Session }) {
     };
     addCandidate(profile);
     if (selected?.taskThread) {
-      (taskOrgMembersByConversationId[selected.id] ?? selected.participants).forEach(addCandidate);
+      (orgMembersByConversationId[selected.id] ?? selected.participants).forEach(addCandidate);
     }
     return [...byId.values()].sort((a, b) => a.displayName.localeCompare(b.displayName));
-  }, [profile, selected, taskOrgMembersByConversationId]);
+  }, [orgMembersByConversationId, profile, selected]);
   const selectedSubtaskConversations = useMemo(() => {
     const parentTaskId = selected?.taskThread?.taskmanagerTaskId;
     if (!parentTaskId) return [];
@@ -3958,6 +4010,7 @@ function MessengerShell({ session }: { session: Session }) {
                 draft={draft}
                 isWide={isWide}
                 loadingOlder={loadingOlderFor === selected.id}
+                mentionMembers={orgMembersByConversationId[selected.id] ?? []}
                 messages={selectedMessages.filter((message) => message.conversationId === selected.id)}
                 messagesLoading={loadingMessagesFor === selected.id}
                 onAddMembers={() => setMembersOpen(true)}
@@ -5874,6 +5927,7 @@ function ChatPane({
   onAddMembers,
   isWide,
   loadingOlder,
+  mentionMembers,
   onLoadOlder,
   replyingToMessage,
   subtaskConversations,
@@ -5909,6 +5963,7 @@ function ChatPane({
   onAddMembers: () => void | Promise<void>;
   isWide: boolean;
   loadingOlder: boolean;
+  mentionMembers: BackendProfile[];
   onLoadOlder: () => void;
   replyingToMessage: ChatMessage | null;
   subtaskConversations: BackendConversation[];
@@ -5934,6 +5989,7 @@ function ChatPane({
   const [quickPromptOpen, setQuickPromptOpen] = useState(false);
   const [subtaskPanelOpen, setSubtaskPanelOpen] = useState(false);
   const [membersPanelOpen, setMembersPanelOpen] = useState(false);
+  const [subtaskPromptFollowupActive, setSubtaskPromptFollowupActive] = useState(false);
   const [composerInputHeight, setComposerInputHeight] = useState(COMPOSER_INPUT_MIN_HEIGHT);
   const [simformRecorderStartPending, setSimformRecorderStartPending] = useState(false);
   const [simformElapsedMs, setSimformElapsedMs] = useState(0);
@@ -5944,6 +6000,7 @@ function ChatPane({
   const followAgentExchangeUntilRef = useRef(0);
   const preserveOffsetOnNextSizeChangeRef = useRef(false);
   const previousLastMessageIdRef = useRef("");
+  const lastSubtaskPrefillMessageIdRef = useRef("");
   const previousMessageCountRef = useRef(0);
   const scrollOffsetYRef = useRef(0);
   const waitingForOlderLoadRef = useRef(false);
@@ -5951,9 +6008,39 @@ function ChatPane({
   const showSenderIdentity = shouldShowSenderIdentity(conversation);
   const taskThread = conversation.taskThread;
   const isTaskThreadConversation = Boolean(taskThread);
-  const mentionQuery = isTaskThreadConversation ? orbitaMentionQuery(draft) : null;
-  const showOrbitaMentionSuggestion = mentionQuery !== null;
-  const showComposerMentionHighlight = isTaskThreadConversation && hasOrbitaMention(draft);
+  const mentionQuery = activeMentionQuery(draft);
+  const mentionCandidates = useMemo<MentionCandidate[]>(() => {
+    if (mentionQuery === null) return [];
+    const normalizedQuery = mentionQuery.trim().toLowerCase();
+    const candidates: MentionCandidate[] = [];
+    if (isTaskThreadConversation) {
+      candidates.push({
+        id: "orbita",
+        kind: "orbita",
+        displayName: "Orbita",
+        handle: "orbita",
+        subtitle: "Ask the task agent",
+      });
+    }
+    for (const member of mentionMembers) {
+      if (member.id === currentUserId) continue;
+      if (member.about?.trim().toLowerCase() === "task manager agent") continue;
+      const handle = mentionHandleForProfile(member);
+      const haystack = searchableText([member.displayName, member.phone, handle]);
+      if (normalizedQuery && !haystack.includes(normalizedQuery)) continue;
+      candidates.push({
+        id: member.id,
+        kind: "member",
+        displayName: member.displayName,
+        handle,
+        subtitle: member.phone || "Organization member",
+        profile: member,
+      });
+    }
+    return candidates.slice(0, 7);
+  }, [currentUserId, isTaskThreadConversation, mentionMembers, mentionQuery]);
+  const showMentionSuggestions = mentionCandidates.length > 0;
+  const showComposerMentionHighlight = hasAnyMention(draft);
   const composerKeyboardGap = keyboardInset > 0
     ? keyboardInset
     : Math.max(bottomInset, KEYBOARD_COMPOSER_GAP);
@@ -6058,6 +6145,36 @@ function ChatPane({
   }, [agentThinking, loadingOlder, messagesLoading, scrollToLatest]);
 
   useEffect(() => {
+    if (!subtaskPromptFollowupActive || !isTaskThreadConversation) return;
+    const lastMessage = messages[messages.length - 1];
+    if (!lastMessage || lastMessage.senderId === currentUserId) return;
+    if (lastSubtaskPrefillMessageIdRef.current === lastMessage.id) return;
+    const sender = conversation.participants.find((participant) => participant.id === lastMessage.senderId);
+    const senderIsTaskAgent =
+      lastMessage.senderId === taskThread?.agentProfileId ||
+      sender?.about?.trim().toLowerCase() === "task manager agent";
+    if (!senderIsTaskAgent) return;
+    if (isAgentProgressMessage(lastMessage)) return;
+    if (isSubtaskCreationConfirmationMessage(lastMessage)) {
+      setSubtaskPromptFollowupActive(false);
+      lastSubtaskPrefillMessageIdRef.current = "";
+      return;
+    }
+    if (draft.trim()) return;
+    lastSubtaskPrefillMessageIdRef.current = lastMessage.id;
+    setDraft(insertMentionToken("", "orbita"));
+  }, [
+    conversation.participants,
+    currentUserId,
+    draft,
+    isTaskThreadConversation,
+    messages,
+    setDraft,
+    subtaskPromptFollowupActive,
+    taskThread?.agentProfileId,
+  ]);
+
+  useEffect(() => {
     const previousCount = previousMessageCountRef.current;
     const nextCount = messages.length;
     previousMessageCountRef.current = nextCount;
@@ -6091,8 +6208,10 @@ function ChatPane({
     waitingForOlderLoadRef.current = false;
     previousMessageCountRef.current = 0;
     followAgentExchangeUntilRef.current = 0;
+    lastSubtaskPrefillMessageIdRef.current = "";
     setQuickPromptOpen(false);
     setSubtaskPanelOpen(false);
+    setSubtaskPromptFollowupActive(false);
   }, [conversation.id]);
 
   useEffect(() => {
@@ -6416,11 +6535,16 @@ function ChatPane({
     await sendPromise;
   }
 
-  async function sendQuickPrompt(item: (typeof AGENT_QUICK_PROMPTS)[number]) {
+  async function sendQuickPrompt(item: QuickPrompt) {
     setQuickPromptOpen(false);
+    if (isTaskThreadConversation && item.id === "create_subtask") {
+      lastSubtaskPrefillMessageIdRef.current = "";
+      setSubtaskPromptFollowupActive(true);
+    }
     await onSend("text", item.label, null, item.prompt);
   }
 
+  const quickPrompts = isTaskThreadConversation ? TASK_THREAD_QUICK_PROMPTS : AGENT_QUICK_PROMPTS;
   const composerCanSend = Boolean(draft.trim() || attachment);
   const composerInputScrollEnabled = composerInputHeight >= COMPOSER_INPUT_MAX_HEIGHT - 1;
   const voiceElapsedMs = voiceRecordingBackendRef.current === "expo" ? recorderState.durationMillis : voiceNativeDurationMs;
@@ -6669,14 +6793,14 @@ function ChatPane({
         ) : null}
       </ScrollView>
       <View style={[styles.composer, voiceRecorderVisible && styles.composerRecording, isDarkTheme && styles.composerDark]}>
-        {!voiceRecorderVisible && isAgentConversation ? (
+        {!voiceRecorderVisible && (isAgentConversation || isTaskThreadConversation) ? (
           <View style={styles.quickPromptDock}>
             {quickPromptOpen ? (
               <View style={[styles.quickPromptMenu, isDarkTheme && styles.quickPromptMenuDark]}>
                 <Text style={[styles.quickPromptMenuTitle, isDarkTheme && styles.quickPromptMenuTitleDark]}>
                   Quick prompts
                 </Text>
-                {AGENT_QUICK_PROMPTS.map((item) => (
+                {quickPrompts.map((item) => (
                   <Pressable
                     key={item.id}
                     onPress={() => {
@@ -6803,29 +6927,40 @@ function ChatPane({
               {attachment ? (
                 <ComposerAttachmentPreview attachment={attachment} onRemove={onRemoveAttachment} />
               ) : null}
-              {showOrbitaMentionSuggestion ? (
-                <Pressable
-                  accessibilityLabel="Mention Orbita"
-                  onPress={() => setDraft(insertOrbitaMention(draft))}
-                  style={({ pressed }) => [
-                    styles.mentionSuggestion,
-                    isDarkTheme && styles.mentionSuggestionDark,
-                    pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
-                  ]}
-                >
-                  <View style={[styles.mentionSuggestionAvatar, isDarkTheme && styles.mentionSuggestionAvatarDark]}>
-                    <Ionicons color={isDarkTheme ? "#111B21" : "#FFFFFF"} name="sparkles-outline" size={16} />
-                  </View>
-                  <View style={styles.mentionSuggestionBody}>
-                    <Text style={[styles.mentionSuggestionName, isDarkTheme && styles.mentionSuggestionNameDark]}>
-                      Orbita
-                    </Text>
-                    <Text style={[styles.mentionSuggestionHandle, isDarkTheme && styles.mentionSuggestionHandleDark]}>
-                      @orbita
-                    </Text>
-                  </View>
-                  <Ionicons color={isDarkTheme ? "rgba(233,237,239,0.62)" : colors.faint} name="return-down-forward-outline" size={17} />
-                </Pressable>
+              {showMentionSuggestions ? (
+                <View style={[styles.mentionSuggestionList, isDarkTheme && styles.mentionSuggestionListDark]}>
+                  {mentionCandidates.map((candidate) => (
+                    <Pressable
+                      accessibilityLabel={`Mention ${candidate.displayName}`}
+                      key={`${candidate.kind}:${candidate.id}`}
+                      onPress={() => setDraft(insertMentionToken(draft, candidate.handle))}
+                      style={({ pressed }) => [
+                        styles.mentionSuggestion,
+                        isDarkTheme && styles.mentionSuggestionDark,
+                        pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+                      ]}
+                    >
+                      <View style={[styles.mentionSuggestionAvatar, isDarkTheme && styles.mentionSuggestionAvatarDark]}>
+                        {candidate.kind === "orbita" ? (
+                          <Ionicons color={isDarkTheme ? "#111B21" : "#FFFFFF"} name="sparkles-outline" size={16} />
+                        ) : (
+                          <Text style={styles.mentionSuggestionAvatarText}>
+                            {initials(candidate.displayName)}
+                          </Text>
+                        )}
+                      </View>
+                      <View style={styles.mentionSuggestionBody}>
+                        <Text numberOfLines={1} style={[styles.mentionSuggestionName, isDarkTheme && styles.mentionSuggestionNameDark]}>
+                          {candidate.displayName}
+                        </Text>
+                        <Text numberOfLines={1} style={[styles.mentionSuggestionHandle, isDarkTheme && styles.mentionSuggestionHandleDark]}>
+                          @{candidate.handle} - {candidate.subtitle}
+                        </Text>
+                      </View>
+                      <Ionicons color={isDarkTheme ? "rgba(233,237,239,0.62)" : colors.faint} name="return-down-forward-outline" size={17} />
+                    </Pressable>
+                  ))}
+                </View>
               ) : null}
               <View style={[styles.composerInputShell, isDarkTheme && styles.composerInputShellDark, attachment && styles.composerInputWithAttachment]}>
                 {showComposerMentionHighlight ? (
@@ -9933,6 +10068,8 @@ const styles = StyleSheet.create({
     borderTopColor: colors.line,
     borderTopWidth: 1,
     backgroundColor: colors.surface,
+    zIndex: 120,
+    elevation: 14,
   },
   composerDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#202C33" },
   composerRecording: { alignItems: "center" },
@@ -10004,12 +10141,12 @@ const styles = StyleSheet.create({
     position: "relative",
     alignSelf: "flex-end",
     marginBottom: 2,
-    zIndex: 80,
-    elevation: 10,
+    zIndex: 180,
+    elevation: 20,
   },
   quickPromptBackdrop: {
     ...StyleSheet.absoluteFillObject,
-    zIndex: 60,
+    zIndex: 40,
     backgroundColor: "transparent",
   },
   quickPromptButton: {
@@ -10041,7 +10178,8 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.18,
     shadowRadius: 12,
-    elevation: 6,
+    zIndex: 200,
+    elevation: 24,
   },
   quickPromptMenuDark: {
     borderColor: "rgba(255,255,255,0.12)",
@@ -10069,6 +10207,17 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   quickPromptItemTextDark: { color: "#FFFFFF" },
+  mentionSuggestionList: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(0,168,132,0.22)",
+    backgroundColor: "#E7FCEB",
+    overflow: "hidden",
+  },
+  mentionSuggestionListDark: {
+    borderColor: "rgba(6,207,156,0.22)",
+    backgroundColor: "rgba(6,207,156,0.12)",
+  },
   mentionSuggestion: {
     minHeight: 54,
     flexDirection: "row",
@@ -10076,14 +10225,9 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: "rgba(0,168,132,0.22)",
-    backgroundColor: "#E7FCEB",
   },
   mentionSuggestionDark: {
-    borderColor: "rgba(6,207,156,0.22)",
-    backgroundColor: "rgba(6,207,156,0.12)",
+    backgroundColor: "transparent",
   },
   mentionSuggestionAvatar: {
     width: 34,
@@ -10094,6 +10238,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primaryDark,
   },
   mentionSuggestionAvatarDark: { backgroundColor: colors.accent },
+  mentionSuggestionAvatarText: { color: "#FFFFFF", fontSize: 12, fontWeight: "900" },
   mentionSuggestionBody: { flex: 1, minWidth: 0 },
   mentionSuggestionName: { color: colors.ink, fontSize: 14, fontWeight: "800" },
   mentionSuggestionNameDark: { color: "#FFFFFF" },
