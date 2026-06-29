@@ -24,6 +24,7 @@ import {
   Animated,
   AppState,
   BackHandler,
+  Dimensions,
   Easing,
   Image,
   Keyboard,
@@ -844,6 +845,14 @@ function keyboardClearance(height?: number, bottomInset = 0, keyboardTop?: numbe
   return Math.max(0, effectiveKeyboardHeight - bottomInset + KEYBOARD_SAFETY_GAP);
 }
 
+function androidManualKeyboardInset(keyboardInset: number, windowHeight: number) {
+  if (Platform.OS !== "android" || keyboardInset <= 0) return 0;
+  const screenHeight = Dimensions.get("screen").height;
+  const resizeDelta = Math.max(0, Math.round(screenHeight - windowHeight));
+  const resizedByKeyboard = resizeDelta >= Math.max(120, Math.round(keyboardInset * 0.45));
+  return resizedByKeyboard ? 0 : keyboardInset;
+}
+
 function useKeyboardClearance(enabled = true) {
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
@@ -858,9 +867,13 @@ function useKeyboardClearance(enabled = true) {
     const showEvent = Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow";
     const hideEvent = Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide";
     const showSubscription = Keyboard.addListener(showEvent, (event) => {
+      Keyboard.scheduleLayoutAnimation(event);
       setClearance(keyboardClearance(event.endCoordinates.height, insets.bottom, event.endCoordinates.screenY, height));
     });
-    const hideSubscription = Keyboard.addListener(hideEvent, () => setClearance(0));
+    const hideSubscription = Keyboard.addListener(hideEvent, (event) => {
+      Keyboard.scheduleLayoutAnimation(event);
+      setClearance(0);
+    });
 
     return () => {
       showSubscription.remove();
@@ -5971,7 +5984,7 @@ function ChatPane({
   unsavedPeer: UnsavedPeer | null;
 }) {
   const { isDarkTheme, themeColors } = useAppTheme();
-  const { width } = useWindowDimensions();
+  const { width, height } = useWindowDimensions();
   const scrollRef = useRef<ScrollView | null>(null);
   const keyboardInset = useKeyboardClearance(!isWide);
   const recorder = useAudioRecorder(VOICE_RECORDING_OPTIONS);
@@ -6041,7 +6054,8 @@ function ChatPane({
   }, [currentUserId, isTaskThreadConversation, mentionMembers, mentionQuery]);
   const showMentionSuggestions = mentionCandidates.length > 0;
   const showComposerMentionHighlight = hasAnyMention(draft);
-  const composerBottomGap = Math.max(bottomInset, KEYBOARD_COMPOSER_GAP);
+  const manualKeyboardInset = androidManualKeyboardInset(keyboardInset, height);
+  const composerBottomGap = Math.max(bottomInset, KEYBOARD_COMPOSER_GAP) + manualKeyboardInset;
   const compactHeader = !isWide && width < 390;
   const isArchivedTaskThread = isCompletedTaskThreadStatus(taskThread?.status);
   const archivedTaskTitle = isArchivedTaskThread ? taskThreadArchiveTitle(taskThread?.status) : "";
