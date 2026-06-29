@@ -3785,40 +3785,48 @@ function MessengerShell({ session }: { session: Session }) {
 
   const updateTaskThreadStatusFromChatList = useCallback(
     async (taskId: string, status: TaskManagerAdminTask["status"]) => {
-      if (!adminSession) {
-        setError("Open admin mode before changing task status from the chat list.");
-        return;
-      }
       const taskConversation = conversations.find(
         (conversation) => conversation.taskThread?.taskmanagerTaskId === taskId,
       );
-      await taskManagerAdminApi.updateTaskStatus(adminSession, taskId, status);
-      if (taskConversation && isCompletedTaskThreadStatus(status)) {
-        await messengerApi.notifyTaskThreadStatusChanged({
+      if (!taskConversation) {
+        setError("Task thread was not found.");
+        return;
+      }
+      try {
+        const result = await messengerApi.updateTaskThreadStatus({
           conversationId: taskConversation.id,
           status,
-        }).catch((error) => {
-          console.error("Unable to notify source agent conversation", error);
         });
-      }
-      animateNextListLayout();
-      setConversations((current) =>
-        current.map((conversation) =>
-          conversation.taskThread?.taskmanagerTaskId === taskId
-            ? {
+        const updatedConversation = result.conversation;
+        animateNextListLayout();
+        setConversations((current) =>
+          current.map((conversation) => {
+            if (conversation.id === taskConversation.id && updatedConversation) {
+              return updatedConversation;
+            }
+            if (conversation.taskThread?.taskmanagerTaskId === taskId) {
+              return {
                 ...conversation,
                 taskThread: {
                   ...conversation.taskThread,
                   status,
                 },
-              }
-            : conversation,
-        ),
-      );
-      await refreshAdminData(adminSession, { silent: true });
-      void retryBootstrap();
+              };
+            }
+            return conversation;
+          }),
+        );
+        if (adminSession) {
+          await refreshAdminData(adminSession, { silent: true }).catch((error) => {
+            console.warn("Unable to refresh admin data after task status update", error);
+          });
+        }
+      } catch (error) {
+        const raw = error instanceof Error ? error.message : "Unable to update task status.";
+        setError(userFacingTaskManagerError(raw));
+      }
     },
-    [adminSession, conversations, refreshAdminData, retryBootstrap],
+    [adminSession, conversations, refreshAdminData],
   );
 
   if (loading) {
@@ -5694,42 +5702,83 @@ function TaskThreadInlineActions({
   onUpdateStatus: (status: TaskManagerAdminTask["status"]) => Promise<void>;
 }) {
   const { themeColors } = useAppTheme();
+  const [confirmStatus, setConfirmStatus] = useState<TaskManagerAdminTask["status"] | null>(null);
   const isCompleted = isCompletedTaskThreadStatus(currentStatus);
+
+  async function confirmUpdateStatus() {
+    if (!confirmStatus) return;
+    await onUpdateStatus(confirmStatus);
+    setConfirmStatus(null);
+  }
+
   return (
-    <View
-      style={[
-        styles.taskInlineActions,
-        { borderColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.primarySoft },
-        isDarkTheme && styles.taskInlineActionsDark,
-      ]}
-    >
-      {isCompleted ? (
-        <TaskActionButton
-          busy={busyStatus === "open"}
-          icon="refresh-outline"
-          label="Reopen task"
-          onPress={() => void onUpdateStatus("open")}
-          tone="success"
-        />
-      ) : (
-        <>
+    <>
+      <View
+        style={[
+          styles.taskInlineActions,
+          { borderColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.primarySoft },
+          isDarkTheme && styles.taskInlineActionsDark,
+        ]}
+      >
+        {isCompleted ? (
           <TaskActionButton
-            busy={busyStatus === "done"}
-            icon="checkmark-done-outline"
-            label="Mark done"
-            onPress={() => void onUpdateStatus("done")}
+            busy={busyStatus === "open"}
+            icon="refresh-outline"
+            label="Reopen task"
+            onPress={() => void onUpdateStatus("open")}
             tone="success"
           />
-          <TaskActionButton
-            busy={busyStatus === "discarded"}
-            icon="close-circle-outline"
-            label="Close task"
-            onPress={() => void onUpdateStatus("discarded")}
-            tone="danger"
-          />
-        </>
-      )}
-    </View>
+        ) : (
+          <>
+            <TaskActionButton
+              busy={busyStatus === "done"}
+              icon="checkmark-done-outline"
+              label="Mark done"
+              onPress={() => setConfirmStatus("done")}
+              tone="success"
+            />
+            <TaskActionButton
+              busy={busyStatus === "discarded"}
+              icon="close-circle-outline"
+              label="Close task"
+              onPress={() => setConfirmStatus("discarded")}
+              tone="danger"
+            />
+          </>
+        )}
+      </View>
+      <TaskStatusConfirmModal
+        onClose={() => setConfirmStatus(null)}
+        onConfirm={confirmUpdateStatus}
+        status={confirmStatus}
+        visible={confirmStatus === "done" || confirmStatus === "discarded"}
+      />
+    </>
+  );
+}
+
+function TaskStatusConfirmModal({
+  onClose,
+  onConfirm,
+  status,
+  visible,
+}: {
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+  status: TaskManagerAdminTask["status"] | null;
+  visible: boolean;
+}) {
+  const isClose = status === "discarded";
+  return (
+    <KeyboardAwareModal onClose={onClose} visible={visible}>
+      <Text style={styles.modalTitle}>{isClose ? "Close this task?" : "Mark task as done?"}</Text>
+      <Text style={styles.modalSubtitle}>
+        {isClose
+          ? "This will close the task. If it still has unresolved subtasks, Orbita will block the close and show the remaining subtasks."
+          : "This will mark the task as completed. If it still has unresolved subtasks, Orbita will block completion and show the remaining subtasks."}
+      </Text>
+      <ModalActions onCancel={onClose} onSubmit={onConfirm} submitLabel={isClose ? "Close task" : "Mark done"} />
+    </KeyboardAwareModal>
   );
 }
 

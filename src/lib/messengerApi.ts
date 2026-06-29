@@ -26,6 +26,7 @@ type ApiAction =
   | "add_task_thread_members"
   | "list_taskmanager_org_members"
   | "create_task_thread_subtask"
+  | "update_task_thread_status"
   | "notify_task_thread_status_changed"
   | "list_messages"
   | "mark_conversation_read"
@@ -276,6 +277,9 @@ export const messengerApi = {
     memberOrbitaUserIds?: string[];
   }) {
     return callApi<{ task: unknown; conversation?: BackendConversation | null }>("create_task_thread_subtask", input);
+  },
+  updateTaskThreadStatus(input: { conversationId: string; status: string }) {
+    return callApi<{ task: unknown; conversation?: BackendConversation | null }>("update_task_thread_status", input);
   },
   notifyTaskThreadStatusChanged(input: { conversationId: string; status: string }) {
     return callApi<{ message?: BackendMessage; notified: boolean; reason?: string }>("notify_task_thread_status_changed", input);

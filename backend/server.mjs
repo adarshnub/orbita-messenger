@@ -56,6 +56,9 @@ const TASK_MANAGER_ADMIN_SESSION_URL =
 const TASK_MANAGER_ORBITA_SUBTASK_URL =
   process.env.TASK_MANAGER_ORBITA_SUBTASK_URL ||
   deriveTaskManagerSubtaskUrl(process.env.TASK_MANAGER_ORBITA_WEBHOOK_URL);
+const TASK_MANAGER_ORBITA_TASK_THREAD_STATUS_URL =
+  process.env.TASK_MANAGER_ORBITA_TASK_THREAD_STATUS_URL ||
+  deriveTaskManagerTaskThreadStatusUrl(process.env.TASK_MANAGER_ORBITA_WEBHOOK_URL);
 
 createServer(async (req, res) => {
   const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -315,6 +318,11 @@ function deriveTaskManagerAdminSessionUrl(webhookUrl) {
 function deriveTaskManagerSubtaskUrl(webhookUrl) {
   if (!webhookUrl) return "";
   return webhookUrl.replace(/\/webhooks\/orbita\/messages\/?$/i, "/webhooks/orbita/task-thread-subtasks");
+}
+
+function deriveTaskManagerTaskThreadStatusUrl(webhookUrl) {
+  if (!webhookUrl) return "";
+  return webhookUrl.replace(/\/webhooks\/orbita\/messages\/?$/i, "/webhooks/orbita/task-thread-status");
 }
 
 function deriveTaskManagerApiBaseUrl(sessionUrl) {
@@ -2158,6 +2166,7 @@ async function ensureTaskmanagerTaskThread(payload) {
   const dueDate = optionalString(payload, "dueDate");
   const completionNote = optionalString(payload, "completionNote").slice(0, 1000);
   const completedAt = optionalString(payload, "completedAt");
+  const notifySourceCreated = payload.notifySourceCreated === true;
   const sourceAgentProfileId = optionalString(payload, "sourceAgentProfileId") || null;
   const sourceAgentConversationId = optionalString(payload, "sourceAgentConversationId") || null;
   const sourceAgentDisplayNameInput = optionalString(payload, "sourceAgentDisplayName");
@@ -2286,14 +2295,16 @@ async function ensureTaskmanagerTaskThread(payload) {
     }),
   );
 
-  await notifySourceAgentConversationForThreadCreated(thread).catch((error) => {
-    console.error("[taskmanager-thread] source creation notification failed", {
-      taskmanagerOrgId,
-      taskmanagerTaskId,
-      status: thread.status,
-      error: errorMessage(error),
+  if (notifySourceCreated) {
+    await notifySourceAgentConversationForThreadCreated(thread).catch((error) => {
+      console.error("[taskmanager-thread] source creation notification failed", {
+        taskmanagerOrgId,
+        taskmanagerTaskId,
+        status: thread.status,
+        error: errorMessage(error),
+      });
     });
-  });
+  }
 
   const targetUserIds = linkedRows.map((row) => row.orbita_user_id).filter(Boolean);
   await createRealtimeEvents(targetUserIds, "group_member_added", thread.conversation_id, {
@@ -3360,7 +3371,8 @@ async function handleAction(user, action, payload, req) {
       },
       body: raw,
     });
-    const data = await response.json().catch(() => null);
+    const responseText = await response.text().catch(() => "");
+    const data = responseText ? safeJsonParse(responseText) : null;
     if (!response.ok) {
       throw new Error(apiErrorMessage(data) || `Task Manager subtask creation failed: ${response.status}`);
     }
@@ -3407,6 +3419,58 @@ async function handleAction(user, action, payload, req) {
         conversations.find((item) => item.taskThread?.taskmanagerTaskId === data?._id) ??
         conversations.find((item) => item.id === conversationId) ??
         null,
+    };
+  }
+
+  if (action === "update_task_thread_status") {
+    const conversationId = requiredString(payload, "conversationId");
+    const status = requiredString(payload, "status");
+    if (!["open", "in_progress", "done", "discarded"].includes(status)) {
+      throw new Error("Task status is invalid.");
+    }
+    if (!TASK_MANAGER_ORBITA_TASK_THREAD_STATUS_URL || !process.env.TASK_MANAGER_ORBITA_SECRET) {
+      throw new Error("Task Manager task status updates are not configured.");
+    }
+
+    await getConversation(user.id, conversationId);
+    const taskThreadContext = await loadTaskThreadForwardingContext(conversationId, user.id);
+    if (!taskThreadContext || taskThreadContext.skip) {
+      throw new Error(taskThreadContext?.reason || "Only task thread members can change task status.");
+    }
+
+    const raw = JSON.stringify({
+      taskmanagerOrgId: taskThreadContext.taskmanagerOrgId,
+      taskmanagerUserId: taskThreadContext.taskmanagerUserId,
+      orbitaUserId: user.id,
+      conversationId,
+      taskId: taskThreadContext.taskmanagerTaskId,
+      status,
+    });
+    const response = await fetch(TASK_MANAGER_ORBITA_TASK_THREAD_STATUS_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-orbita-signature": `sha256=${hmacSha256(raw, process.env.TASK_MANAGER_ORBITA_SECRET)}`,
+      },
+      body: raw,
+    });
+    const responseText = await response.text().catch(() => "");
+    const data = responseText ? safeJsonParse(responseText) : null;
+    if (!response.ok) {
+      throw new Error(apiErrorMessage(data) || `Task Manager task status update failed: ${response.status}`);
+    }
+
+    const { error: updateError } = await supabase
+      .from("taskmanager_task_threads")
+      .update({ status, updated_at: new Date().toISOString() })
+      .eq("conversation_id", conversationId)
+      .eq("taskmanager_task_id", taskThreadContext.taskmanagerTaskId);
+    if (updateError) throw updateError;
+
+    const conversations = await loadConversations(user.id);
+    return {
+      task: data,
+      conversation: conversations.find((item) => item.id === conversationId) ?? null,
     };
   }
 
@@ -3665,6 +3729,8 @@ function errorMessage(error) {
 
 function apiErrorMessage(data) {
   if (!data || typeof data !== "object") return "";
+  const message = data.message;
+  if (typeof message === "string" && message.trim()) return message;
   const error = data.error;
   return typeof error === "string" ? error : "";
 }
