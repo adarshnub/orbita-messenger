@@ -6041,9 +6041,7 @@ function ChatPane({
   }, [currentUserId, isTaskThreadConversation, mentionMembers, mentionQuery]);
   const showMentionSuggestions = mentionCandidates.length > 0;
   const showComposerMentionHighlight = hasAnyMention(draft);
-  const composerKeyboardGap = keyboardInset > 0
-    ? keyboardInset
-    : Math.max(bottomInset, KEYBOARD_COMPOSER_GAP);
+  const composerBottomGap = Math.max(bottomInset, KEYBOARD_COMPOSER_GAP);
   const compactHeader = !isWide && width < 390;
   const isArchivedTaskThread = isCompletedTaskThreadStatus(taskThread?.status);
   const archivedTaskTitle = isArchivedTaskThread ? taskThreadArchiveTitle(taskThread?.status) : "";
@@ -6562,7 +6560,7 @@ function ChatPane({
         styles.chatPane,
         isDarkTheme && styles.chatPaneDark,
         !isWide && styles.chatPaneMobile,
-        !isWide && { paddingBottom: composerKeyboardGap },
+        !isWide && { paddingBottom: composerBottomGap },
       ]}
     >
       {quickPromptOpen ? (
@@ -7050,6 +7048,18 @@ function ChatPane({
       </View>
     </View>
   );
+
+  if (!isWide && Platform.OS === "ios") {
+    return (
+      <KeyboardAvoidingView
+        behavior="padding"
+        keyboardVerticalOffset={0}
+        style={styles.chatKeyboardAvoider}
+      >
+        {chatPane}
+      </KeyboardAvoidingView>
+    );
+  }
 
   return chatPane;
 }
