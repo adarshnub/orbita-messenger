@@ -1,1 +1,9 @@
 Orbita backend listening on http://0.0.0.0:8787
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"e8caa949-e027-43b5-b6bf-d6fa31a633a7","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"task_thread_source_status_changed"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"e8caa949-e027-43b5-b6bf-d6fa31a633a7","ticketIds":["019f123e-77b4-74e8-ae7c-142cff264727"],"source":"task_thread_source_status_changed"}
+{"event":"push.sending","conversationId":"040de054-fb84-42b9-a9d2-755f437c2631","messageId":"061df021-3194-46e8-8507-d676d29b4f3f","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"task_thread_source_status_changed"}
+{"event":"push.ticket_ok","conversationId":"040de054-fb84-42b9-a9d2-755f437c2631","messageId":"061df021-3194-46e8-8507-d676d29b4f3f","ticketIds":["019f123e-7b5e-7520-bcca-aefc8d12855a"],"source":"task_thread_source_status_changed"}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"571aa1e0-47b0-45d8-a8f5-265b6917fc20","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"task_thread_source_status_changed"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"571aa1e0-47b0-45d8-a8f5-265b6917fc20","ticketIds":["019f1241-dbaa-702a-af82-568dae4f1a7f"],"source":"task_thread_source_status_changed"}
+{"event":"push.sending","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"347fa398-42dd-4274-af1f-1b60d5b7c2e8","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dhiya","source":"task_thread_source_status_changed"}
+{"event":"push.ticket_ok","conversationId":"1ed07a94-b460-45a5-85c5-189763824e49","messageId":"347fa398-42dd-4274-af1f-1b60d5b7c2e8","ticketIds":["019f1242-301c-71c9-9687-9403c3daf412"],"source":"task_thread_source_status_changed"}

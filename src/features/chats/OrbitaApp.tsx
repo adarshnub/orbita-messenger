@@ -614,6 +614,13 @@ function isTaskManagerAgentConversation(conversation: BackendConversation) {
   return conversation.participants.some((participant) => participant.about?.trim().toLowerCase() === "task manager agent");
 }
 
+function isTaskManagerMainAgentConversation(conversation: BackendConversation) {
+  if (conversation.taskThread) return false;
+  if (conversation.taskManagerAgent) return true;
+  if (conversation.kind !== "direct" && conversation.kind !== "taskmanager") return false;
+  return isTaskManagerAgentConversation(conversation);
+}
+
 function isAgentProgressMessage(message: Pick<BackendMessage, "attachments" | "body">) {
   if (message.attachments?.length) return false;
   const normalized = message.body
@@ -3170,6 +3177,7 @@ function MessengerShell({ session }: { session: Session }) {
   const existingConversationByContactId = useMemo(() => {
     const conversationMap = new Map<string, BackendConversation>();
     conversations.forEach((conversation) => {
+      if (conversation.taskThread) return;
       if (conversation.kind !== "direct" && conversation.kind !== "taskmanager") return;
       const peer = conversation.participants.find((participant) => participant.id !== profileId);
       if (peer) conversationMap.set(peer.id, conversation);
@@ -3179,6 +3187,7 @@ function MessengerShell({ session }: { session: Session }) {
   const contactsWithDefaultAgent = useMemo(() => {
     const byId = new Map(contacts.map((contact) => [contact.id, contact]));
     conversations.forEach((conversation) => {
+      if (conversation.taskThread) return;
       if (conversation.kind !== "direct") return;
       const peer = conversation.participants.find((participant) => participant.id !== profileId);
       if (!peer) return;
@@ -3312,7 +3321,7 @@ function MessengerShell({ session }: { session: Session }) {
     viewerId: string,
   ) {
     const directAgentConversation =
-      snapshotConversations.find((conversation) => isTaskManagerAgentConversation(conversation)) ?? null;
+      snapshotConversations.find((conversation) => isTaskManagerMainAgentConversation(conversation)) ?? null;
     if (directAgentConversation) {
       return { conversationId: directAgentConversation.id, contactId: "" };
     }
