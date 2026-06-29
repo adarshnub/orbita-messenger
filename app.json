@@ -3,7 +3,7 @@
     "name": "Orbita Messenger",
     "slug": "orbita-messenger",
     "scheme": "orbita",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "icon": "./assets/icon.png",
     "orientation": "portrait",
     "userInterfaceStyle": "light",
