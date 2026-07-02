@@ -225,11 +225,47 @@ function normalizeOrbitaApiBase(input: string) {
 }
 
 function expoDevHost() {
-  const expoConfigHost = (Constants.expoConfig as { hostUri?: string } | null)?.hostUri;
-  const manifestHost = (Constants.manifest as { debuggerHost?: string } | null)?.debuggerHost;
-  const hostUri = expoConfigHost ?? manifestHost;
-  if (!hostUri) return null;
-  return hostUri.replace(/^https?:\/\//, "").split(":")[0] || null;
+  const constants = Constants as unknown as {
+    expoConfig?: { hostUri?: string } | null;
+    expoGoConfig?: { debuggerHost?: string } | null;
+    experienceUrl?: string;
+    linkingUri?: string;
+    manifest?: { debuggerHost?: string; hostUri?: string } | null;
+    manifest2?: {
+      extra?: {
+        expoClient?: { hostUri?: string };
+        expoGo?: { debuggerHost?: string };
+      };
+    } | null;
+  };
+  const candidates = [
+    constants.expoConfig?.hostUri,
+    constants.expoGoConfig?.debuggerHost,
+    constants.manifest?.debuggerHost,
+    constants.manifest?.hostUri,
+    constants.manifest2?.extra?.expoClient?.hostUri,
+    constants.manifest2?.extra?.expoGo?.debuggerHost,
+    constants.linkingUri,
+    constants.experienceUrl,
+  ];
+
+  for (const candidate of candidates) {
+    const host = hostFromDevUri(candidate);
+    if (host) return host;
+  }
+  return null;
+}
+
+function hostFromDevUri(value?: string | null) {
+  if (!value) return null;
+  try {
+    const parsed = new URL(value);
+    const nestedUrl = parsed.searchParams.get("url");
+    if (nestedUrl) return hostFromDevUri(decodeURIComponent(nestedUrl));
+    return parsed.hostname || null;
+  } catch {
+    return value.replace(/^https?:\/\//, "").split(":")[0] || null;
+  }
 }
 
 export const messengerApi = {

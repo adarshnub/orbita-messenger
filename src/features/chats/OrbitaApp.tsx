@@ -1,5 +1,15 @@
 import { Ionicons } from "@expo/vector-icons";
-import { FinishMode, PlayerState, UpdateFrequency, Waveform, type IWaveformRef } from "@simform_solutions/react-native-audio-waveform";
+import {
+  FinishMode,
+  PermissionStatus,
+  PlayerState,
+  RecorderState,
+  UpdateFrequency,
+  Waveform,
+  useAudioPermission,
+  useAudioPlayer as useSimformAudioPlayer,
+  type IWaveformRef,
+} from "@simform_solutions/react-native-audio-waveform";
 import { Link } from "expo-router";
 import {
   RecordingPresets,
@@ -8,8 +18,8 @@ import {
   useAudioPlayer,
   useAudioPlayerStatus,
   useAudioRecorder,
-  useAudioRecorderState,
 } from "expo-audio";
+import type { RecorderState as ExpoRecorderState } from "expo-audio";
 import * as Clipboard from "expo-clipboard";
 import * as DeviceContacts from "expo-contacts";
 import Constants from "expo-constants";
@@ -93,7 +103,6 @@ import {
   type QueuedOutgoingMessage,
 } from "@/lib/localChatCache";
 import { hapticMessageReceived, hapticMessageSent } from "@/lib/haptics";
-import { orbitaAudioWaveform } from "orbita-audio-waveform";
 import { normalizePhone } from "@/lib/phone";
 import {
   hasSupabaseConfig,
@@ -153,7 +162,7 @@ type ForwardTarget = {
   title: string;
   subtitle: string;
 };
-type VoiceRecordingBackend = "expo" | "native" | "simform";
+type VoiceRecordingBackend = "expo" | "simform";
 type ChatListContact = BackendProfile & { existingConversationId?: string };
 type UnsavedPeer = {
   defaultName: string;
@@ -174,10 +183,21 @@ const AGENT_THINKING_TIMEOUT_MS = 120_000;
 const AGENT_FOLLOW_LATEST_MS = 90_000;
 const CHAT_PAGE_SIZE = 24;
 const VOICE_WAVEFORM_BARS = 48;
+const VOICE_IDLE_WAVE_LEVEL = 0.08;
+const VOICE_LIVE_WAVEFORM_MAX_LEVEL = 1;
+const VOICE_NOISE_CALIBRATION_SAMPLES = 8;
+const VOICE_NOISE_WINDOW_SAMPLES = 24;
+const VOICE_DUMMY_RECORDING_LEVELS = [
+  0.24, 0.48, 0.34, 0.68, 0.42, 0.78, 0.36, 0.58,
+  0.88, 0.46, 0.72, 0.32, 0.54, 0.82, 0.4, 0.64,
+  0.28, 0.74, 0.5, 0.9, 0.38, 0.7, 0.44, 0.6,
+  0.84, 0.36, 0.66, 0.3, 0.56, 0.76, 0.42, 0.62,
+];
 const VOICE_RECORDING_OPTIONS = {
   ...RecordingPresets.HIGH_QUALITY,
   isMeteringEnabled: true,
 };
+let activeStaticWaveformPlayer: IWaveformRef | null = null;
 const tabs: Array<{ id: Tab; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
   { id: "chats", label: "Chats", icon: "chatbubbles-outline" },
   { id: "admin", label: "Admin", icon: "briefcase-outline" },
@@ -515,25 +535,76 @@ function normalizeWaveSamples(samples?: number[] | null, targetCount = 22) {
     const lowerIndex = Math.floor(position);
     const upperIndex = Math.min(source.length - 1, Math.ceil(position));
     const progress = position - lowerIndex;
-    const lower = source[lowerIndex] ?? 0;
-    const upper = source[upperIndex] ?? lower;
+    const lower = normalizeRawWaveSample(source[lowerIndex] ?? 0);
+    const upper = normalizeRawWaveSample(source[upperIndex] ?? lower);
     resampled.push(lower + (upper - lower) * progress);
   }
 
-  const min = Math.min(...resampled);
   const max = Math.max(...resampled);
   if (max <= 0.01) return [];
-  if (max - min < 0.004) {
-    return resampled.map((sample) => clamp(0.16 + (sample / max) * 0.72, 0.12, 0.88));
+  const sorted = [...resampled].sort((a, b) => a - b);
+  const floor = percentile(sorted, 0.35);
+  const peak = percentile(sorted, 0.95);
+  const noiseThreshold = floor + Math.max(0.045, floor * 0.8);
+
+  if (peak <= noiseThreshold + 0.04) {
+    return resampled.map((sample) => clamp(0.06 + (sample / Math.max(peak, 0.01)) * 0.1, 0.06, 0.18));
   }
-  const range = Math.max(0.015, max - min);
-  return resampled.map((sample) => clamp(0.1 + ((sample - min) / range) * 0.9, 0.08, 1));
+
+  const range = Math.max(0.08, peak - noiseThreshold);
+  return resampled.map((sample) => {
+    if (sample <= noiseThreshold) {
+      return clamp(0.06 + (sample / Math.max(noiseThreshold, 0.01)) * 0.08, 0.06, 0.16);
+    }
+    const normalized = clamp((sample - noiseThreshold) / range, 0, 1);
+    return clamp(0.14 + Math.pow(normalized, 0.72) * 0.86, 0.08, 1);
+  });
+}
+
+function percentile(sortedSamples: number[], ratio: number) {
+  if (!sortedSamples.length) return 0;
+  const index = clamp(Math.round((sortedSamples.length - 1) * ratio), 0, sortedSamples.length - 1);
+  return sortedSamples[index] ?? 0;
+}
+
+function normalizeRawWaveSample(sample: number) {
+  const value = Math.abs(sample);
+  if (!Number.isFinite(value)) return 0;
+  if (value > 100) return clamp(value / 32767, 0, 1);
+  if (value > 1) return clamp(value / 32.767, 0, 1);
+  return clamp(value, 0, 1);
 }
 
 function meteringToWaveLevel(metering?: number) {
   if (!Number.isFinite(metering)) return 0.08;
   const normalized = ((metering ?? -70) + 62) / 62;
   return clamp(0.08 + normalized * normalized * 0.92, 0.08, 1);
+}
+
+function simformRecordingDecibelToLinearLevel(currentDecibel?: number) {
+  if (!Number.isFinite(currentDecibel)) return 0;
+  const value = Number(currentDecibel);
+  if (value < 0) {
+    if (value <= -70) return 0;
+    return clamp(Math.pow(10, value / 20), 0, 1);
+  }
+  return normalizeRawWaveSample(value);
+}
+
+function voiceNoiseGateLevel(rawLevel: number, noiseFloor: number) {
+  const floor = clamp(noiseFloor, 0.00002, 0.28);
+  const threshold = Math.max(floor + 0.006, floor * 2.1);
+  if (rawLevel <= threshold) {
+    return clamp(0.055 + (rawLevel / Math.max(threshold, 0.01)) * 0.08, 0.055, 0.14);
+  }
+  const normalized = clamp((rawLevel - threshold) / Math.max(0.025, 0.18 - threshold), 0, 1);
+  return clamp(0.18 + Math.pow(normalized, 0.55) * 0.82, 0.18, 1);
+}
+
+function steadyNoiseVisualLevel(rawLevel: number, noiseFloor: number) {
+  const floor = clamp(noiseFloor, 0.00002, 0.28);
+  const threshold = Math.max(floor + 0.006, floor * 2.1);
+  return clamp(0.055 + (Math.min(rawLevel, threshold) / Math.max(threshold, 0.01)) * 0.085, 0.055, 0.14);
 }
 
 function expoVoiceMimeType(uri?: string | null) {
@@ -1172,6 +1243,88 @@ function SkeletonBlock({ style }: { style?: StyleProp<ViewStyle> }) {
   }, [opacity]);
 
   return <Animated.View style={[styles.skeletonBlock, isDarkTheme && styles.skeletonBlockDark, style, { opacity }]} />;
+}
+
+function DummyVoiceRecordingWaveform({
+  isDarkTheme,
+  paused,
+}: {
+  isDarkTheme: boolean;
+  paused: boolean;
+}) {
+  const barAnimations = useRef(VOICE_DUMMY_RECORDING_LEVELS.map(() => new Animated.Value(0))).current;
+
+  useEffect(() => {
+    if (paused) {
+      barAnimations.forEach((animation) => {
+        animation.stopAnimation();
+        animation.setValue(0);
+      });
+      return undefined;
+    }
+
+    const loops = barAnimations.map((animation, index) => {
+      const phaseDelay = (index % 8) * 70;
+      const cooldownDelay = ((VOICE_DUMMY_RECORDING_LEVELS.length - index) % 6) * 45;
+      return Animated.loop(
+        Animated.sequence([
+          Animated.delay(phaseDelay),
+          Animated.timing(animation, {
+            toValue: 1,
+            duration: 260 + (index % 4) * 45,
+            easing: Easing.out(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(animation, {
+            toValue: 0,
+            duration: 320 + (index % 5) * 35,
+            easing: Easing.inOut(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.delay(cooldownDelay),
+        ]),
+      );
+    });
+
+    loops.forEach((loop) => loop.start());
+    return () => {
+      loops.forEach((loop) => loop.stop());
+    };
+  }, [barAnimations, paused]);
+
+  return (
+    <>
+      {VOICE_DUMMY_RECORDING_LEVELS.map((level, index) => {
+        const scaleY = paused
+          ? 0.72
+          : barAnimations[index].interpolate({
+              inputRange: [0, 1],
+              outputRange: [0.68, 1.18 + (index % 3) * 0.08],
+            });
+        const opacity = paused
+          ? 0.36
+          : barAnimations[index].interpolate({
+              inputRange: [0, 1],
+              outputRange: [0.48, 0.98],
+            });
+
+        return (
+          <Animated.View
+            key={`dummy-voice-wave-${index}`}
+            style={[
+              styles.voiceRecorderDummyWaveBar,
+              isDarkTheme && styles.voiceRecorderDummyWaveBarDark,
+              {
+                height: 6 + Math.round(level * 30),
+                opacity,
+                transform: [{ scaleY }],
+              },
+            ]}
+          />
+        );
+      })}
+    </>
+  );
 }
 
 function ChatRowsSkeleton({ count = 5 }: { count?: number }) {
@@ -5988,17 +6141,28 @@ function ChatPane({
   const scrollRef = useRef<ScrollView | null>(null);
   const keyboardInset = useKeyboardClearance(!isWide);
   const recorder = useAudioRecorder(VOICE_RECORDING_OPTIONS);
-  const recorderState = useAudioRecorderState(recorder, 60);
+  const [expoRecorderState, setExpoRecorderState] = useState<ExpoRecorderState>(() => recorder.getStatus());
+  const { checkHasAudioRecorderPermission, getAudioRecorderPermission } = useAudioPermission();
+  const { extractWaveformData, onCurrentRecordingWaveformData, stopAllWaveFormExtractors } = useSimformAudioPlayer();
   const [voiceRecorderVisible, setVoiceRecorderVisible] = useState(false);
   const [voiceRecorderPaused, setVoiceRecorderPaused] = useState(false);
   const [voiceRecorderBusy, setVoiceRecorderBusy] = useState(false);
-  const [voiceNativeDurationMs, setVoiceNativeDurationMs] = useState(0);
-  const [voiceWaveSamples, setVoiceWaveSamples] = useState<number[]>(() => Array(VOICE_WAVEFORM_BARS).fill(0.14));
+  const [voiceWaveSamples, setVoiceWaveSamples] = useState<number[]>(() => Array(VOICE_WAVEFORM_BARS).fill(VOICE_IDLE_WAVE_LEVEL));
   const stopWebWaveAnalyserRef = useRef<(() => void) | null>(null);
   const voiceRecordingBackendRef = useRef<VoiceRecordingBackend | null>(null);
+  const [voiceRecordingBackend, setVoiceRecordingBackendState] = useState<VoiceRecordingBackend | null>(null);
   const simformRecorderRef = useRef<IWaveformRef>(null);
-  const nativeWaveformPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const nativeStartWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onCurrentRecordingWaveformDataRef = useRef(onCurrentRecordingWaveformData);
+  const simformNoiseFloorRef = useRef(0.00002);
+  const simformNoiseSamplesSeenRef = useRef(0);
+  const simformCalibrationSamplesRef = useRef<number[]>([]);
+  const simformRollingNoiseSamplesRef = useRef<number[]>([]);
+  const simformSpeechCandidateRunRef = useRef(0);
+  const simformSpeechHoldRef = useRef(0);
+  const expoRecorderPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const simformElapsedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const simformStartedAtRef = useRef<number | null>(null);
+  const simformAccumulatedMsRef = useRef(0);
   const [quickPromptOpen, setQuickPromptOpen] = useState(false);
   const [subtaskPanelOpen, setSubtaskPanelOpen] = useState(false);
   const [membersPanelOpen, setMembersPanelOpen] = useState(false);
@@ -6237,49 +6401,201 @@ function ChatPane({
   useEffect(() => {
     return () => {
       stopWebWaveAnalyserRef.current?.();
-      stopNativeWaveformPolling();
-      stopNativeStartWatchdog();
+      stopExpoRecorderPolling();
+      stopSimformElapsedTimer();
+      if (voiceRecordingBackendRef.current === "expo") {
+        void recorder.stop().catch(() => undefined);
+      }
+      if (voiceRecordingBackendRef.current === "simform") {
+        void simformRecorderRef.current?.stopRecord?.().catch(() => undefined);
+      }
+      void setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        interruptionMode: "duckOthers",
+      }).catch(() => undefined);
     };
   }, []);
 
   useEffect(() => {
+    onCurrentRecordingWaveformDataRef.current = onCurrentRecordingWaveformData;
+  }, [onCurrentRecordingWaveformData]);
+
+  useEffect(() => {
     if (
       Platform.OS === "web" ||
-      voiceRecordingBackendRef.current !== "expo" ||
+      voiceRecordingBackend !== "expo" ||
       !voiceRecorderVisible ||
       voiceRecorderPaused ||
-      !recorderState.isRecording
+      !expoRecorderState.isRecording
     ) {
       return;
     }
-    const level = meteringToWaveLevel(recorderState.metering);
+    const level = clamp(meteringToWaveLevel(expoRecorderState.metering), 0.055, VOICE_LIVE_WAVEFORM_MAX_LEVEL);
     setVoiceWaveSamples((samples) => [...samples.slice(1), level]);
-  }, [recorderState.durationMillis, recorderState.isRecording, recorderState.metering, voiceRecorderPaused, voiceRecorderVisible]);
+  }, [expoRecorderState.durationMillis, expoRecorderState.isRecording, expoRecorderState.metering, voiceRecorderPaused, voiceRecorderVisible, voiceRecordingBackend]);
 
-  function stopNativeWaveformPolling() {
-    if (nativeWaveformPollRef.current) {
-      clearInterval(nativeWaveformPollRef.current);
-      nativeWaveformPollRef.current = null;
+  useEffect(() => {
+    if (voiceRecordingBackend !== "simform" || !voiceRecorderVisible || voiceRecorderPaused) return;
+    const subscription = onCurrentRecordingWaveformDataRef.current((result) => {
+      const rawLevel = simformRecordingDecibelToLinearLevel(result.currentDecibel);
+      const calibrationSamples = simformCalibrationSamplesRef.current;
+      const rollingSamples = simformRollingNoiseSamplesRef.current;
+
+      rollingSamples.push(rawLevel);
+      if (rollingSamples.length > VOICE_NOISE_WINDOW_SAMPLES) {
+        rollingSamples.shift();
+      }
+
+      if (calibrationSamples.length < VOICE_NOISE_CALIBRATION_SAMPLES) {
+        calibrationSamples.push(rawLevel);
+        const calibrationFloor = percentile([...calibrationSamples].sort((a, b) => a - b), 0.45);
+        simformNoiseFloorRef.current = clamp(Math.max(0.00002, calibrationFloor), 0.00002, 0.28);
+        setVoiceWaveSamples((samples) => [...samples.slice(1), steadyNoiseVisualLevel(rawLevel, simformNoiseFloorRef.current)]);
+        return;
+      }
+
+      const previousFloor = simformNoiseFloorRef.current;
+      const sortedRollingSamples = [...rollingSamples].sort((a, b) => a - b);
+      const sortedCalibrationSamples = [...calibrationSamples].sort((a, b) => a - b);
+      const rollingLow = percentile(sortedRollingSamples, 0.25);
+      const rollingMedian = percentile(sortedRollingSamples, 0.5);
+      const rollingHigh = percentile(sortedRollingSamples, 0.9);
+      const rollingSpread = rollingHigh - rollingLow;
+      const calibrationFloor = percentile(sortedCalibrationSamples, 0.45);
+      const noiseCandidate = Math.max(0.00002, rollingLow, calibrationFloor);
+      const samplesSeen = simformNoiseSamplesSeenRef.current;
+      const speechThreshold = Math.max(previousFloor + 0.006, previousFloor * 2.1, rollingMedian + 0.006);
+      const dynamicLift = rawLevel - rollingMedian;
+      const isSpeechCandidate =
+        rawLevel > speechThreshold &&
+        dynamicLift > 0.004 &&
+        rollingSpread > 0.003;
+      const candidateRun = isSpeechCandidate ? simformSpeechCandidateRunRef.current + 1 : 0;
+      simformSpeechCandidateRunRef.current = candidateRun;
+
+      if (candidateRun >= 1) {
+        simformSpeechHoldRef.current = 4;
+      } else if (simformSpeechHoldRef.current > 0) {
+        simformSpeechHoldRef.current -= 1;
+      }
+
+      const voiceActive = simformSpeechHoldRef.current > 0;
+      const adaptiveNoiseCandidate = voiceActive ? noiseCandidate : Math.max(noiseCandidate, Math.min(rollingMedian, 0.28));
+      const learningRate = voiceActive ? 0.012 : rawLevel <= previousFloor * 1.45 || rollingSpread < 0.004 ? 0.24 : 0.08;
+      const nextFloor = clamp(previousFloor * (1 - learningRate) + adaptiveNoiseCandidate * learningRate, 0.00002, 0.28);
+
+      simformNoiseFloorRef.current = nextFloor;
+      simformNoiseSamplesSeenRef.current = samplesSeen + 1;
+      const rawVisualLevel = voiceActive ? voiceNoiseGateLevel(rawLevel, nextFloor) : steadyNoiseVisualLevel(rawLevel, nextFloor);
+      const level = clamp(rawVisualLevel, 0.055, VOICE_LIVE_WAVEFORM_MAX_LEVEL);
+      setVoiceWaveSamples((samples) => [...samples.slice(1), level]);
+    });
+    return () => {
+      subscription.remove();
+    };
+  }, [voiceRecorderPaused, voiceRecorderVisible, voiceRecordingBackend]);
+
+  function setVoiceRecordingBackend(nextBackend: VoiceRecordingBackend | null) {
+    voiceRecordingBackendRef.current = nextBackend;
+    setVoiceRecordingBackendState(nextBackend);
+  }
+
+  function expoRecorderStatesMatch(previousState: ExpoRecorderState, nextState: ExpoRecorderState) {
+    const previousMetering = previousState.metering;
+    const nextMetering = nextState.metering;
+    const meteringChanged =
+      (previousMetering === undefined) !== (nextMetering === undefined) ||
+      (
+        previousMetering !== undefined &&
+        nextMetering !== undefined &&
+        Math.abs(previousMetering - nextMetering) > 0.1
+      );
+
+    return (
+      !meteringChanged &&
+      previousState.canRecord === nextState.canRecord &&
+      previousState.isRecording === nextState.isRecording &&
+      previousState.mediaServicesDidReset === nextState.mediaServicesDidReset &&
+      previousState.url === nextState.url &&
+      Math.abs(previousState.durationMillis - nextState.durationMillis) <= 80
+    );
+  }
+
+  function updateExpoRecorderState() {
+    const nextState = recorder.getStatus();
+    setExpoRecorderState((previousState) => (
+      expoRecorderStatesMatch(previousState, nextState) ? previousState : nextState
+    ));
+  }
+
+  function stopExpoRecorderPolling() {
+    if (expoRecorderPollRef.current) {
+      clearInterval(expoRecorderPollRef.current);
+      expoRecorderPollRef.current = null;
     }
   }
 
-  function stopNativeStartWatchdog() {
-    if (nativeStartWatchdogRef.current) {
-      clearTimeout(nativeStartWatchdogRef.current);
-      nativeStartWatchdogRef.current = null;
+  function startExpoRecorderPolling() {
+    stopExpoRecorderPolling();
+    updateExpoRecorderState();
+    expoRecorderPollRef.current = setInterval(updateExpoRecorderState, 160);
+  }
+
+  function setSimformElapsed(nextElapsedMs: number) {
+    const normalizedElapsedMs = Math.max(0, Math.round(nextElapsedMs));
+    setSimformElapsedMs(normalizedElapsedMs);
+  }
+
+  function resetLiveVoiceWaveform() {
+    simformNoiseFloorRef.current = 0.00002;
+    simformNoiseSamplesSeenRef.current = 0;
+    simformCalibrationSamplesRef.current = [];
+    simformRollingNoiseSamplesRef.current = [];
+    simformSpeechCandidateRunRef.current = 0;
+    simformSpeechHoldRef.current = 0;
+    setVoiceWaveSamples(Array(VOICE_WAVEFORM_BARS).fill(VOICE_IDLE_WAVE_LEVEL));
+  }
+
+  function currentSimformElapsedMs() {
+    if (simformStartedAtRef.current === null) return simformAccumulatedMsRef.current;
+    return simformAccumulatedMsRef.current + Date.now() - simformStartedAtRef.current;
+  }
+
+  function stopSimformElapsedTimer() {
+    if (simformElapsedTimerRef.current) {
+      clearInterval(simformElapsedTimerRef.current);
+      simformElapsedTimerRef.current = null;
     }
   }
 
-  function startNativeWaveformPolling() {
-    if (nativeWaveformPollRef.current || Platform.OS === "web") return;
-    nativeWaveformPollRef.current = setInterval(() => {
-      void orbitaAudioWaveform.getStatusAsync().then((status) => {
-        setVoiceNativeDurationMs(status.durationMs);
-        if (status.waveformSamples.length) {
-          setVoiceWaveSamples(status.waveformSamples.slice(-VOICE_WAVEFORM_BARS));
-        }
-      }).catch(() => undefined);
-    }, 60);
+  function startSimformElapsedTimer({ reset = false }: { reset?: boolean } = {}) {
+    stopSimformElapsedTimer();
+    if (reset) {
+      simformAccumulatedMsRef.current = 0;
+      simformStartedAtRef.current = Date.now();
+      setSimformElapsed(0);
+    } else if (simformStartedAtRef.current === null) {
+      simformStartedAtRef.current = Date.now();
+    }
+    simformElapsedTimerRef.current = setInterval(() => {
+      setSimformElapsed(currentSimformElapsedMs());
+    }, 200);
+  }
+
+  function pauseSimformElapsedTimer() {
+    const elapsedMs = currentSimformElapsedMs();
+    simformAccumulatedMsRef.current = elapsedMs;
+    simformStartedAtRef.current = null;
+    stopSimformElapsedTimer();
+    setSimformElapsed(elapsedMs);
+  }
+
+  function resetSimformElapsedTimer() {
+    stopSimformElapsedTimer();
+    simformStartedAtRef.current = null;
+    simformAccumulatedMsRef.current = 0;
+    setSimformElapsed(0);
   }
 
   function stopWebWaveAnalyser() {
@@ -6335,56 +6651,122 @@ function ChatPane({
   async function startExpoRecorderBackend() {
     await recorder.prepareToRecordAsync();
     recorder.record();
-    voiceRecordingBackendRef.current = "expo";
+    setVoiceRecordingBackend("expo");
+    startExpoRecorderPolling();
     if (Platform.OS === "web") {
       void startWebWaveAnalyser();
     }
   }
 
-  function startNativeStartWatchdog() {
-    stopNativeStartWatchdog();
-    nativeStartWatchdogRef.current = setTimeout(() => {
-      if (voiceRecordingBackendRef.current !== "native") return;
-      void orbitaAudioWaveform.getStatusAsync().then(async (status) => {
-        if (voiceRecordingBackendRef.current !== "native") return;
-        if (status.durationMs > 120 || status.waveformSamples.length > 0) return;
+  async function waitForSimformRecorderMount() {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    if (!simformRecorderRef.current) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+  }
 
-        stopNativeWaveformPolling();
-        await orbitaAudioWaveform.discardRecordingAsync().catch(() => undefined);
-        voiceRecordingBackendRef.current = null;
-        setVoiceNativeDurationMs(0);
-        setVoiceWaveSamples(Array(VOICE_WAVEFORM_BARS).fill(0.14));
+  async function hasSimformRecorderPermission() {
+    try {
+      let status = await checkHasAudioRecorderPermission();
+      if (status === PermissionStatus.granted) return true;
+      status = await getAudioRecorderPermission();
+      return status === PermissionStatus.granted;
+    } catch {
+      return false;
+    }
+  }
+
+  async function extractSimformWaveSamples(path: string, uri: string) {
+    const playerKey = `voice-extract-${Date.now()}`;
+    const extractForPath = async (candidatePath: string) => {
+      const waveformData = await extractWaveformData({
+        path: candidatePath,
+        playerKey,
+        noOfSamples: VOICE_WAVEFORM_BARS,
+      });
+      const channelSamples = waveformData.find((samples) => Array.isArray(samples) && samples.length > 0) ?? waveformData.flat();
+      return normalizeWaveSamples(channelSamples, VOICE_WAVEFORM_BARS);
+    };
+
+    try {
+      return await extractForPath(path);
+    } catch {
+      if (uri !== path) {
         try {
-          await startExpoRecorderBackend();
-          setVoiceRecorderVisible(true);
-          setVoiceRecorderPaused(false);
+          return await extractForPath(uri);
         } catch {
-          setVoiceRecorderVisible(false);
-          setVoiceRecorderPaused(false);
-          await setAudioModeAsync({
-            allowsRecording: false,
-            playsInSilentMode: true,
-            interruptionMode: "duckOthers",
-          }).catch(() => undefined);
+          return [] as number[];
         }
-      }).catch(() => undefined);
-    }, 900);
+      }
+      return [] as number[];
+    } finally {
+      await stopAllWaveFormExtractors().catch(() => undefined);
+    }
+  }
+
+  async function startSimformRecorderBackend() {
+    if (!canUseNativeAudioWaveform()) return false;
+    const permissionGranted = await hasSimformRecorderPermission();
+    if (!permissionGranted) return false;
+
+    setVoiceRecordingBackend("simform");
+    resetLiveVoiceWaveform();
+    resetSimformElapsedTimer();
+    setVoiceRecorderVisible(true);
+    setVoiceRecorderPaused(false);
+    setSimformRecorderStartPending(true);
+
+    try {
+      await waitForSimformRecorderMount();
+      const started = await simformRecorderRef.current?.startRecord({
+        updateFrequency: UpdateFrequency.high,
+      });
+      if (!started) throw new Error("Simform recorder did not start");
+      startSimformElapsedTimer({ reset: true });
+      return true;
+    } catch {
+      await simformRecorderRef.current?.stopRecord?.().catch(() => undefined);
+      setVoiceRecordingBackend(null);
+      setVoiceRecorderVisible(false);
+      setVoiceRecorderPaused(false);
+      resetSimformElapsedTimer();
+      return false;
+    } finally {
+      setSimformRecorderStartPending(false);
+    }
   }
 
   async function startVoiceRecording() {
     if (voiceRecorderVisible && voiceRecorderPaused) {
       if (voiceRecordingBackendRef.current === "expo") {
         recorder.record();
+        startExpoRecorderPolling();
         if (Platform.OS === "web") void startWebWaveAnalyser();
-      } else if (voiceRecordingBackendRef.current === "native") {
-        await orbitaAudioWaveform.resumeRecordingAsync();
-        startNativeWaveformPolling();
-        startNativeStartWatchdog();
+      } else if (voiceRecordingBackendRef.current === "simform") {
+        await simformRecorderRef.current?.resumeRecord();
+        startSimformElapsedTimer();
       }
       setVoiceRecorderPaused(false);
       return;
     }
     if (voiceRecorderVisible) return;
+
+    if (canUseNativeAudioWaveform()) {
+      await setAudioModeAsync({
+        allowsRecording: true,
+        playsInSilentMode: true,
+        interruptionMode: "duckOthers",
+      });
+      const simformStarted = await startSimformRecorderBackend();
+      if (simformStarted) return;
+      await setAudioModeAsync({
+        allowsRecording: false,
+        playsInSilentMode: true,
+        interruptionMode: "duckOthers",
+      }).catch(() => undefined);
+      return;
+    }
+
     const permission = await requestRecordingPermissionsAsync();
     if (!permission.granted) return;
     await setAudioModeAsync({
@@ -6392,30 +6774,16 @@ function ChatPane({
       playsInSilentMode: true,
       interruptionMode: "duckOthers",
     });
-    setVoiceWaveSamples(Array(VOICE_WAVEFORM_BARS).fill(0.14));
-    setVoiceNativeDurationMs(0);
-    voiceRecordingBackendRef.current = null;
-    try {
-      const nativeAvailable = Platform.OS !== "web" && await orbitaAudioWaveform.isAvailableAsync();
-      if (nativeAvailable) {
-        await orbitaAudioWaveform.startRecordingAsync();
-        voiceRecordingBackendRef.current = "native";
-        setVoiceRecorderVisible(true);
-        setVoiceRecorderPaused(false);
-        startNativeWaveformPolling();
-        startNativeStartWatchdog();
-        return;
-      }
-    } catch {
-      await orbitaAudioWaveform.discardRecordingAsync().catch(() => undefined);
-    }
+    resetLiveVoiceWaveform();
+    resetSimformElapsedTimer();
+    setVoiceRecordingBackend(null);
 
     try {
       await startExpoRecorderBackend();
       setVoiceRecorderVisible(true);
       setVoiceRecorderPaused(false);
     } catch {
-      voiceRecordingBackendRef.current = null;
+      setVoiceRecordingBackend(null);
       setVoiceRecorderVisible(false);
       setVoiceRecorderPaused(false);
       await setAudioModeAsync({
@@ -6428,13 +6796,14 @@ function ChatPane({
 
   async function pauseVoiceRecording() {
     if (!voiceRecorderVisible || voiceRecorderPaused) return;
-    stopNativeStartWatchdog();
     if (voiceRecordingBackendRef.current === "expo") {
       recorder.pause();
+      stopExpoRecorderPolling();
+      updateExpoRecorderState();
       stopWebWaveAnalyser();
-    } else if (voiceRecordingBackendRef.current === "native") {
-      await orbitaAudioWaveform.pauseRecordingAsync();
-      stopNativeWaveformPolling();
+    } else if (voiceRecordingBackendRef.current === "simform") {
+      await simformRecorderRef.current?.pauseRecord();
+      pauseSimformElapsedTimer();
     }
     setVoiceRecorderPaused(true);
   }
@@ -6443,8 +6812,9 @@ function ChatPane({
     setVoiceRecorderVisible(false);
     setVoiceRecorderPaused(false);
     setVoiceRecorderBusy(false);
-    setVoiceNativeDurationMs(0);
-    voiceRecordingBackendRef.current = null;
+    setSimformRecorderStartPending(false);
+    resetSimformElapsedTimer();
+    setVoiceRecordingBackend(null);
   }
 
   async function finishVoiceRecording() {
@@ -6455,7 +6825,10 @@ function ChatPane({
       | null = null;
     const backend = voiceRecordingBackendRef.current;
     if (backend === "expo") {
-      const durationMs = recorderState.durationMillis || null;
+      stopExpoRecorderPolling();
+      updateExpoRecorderState();
+      const latestRecorderState = recorder.getStatus();
+      const durationMs = latestRecorderState.durationMillis || null;
       const waveformSamples = normalizeWaveSamples(voiceWaveSamples, VOICE_WAVEFORM_BARS);
       try {
         stopWebWaveAnalyser();
@@ -6464,7 +6837,7 @@ function ChatPane({
         setVoiceRecorderBusy(false);
         return null;
       }
-      const uri = recorder.uri ?? recorderState.url;
+      const uri = recorder.uri ?? latestRecorderState.url;
       const mimeType = expoVoiceMimeType(uri);
       result = uri
         ? {
@@ -6474,19 +6847,22 @@ function ChatPane({
             waveformSamples,
           }
         : null;
-    } else if (backend === "native") {
+    } else if (backend === "simform") {
       try {
-        stopNativeStartWatchdog();
-        stopNativeWaveformPolling();
-        const nativeResult = await orbitaAudioWaveform.stopRecordingAsync();
+        const durationMs = currentSimformElapsedMs() || null;
+        pauseSimformElapsedTimer();
+        const path = await simformRecorderRef.current?.stopRecord();
+        const uri = path ? normalizeLocalAudioUri(path) : "";
+        const waveformSamples = path ? await extractSimformWaveSamples(path, uri) : [];
         result = {
-          durationMs: nativeResult.durationMs,
-          mimeType: nativeResult.mimeType,
-          uri: nativeResult.uri,
-          waveformSamples: normalizeWaveSamples(nativeResult.waveformSamples, VOICE_WAVEFORM_BARS),
+          durationMs,
+          mimeType: simformVoiceMimeType(uri),
+          uri,
+          waveformSamples,
         };
       } catch {
         setVoiceRecorderBusy(false);
+        resetSimformElapsedTimer();
         return null;
       }
     } else {
@@ -6516,13 +6892,14 @@ function ChatPane({
 
   async function discardVoiceAttachment() {
     stopWebWaveAnalyser();
-    stopNativeWaveformPolling();
-    stopNativeStartWatchdog();
+    stopExpoRecorderPolling();
     if (voiceRecorderVisible && voiceRecordingBackendRef.current === "expo") {
       await recorder.stop().catch(() => undefined);
+      updateExpoRecorderState();
     }
-    if (voiceRecorderVisible && voiceRecordingBackendRef.current === "native") {
-      await orbitaAudioWaveform.discardRecordingAsync().catch(() => undefined);
+    if (voiceRecorderVisible && voiceRecordingBackendRef.current === "simform") {
+      pauseSimformElapsedTimer();
+      await simformRecorderRef.current?.stopRecord?.().catch(() => undefined);
     }
     if (voiceRecorderVisible) {
       await setAudioModeAsync({
@@ -6532,7 +6909,7 @@ function ChatPane({
       }).catch(() => undefined);
     }
     resetVoiceRecorderState();
-    setVoiceWaveSamples(Array(VOICE_WAVEFORM_BARS).fill(0.14));
+    resetLiveVoiceWaveform();
   }
 
   async function sendVoiceAttachment() {
@@ -6559,8 +6936,10 @@ function ChatPane({
   const quickPrompts = isTaskThreadConversation ? TASK_THREAD_QUICK_PROMPTS : AGENT_QUICK_PROMPTS;
   const composerCanSend = Boolean(draft.trim() || attachment);
   const composerInputScrollEnabled = composerInputHeight >= COMPOSER_INPUT_MAX_HEIGHT - 1;
-  const voiceElapsedMs = voiceRecordingBackendRef.current === "expo" ? recorderState.durationMillis : voiceNativeDurationMs;
+  const voiceElapsedMs = voiceRecordingBackend === "expo" ? expoRecorderState.durationMillis : simformElapsedMs;
   const voiceElapsedLabel = formatDurationMs(voiceElapsedMs);
+  const useNativeVoiceRecorder = voiceRecordingBackend === "simform" && canUseNativeAudioWaveform();
+  const voiceRecorderControlsDisabled = voiceRecorderBusy || simformRecorderStartPending;
 
   const handleComposerInputContentSizeChange = useCallback((event: { nativeEvent: { contentSize: { height: number } } }) => {
     const measuredHeight = Math.ceil(event.nativeEvent.contentSize.height);
@@ -6848,7 +7227,7 @@ function ChatPane({
           <View style={[styles.inlineVoiceRecorder, isDarkTheme && styles.inlineVoiceRecorderDark]}>
             <Pressable
               accessibilityLabel="Delete voice recording"
-              disabled={voiceRecorderBusy}
+              disabled={voiceRecorderControlsDisabled}
               onPress={() => {
                 void discardVoiceAttachment();
               }}
@@ -6869,23 +7248,27 @@ function ChatPane({
                 </Text>
               </View>
               <View style={styles.voiceRecorderWaveRow}>
-                {voiceWaveSamples.map((sample, index) => (
-                  <View
-                    key={`voice-wave-${index}`}
-                    style={[
-                      styles.voiceRecorderWaveBar,
-                      {
-                        height: 5 + Math.round(sample * 28),
-                        opacity: voiceRecorderPaused ? 0.44 : 0.68 + sample * 0.32,
-                      },
-                    ]}
+                {useNativeVoiceRecorder && (
+                  <Waveform
+                    ref={simformRecorderRef}
+                    mode="live"
+                    candleSpace={2}
+                    candleWidth={4}
+                    containerStyle={styles.voiceRecorderHiddenNativeWaveform}
+                    maxCandlesToRender={VOICE_WAVEFORM_BARS}
+                    onRecorderStateChange={(nextRecorderState) => {
+                      setVoiceRecorderPaused(nextRecorderState === RecorderState.paused);
+                    }}
+                    showsHorizontalScrollIndicator={false}
+                    waveColor={isDarkTheme ? "#E9EDEF" : themeColors.primaryDark}
                   />
-                ))}
+                )}
+                <DummyVoiceRecordingWaveform isDarkTheme={isDarkTheme} paused={voiceRecorderPaused || voiceRecorderControlsDisabled} />
               </View>
             </View>
             <Pressable
               accessibilityLabel={voiceRecorderPaused ? "Resume voice recording" : "Pause voice recording"}
-              disabled={voiceRecorderBusy}
+              disabled={voiceRecorderControlsDisabled}
               onPress={voiceRecorderPaused ? startVoiceRecording : pauseVoiceRecording}
               style={({ pressed }) => [
                 styles.voiceInlineButton,
@@ -6897,17 +7280,17 @@ function ChatPane({
             </Pressable>
             <Pressable
               accessibilityLabel="Send voice recording"
-              disabled={voiceRecorderBusy}
+              disabled={voiceRecorderControlsDisabled}
               onPress={() => {
                 void sendVoiceAttachment();
               }}
               style={({ pressed }) => [
                 styles.voiceSendButton,
                 pressed && styles.pressablePressed,
-                voiceRecorderBusy && styles.buttonDisabled,
+                voiceRecorderControlsDisabled && styles.buttonDisabled,
               ]}
             >
-              {voiceRecorderBusy ? (
+              {voiceRecorderControlsDisabled ? (
                 <ActivityIndicator color="#FFFFFF" size="small" />
               ) : (
                 <Ionicons color="#FFFFFF" name="send" size={19} />
@@ -7291,18 +7674,6 @@ function simformVoiceMimeType(uri: string) {
   return Platform.OS === "ios" ? "audio/m4a" : "audio/mp4";
 }
 
-function parseSimformStopResult(value: unknown): { uri: string; durationMs: number | null } | null {
-  if (Array.isArray(value)) {
-    const uri = typeof value[0] === "string" ? value[0] : null;
-    const durationValue = typeof value[1] === "number" ? value[1] : Number(value[1]);
-    return uri ? { uri: normalizeLocalAudioUri(uri), durationMs: normalizeNativeDurationMs(durationValue) } : null;
-  }
-  if (typeof value === "string" && value.trim()) {
-    return { uri: normalizeLocalAudioUri(value), durationMs: null };
-  }
-  return null;
-}
-
 function AudioAttachmentCard({
   attachment,
   mine,
@@ -7335,6 +7706,9 @@ function NativeWaveformAudioAttachmentCard({
   useEffect(() => {
     return () => {
       void waveformRef.current?.stopPlayer?.().catch(() => undefined);
+      if (activeStaticWaveformPlayer === waveformRef.current) {
+        activeStaticWaveformPlayer = null;
+      }
     };
   }, []);
 
@@ -7344,13 +7718,21 @@ function NativeWaveformAudioAttachmentCard({
     try {
       if (playerState === PlayerState.playing) {
         await waveformRef.current?.pausePlayer();
+        if (activeStaticWaveformPlayer === waveformRef.current) {
+          activeStaticWaveformPlayer = null;
+        }
         return;
+      }
+      if (activeStaticWaveformPlayer && activeStaticWaveformPlayer !== waveformRef.current) {
+        await activeStaticWaveformPlayer.stopPlayer?.().catch(() => undefined);
       }
       if (playerState === PlayerState.paused) {
         await waveformRef.current?.resumePlayer({ finishMode: FinishMode.stop });
+        activeStaticWaveformPlayer = waveformRef.current;
         return;
       }
       await waveformRef.current?.startPlayer({ finishMode: FinishMode.stop });
+      activeStaticWaveformPlayer = waveformRef.current;
     } catch {
       setFallback(true);
     }
@@ -7383,7 +7765,7 @@ function NativeWaveformAudioAttachmentCard({
           path={attachment.url}
           candleSpace={2}
           candleWidth={4}
-          candleHeightScale={5}
+          candleHeightScale={1.35}
           containerStyle={styles.nativeAudioWaveform}
           waveColor={mine ? (isDarkTheme ? "rgba(233,237,239,0.42)" : "rgba(17,27,33,0.34)") : "#D1D7DB"}
           scrubColor={mine ? (isDarkTheme ? "#E9EDEF" : themeColors.primaryDark) : themeColors.primaryDark}
@@ -7393,7 +7775,12 @@ function NativeWaveformAudioAttachmentCard({
             if (normalizedDuration) setNativeDurationMs(normalizedDuration);
           }}
           onError={() => setFallback(true)}
-          onPlayerStateChange={setPlayerState}
+          onPlayerStateChange={(nextState) => {
+            setPlayerState(nextState);
+            if (nextState === PlayerState.stopped && activeStaticWaveformPlayer === waveformRef.current) {
+              activeStaticWaveformPlayer = null;
+            }
+          }}
         />
         <Text style={[styles.audioDuration, mine && (isDarkTheme ? styles.audioDurationMineDark : styles.audioDurationMine)]}>{durationLabel}</Text>
       </View>
@@ -10142,17 +10529,27 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
     minHeight: 36,
+    position: "relative",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     overflow: "hidden",
   },
-  voiceRecorderWaveBar: {
+  voiceRecorderHiddenNativeWaveform: {
+    height: 1,
+    left: 0,
+    opacity: 0,
+    position: "absolute",
+    top: 0,
+    width: 1,
+  },
+  voiceRecorderDummyWaveBar: {
     width: 3,
-    maxHeight: 34,
+    maxHeight: 38,
     borderRadius: 999,
     backgroundColor: colors.primaryDark,
   },
+  voiceRecorderDummyWaveBarDark: { backgroundColor: "#E9EDEF" },
   voiceSendButton: {
     width: 42,
     height: 42,
