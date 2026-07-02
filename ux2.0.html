@@ -1,0 +1,886 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Orbita — UX 2.0 concept</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600;12..96,700;12..96,800&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800&display=swap" rel="stylesheet" />
+<style>
+/* ============================================================
+   ORBITA — UX 2.0
+   Two mental models, two surfaces:
+     Chats  = conversations (people, groups, agents) — flat, WhatsApp-pure
+     Tasks  = work items — hierarchy shown via drill-down, never a tree
+   Theme carried over from the live app: deep-green rail, cream paper,
+   mint accents, white bubbles. Refined, not reinvented.
+   ============================================================ */
+
+:root{
+  --rail-1:#0C7A5B; --rail-2:#0A5E48;
+  --brand:#00A884; --brand-d:#008069; --brand-deep:#075E54;
+  --mint:#D9FDD3; --mint-2:#E7FCE3; --mint-tint:#EAF5EE;
+  --page:#EFEAE2; --paper:#F4F1EB; --shell:#E7E2D8;
+  --surface:#FFFFFF;
+  --ink:#0E1B21; --muted:#5B6D76; --faint:#93A0A8;
+  --line:#EAECEC; --line-2:#F0F2F1;
+  --open:#E8971A; --prog:#2F7FED; --done:#00A884; --closed:#95A2AA; --danger:#EF5C6D;
+  --ring:#00A884;
+  --font-display:"Bricolage Grotesque", ui-sans-serif, sans-serif;
+  --font-body:"Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --sh-1:0 1px 2px rgba(11,27,33,.05), 0 1px 1px rgba(11,27,33,.04);
+  --sh-2:0 6px 22px rgba(11,27,33,.10);
+  --sh-3:0 18px 50px rgba(11,27,33,.16);
+  --r-lg:22px; --r-md:16px; --r-sm:12px;
+}
+
+*{box-sizing:border-box; margin:0; padding:0;}
+html,body{height:100%;}
+body{
+  font-family:var(--font-body);
+  background:
+    radial-gradient(1200px 700px at 82% -10%, #F0FAF4 0%, transparent 55%),
+    radial-gradient(900px 600px at -5% 110%, #EFF7F1 0%, transparent 60%),
+    var(--shell);
+  color:var(--ink);
+  -webkit-font-smoothing:antialiased;
+  display:flex; flex-direction:column; align-items:center;
+  min-height:100%;
+  padding:22px 18px 60px;
+}
+
+/* ---------- Top review bar ---------- */
+.reviewbar{
+  width:100%; max-width:1240px;
+  display:flex; align-items:center; justify-content:space-between;
+  gap:16px; margin-bottom:18px; flex-wrap:wrap;
+}
+.reviewbar .brandline{display:flex; align-items:center; gap:12px;}
+.reviewbar .logo{
+  width:40px; height:40px; border-radius:12px;
+  background:linear-gradient(150deg,#12A97F,#0A6B50);
+  display:grid; place-items:center; color:#fff; box-shadow:var(--sh-2);
+  font-family:var(--font-display); font-weight:800; font-size:20px;
+}
+.reviewbar h1{
+  font-family:var(--font-display); font-weight:700; font-size:19px; letter-spacing:-.01em;
+}
+.reviewbar h1 span{color:var(--brand-d);}
+.reviewbar .sub{font-size:12.5px; color:var(--muted); margin-top:1px;}
+.toggle{
+  display:inline-flex; background:var(--surface); border:1px solid var(--line);
+  border-radius:999px; padding:4px; box-shadow:var(--sh-1); gap:2px;
+}
+.toggle button{
+  font-family:var(--font-body); font-weight:600; font-size:13px;
+  border:0; background:transparent; color:var(--muted);
+  padding:8px 16px; border-radius:999px; cursor:pointer;
+  display:inline-flex; align-items:center; gap:7px; transition:.18s;
+}
+.toggle button.active{background:var(--brand-d); color:#fff; box-shadow:var(--sh-1);}
+.toggle button:not(.active):hover{color:var(--ink);}
+
+/* ---------- Stage / phone frame ---------- */
+.stage{width:100%; max-width:1240px; display:flex; justify-content:center;}
+.stage.framed{padding:14px 0;}
+
+.app{
+  position:relative; width:100%; height:min(78vh, 820px);
+  min-height:600px;
+  background:var(--paper);
+  border-radius:26px; border:1px solid rgba(11,27,33,.06);
+  box-shadow:var(--sh-3);
+  display:grid; grid-template-columns:84px 372px 1fr;
+  overflow:hidden;
+}
+/* phone frame when mobile is forced on a wide screen */
+.stage.framed .app{
+  width:392px; height:812px; min-height:0;
+  grid-template-columns:1fr;
+  border:10px solid #0c1416; border-radius:44px;
+  box-shadow:0 30px 70px rgba(11,27,33,.32);
+}
+
+/* ============ RAIL (desktop nav) ============ */
+.rail{
+  background:linear-gradient(180deg,var(--rail-1),var(--rail-2));
+  display:flex; flex-direction:column; align-items:center;
+  padding:18px 0 20px; gap:6px; color:#eafaf3;
+}
+.rail .app-logo{
+  width:46px; height:46px; border-radius:14px; margin-bottom:14px;
+  background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.25);
+  display:grid; place-items:center; color:#fff;
+  font-family:var(--font-display); font-weight:800; font-size:22px;
+  backdrop-filter:blur(2px);
+}
+.rail .nav{display:flex; flex-direction:column; gap:4px; width:100%; align-items:center;}
+.rail .nav button{
+  width:60px; padding:10px 0 8px; border:0; background:transparent; cursor:pointer;
+  color:rgba(255,255,255,.72); border-radius:16px; transition:.16s;
+  display:flex; flex-direction:column; align-items:center; gap:4px;
+  font-family:var(--font-body); font-weight:600; font-size:10.5px; letter-spacing:.01em;
+  position:relative;
+}
+.rail .nav button svg{width:23px; height:23px;}
+.rail .nav button:hover{color:#fff; background:rgba(255,255,255,.08);}
+.rail .nav button.active{color:#083c2d; background:var(--mint); box-shadow:var(--sh-1);}
+.rail .nav button .dot{
+  position:absolute; top:8px; right:12px; min-width:16px; height:16px; padding:0 4px;
+  background:var(--brand); color:#052b20; font-size:10px; font-weight:800;
+  border-radius:999px; display:grid; place-items:center; border:2px solid var(--rail-1);
+}
+.rail .spacer{flex:1;}
+.rail .fab{
+  width:50px; height:50px; border-radius:16px; border:0; cursor:pointer;
+  background:var(--mint); color:#07543f; box-shadow:var(--sh-2);
+  display:grid; place-items:center; transition:.16s;
+}
+.rail .fab:hover{transform:translateY(-2px) rotate(90deg);}
+.rail .fab svg{width:24px; height:24px;}
+
+/* ============ LIST PANE ============ */
+.list{
+  background:var(--surface); display:flex; flex-direction:column;
+  border-right:1px solid var(--line); min-width:0;
+}
+.list-head{padding:18px 18px 12px; border-bottom:1px solid var(--line-2);}
+.list-head .titlerow{display:flex; align-items:center; justify-content:space-between; margin-bottom:14px;}
+.list-head h2{font-family:var(--font-display); font-weight:700; font-size:23px; letter-spacing:-.02em;}
+.iconbtn{
+  width:42px; height:42px; border-radius:13px; border:0; cursor:pointer;
+  background:var(--mint-2); color:var(--brand-d); display:grid; place-items:center; transition:.16s;
+}
+.iconbtn:hover{background:var(--mint); transform:translateY(-1px);}
+.iconbtn svg{width:21px; height:21px;}
+.search{
+  display:flex; align-items:center; gap:10px;
+  background:var(--page); border-radius:13px; padding:11px 14px; color:var(--faint);
+  font-size:14px;
+}
+.search svg{width:18px; height:18px; flex:none;}
+
+/* filter chips (Tasks tab) */
+.chips{display:flex; gap:8px; padding:14px 18px 4px; overflow-x:auto; scrollbar-width:none;}
+.chips::-webkit-scrollbar{display:none;}
+.chip{
+  flex:none; border:1px solid var(--line); background:var(--surface); cursor:pointer;
+  border-radius:999px; padding:8px 14px; font-size:13px; font-weight:600; color:var(--muted);
+  display:inline-flex; align-items:center; gap:7px; transition:.15s; white-space:nowrap;
+}
+.chip .av{width:18px; height:18px; border-radius:6px; display:grid; place-items:center; font-size:10px;}
+.chip:hover{border-color:var(--brand);}
+.chip.active{background:var(--brand-d); border-color:var(--brand-d); color:#fff;}
+.chip.active .av{background:rgba(255,255,255,.2); color:#fff;}
+
+.list-body{flex:1; overflow-y:auto; padding:8px 12px 24px;}
+.list-body::-webkit-scrollbar{width:8px;}
+.list-body::-webkit-scrollbar-thumb{background:#e3e6e6; border-radius:8px;}
+.section-label{
+  font-size:11px; font-weight:700; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--faint); padding:14px 10px 8px;
+}
+
+/* --- conversation row (Chats) --- */
+.row{
+  display:flex; align-items:center; gap:13px; padding:11px 12px; border-radius:16px;
+  cursor:pointer; transition:.14s; position:relative;
+  animation:rise .5s both;
+}
+.row:hover{background:var(--page);}
+.row.sel{background:var(--mint-tint); box-shadow:inset 0 0 0 1px rgba(0,168,132,.25);}
+.avatar{
+  width:50px; height:50px; border-radius:50%; flex:none; display:grid; place-items:center;
+  color:#fff; font-weight:700; font-size:18px; font-family:var(--font-display);
+  position:relative;
+}
+.avatar.agent{background:radial-gradient(circle at 35% 30%,#B9F0DC,#33B78E 70%); color:#06503c;}
+.avatar.agent::after{
+  content:""; position:absolute; inset:-3px; border-radius:50%;
+  border:2px solid var(--brand); opacity:.5;
+}
+.avatar .spark{position:absolute; right:-2px; bottom:-2px; width:20px; height:20px; background:var(--brand-d);
+  border-radius:50%; display:grid; place-items:center; border:2px solid #fff;}
+.avatar .spark svg{width:11px; height:11px; color:#fff;}
+.row .body{flex:1; min-width:0;}
+.row .line1{display:flex; align-items:center; justify-content:space-between; gap:8px;}
+.row .name{font-weight:700; font-size:15px; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.row .time{font-size:11.5px; color:var(--faint); flex:none; font-weight:600;}
+.row .prev{font-size:13px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:3px;}
+.row .badge{
+  min-width:20px; height:20px; padding:0 6px; background:var(--brand);
+  color:#04352a; border-radius:999px; font-size:11px; font-weight:800; display:grid; place-items:center; flex:none;
+}
+.chev{color:var(--faint); flex:none; transition:.2s;}
+.chev svg{width:18px; height:18px; display:block;}
+
+/* --- task card (Tasks) --- */
+.tcard{
+  background:var(--surface); border:1px solid var(--line); border-radius:18px;
+  padding:14px 15px; margin:10px 4px; cursor:pointer; transition:.15s;
+  display:flex; gap:13px; align-items:flex-start; box-shadow:var(--sh-1);
+  animation:rise .5s both;
+}
+.tcard:hover{border-color:rgba(0,168,132,.4); transform:translateY(-2px); box-shadow:var(--sh-2);}
+.tcard.sel{border-color:var(--brand); box-shadow:0 0 0 3px rgba(0,168,132,.15);}
+.statuscircle{
+  width:26px; height:26px; border-radius:50%; flex:none; margin-top:1px; cursor:pointer;
+  border:2.5px solid var(--open); background:transparent; position:relative; transition:.2s;
+}
+.statuscircle.prog{border-color:var(--prog);}
+.statuscircle.prog::after{content:""; position:absolute; inset:4px 4px 4px 50%; background:var(--prog); border-radius:0 40px 40px 0;}
+.statuscircle.done{border-color:var(--done); background:var(--done);}
+.statuscircle.done::after{content:""; position:absolute; inset:0; display:grid; place-items:center;}
+.statuscircle.done svg{position:absolute; inset:0; margin:auto; width:15px; height:15px; color:#fff;}
+.tcard .tbody{flex:1; min-width:0;}
+.tcard .trow1{display:flex; align-items:center; gap:8px; margin-bottom:5px;}
+.tasknum{
+  font-family:var(--font-body); font-weight:800; font-size:11px; letter-spacing:.02em;
+  background:var(--mint); color:var(--brand-d); padding:3px 9px; border-radius:8px; flex:none;
+}
+.tcard .ttitle{font-weight:700; font-size:15px; letter-spacing:-.01em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1;}
+.tcard .ttime{font-size:11px; color:var(--faint); font-weight:600; flex:none;}
+.tmeta{display:flex; align-items:center; gap:12px; font-size:12.5px; color:var(--muted); flex-wrap:wrap;}
+.tmeta .pill{display:inline-flex; align-items:center; gap:5px; font-weight:600;}
+.tmeta .dot{width:7px; height:7px; border-radius:50%;}
+.miniav{width:19px; height:19px; border-radius:50%; background:#CFE9DF; color:#06503c; display:inline-grid; place-items:center; font-size:9px; font-weight:800;}
+.subline{
+  display:flex; align-items:center; gap:9px; margin-top:11px; padding-top:11px; border-top:1px dashed var(--line);
+  font-size:12.5px; color:var(--muted); font-weight:600;
+}
+.subline .ring{width:22px; height:22px; flex:none;}
+.subline .go{margin-left:auto; color:var(--brand-d); display:inline-flex; align-items:center; gap:3px; font-weight:700;}
+.subline .go svg{width:15px; height:15px;}
+
+/* status/state colors */
+.c-open{color:var(--open);} .bg-open{background:var(--open);}
+.c-prog{color:var(--prog);} .bg-prog{background:var(--prog);}
+.c-done{color:var(--done);} .bg-done{background:var(--done);}
+.c-closed{color:var(--closed);} .bg-closed{background:var(--closed);}
+
+/* empty placeholder (contacts/settings) */
+.placeholder{padding:40px 26px; color:var(--muted);}
+.placeholder h3{font-family:var(--font-display); font-size:18px; color:var(--ink); margin-bottom:8px;}
+.placeholder p{font-size:13.5px; line-height:1.6;}
+.setrow{display:flex; align-items:center; gap:14px; padding:15px 4px; border-bottom:1px solid var(--line-2);}
+.setrow .ic{width:40px; height:40px; border-radius:12px; background:var(--mint-2); color:var(--brand-d); display:grid; place-items:center;}
+.setrow .ic svg{width:20px;height:20px;}
+.setrow b{font-weight:700; font-size:14.5px;}
+.setrow small{display:block; color:var(--muted); font-size:12.5px; margin-top:2px;}
+
+/* ============ DETAIL PANE ============ */
+.detail{display:flex; flex-direction:column; min-width:0; background:var(--page); position:relative;}
+/* subtle paper texture, NOT a green wash */
+.detail .thread{
+  flex:1; overflow-y:auto; padding:20px 26px 12px;
+  background-image:radial-gradient(rgba(11,27,33,.028) 1px, transparent 1px);
+  background-size:22px 22px;
+}
+.detail .thread::-webkit-scrollbar{width:8px;}
+.detail .thread::-webkit-scrollbar-thumb{background:#dcd8ce; border-radius:8px;}
+
+/* ---- chat header ---- */
+.dhead{
+  background:linear-gradient(120deg,var(--brand-d),#0B6E52);
+  color:#fff; padding:14px 20px; display:flex; align-items:center; gap:14px;
+  box-shadow:0 2px 12px rgba(7,84,64,.25); z-index:2;
+}
+.dhead .back{display:none; background:rgba(255,255,255,.14); border:0; color:#fff; width:38px; height:38px; border-radius:11px; cursor:pointer; place-items:center;}
+.dhead .back svg{width:20px; height:20px;}
+.dhead .av{width:44px; height:44px; border-radius:50%; background:radial-gradient(circle at 35% 30%,#CFF3E4,#2FB48C 70%); color:#06503c; display:grid; place-items:center; font-weight:800; font-family:var(--font-display); position:relative;}
+.dhead .av .spark{position:absolute; right:-2px; bottom:-2px; width:18px; height:18px; background:#053e2f; border-radius:50%; display:grid; place-items:center; border:2px solid #fff;}
+.dhead .av .spark svg{width:10px;height:10px;color:#fff;}
+.dhead .htext{flex:1; min-width:0;}
+.dhead .htext b{font-family:var(--font-display); font-weight:700; font-size:17px; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.dhead .htext small{font-size:12px; opacity:.8;}
+.dhead .hbtns{display:flex; gap:8px;}
+.dhead .hpill{background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.22); color:#fff; border-radius:999px; padding:8px 13px; font-size:12.5px; font-weight:700; display:inline-flex; align-items:center; gap:7px; cursor:pointer;}
+.dhead .hpill svg{width:16px; height:16px;}
+.dhead .hicon{width:40px; height:40px; border-radius:50%; background:rgba(255,255,255,.16); border:0; color:#fff; display:grid; place-items:center; cursor:pointer;}
+.dhead .hicon svg{width:19px; height:19px;}
+
+/* ---- task breadcrumb + meta card (task detail) ---- */
+.crumb{
+  background:#fff; border-bottom:1px solid var(--line); padding:10px 20px;
+  display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--muted); font-weight:600;
+  overflow-x:auto; scrollbar-width:none;
+}
+.crumb::-webkit-scrollbar{display:none;}
+.crumb a{color:var(--brand-d); text-decoration:none; cursor:pointer; white-space:nowrap;}
+.crumb a:hover{text-decoration:underline;}
+.crumb .sep{color:var(--faint);}
+.crumb .cur{color:var(--ink); font-weight:800; white-space:nowrap;}
+
+.taskmeta{
+  margin:16px 26px 4px; background:#fff; border:1px solid var(--line); border-radius:18px;
+  padding:16px 18px; box-shadow:var(--sh-1);
+}
+.taskmeta .mtop{display:flex; align-items:center; gap:10px; margin-bottom:12px;}
+.taskmeta h3{font-family:var(--font-display); font-weight:700; font-size:19px; letter-spacing:-.01em; flex:1;}
+.statuspill{border-radius:999px; padding:5px 12px; font-size:12px; font-weight:800; display:inline-flex; align-items:center; gap:6px;}
+.statuspill .dot{width:7px; height:7px; border-radius:50%;}
+.sp-open{background:#FDF1DE; color:#B4740B;} .sp-open .dot{background:var(--open);}
+.sp-prog{background:#E7F0FE; color:#1E5FBF;} .sp-prog .dot{background:var(--prog);}
+.sp-done{background:var(--mint); color:var(--brand-d);} .sp-done .dot{background:var(--done);}
+.mgrid{display:flex; gap:22px; flex-wrap:wrap; font-size:13px;}
+.mgrid .cell b{display:block; font-size:11px; color:var(--faint); font-weight:700; text-transform:uppercase; letter-spacing:.05em; margin-bottom:3px;}
+.mgrid .cell span{font-weight:600; color:var(--ink); display:inline-flex; align-items:center; gap:6px;}
+
+/* subtask strip */
+.substrip{margin:14px 26px 2px;}
+.substrip .sh{display:flex; align-items:center; justify-content:space-between; margin-bottom:9px;}
+.substrip .sh b{font-family:var(--font-display); font-size:14px; font-weight:700;}
+.substrip .sh .add{border:1px dashed var(--brand); background:var(--mint-2); color:var(--brand-d); border-radius:11px; padding:7px 12px; font-size:12.5px; font-weight:700; cursor:pointer; display:inline-flex; align-items:center; gap:5px;}
+.substrip .sh .add svg{width:15px;height:15px;}
+.subscroll{display:flex; gap:10px; overflow-x:auto; padding-bottom:6px; scrollbar-width:none;}
+.subscroll::-webkit-scrollbar{display:none;}
+.subcard{
+  flex:none; width:180px; background:#fff; border:1px solid var(--line); border-radius:14px;
+  padding:12px; cursor:pointer; transition:.15s; box-shadow:var(--sh-1);
+}
+.subcard:hover{border-color:var(--brand); transform:translateY(-2px);}
+.subcard .n{font-weight:800; font-size:10.5px; color:var(--brand-d); background:var(--mint); display:inline-block; padding:2px 8px; border-radius:7px; margin-bottom:8px;}
+.subcard .t{font-weight:700; font-size:13.5px; margin-bottom:9px; line-height:1.3;}
+.subcard .s{display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:700; color:var(--muted);}
+.subcard .s .dot{width:7px; height:7px; border-radius:50%;}
+
+.context-note{
+  background:#fff; border:1px solid var(--line); border-left:3px solid var(--brand);
+  border-radius:12px; padding:12px 14px; font-size:13px; line-height:1.7; color:var(--muted); max-width:520px;
+}
+.context-note b{color:var(--ink);}
+
+/* bubbles */
+.daydivider{text-align:center; margin:8px 0 16px;}
+.daydivider span{background:#fff; color:var(--muted); font-size:11.5px; font-weight:700; padding:5px 13px; border-radius:999px; box-shadow:var(--sh-1);}
+.msg{display:flex; margin-bottom:12px; max-width:74%;}
+.msg.them{margin-right:auto;}
+.msg.me{margin-left:auto; flex-direction:row-reverse;}
+.msg .mav{width:34px; height:34px; border-radius:50%; flex:none; margin:0 9px; background:radial-gradient(circle at 35% 30%,#CFF3E4,#2FB48C 70%); color:#06503c; display:grid; place-items:center; font-weight:800; font-size:12px;}
+.msg .mav .spark{position:relative;}
+.bubble{padding:10px 13px; border-radius:14px; font-size:14px; line-height:1.5; box-shadow:var(--sh-1); position:relative;}
+.msg.them .bubble{background:#fff; border-top-left-radius:5px;}
+.msg.me .bubble{background:var(--mint); border-top-right-radius:5px;}
+.bubble .who{font-size:11.5px; font-weight:800; color:var(--brand-d); margin-bottom:3px;}
+.bubble .t{white-space:pre-wrap; word-wrap:break-word;}
+.bubble .meta{font-size:10.5px; color:var(--faint); text-align:right; margin-top:4px; display:flex; gap:3px; align-items:center; justify-content:flex-end;}
+.bubble .meta svg{width:15px; height:15px; color:var(--brand);}
+.voice{display:flex; align-items:center; gap:10px; min-width:180px;}
+.voice .play{width:34px;height:34px;border-radius:50%;background:var(--brand-d);color:#fff;display:grid;place-items:center;flex:none;}
+.voice .play svg{width:16px;height:16px;}
+.voice .wave{flex:1;height:24px;display:flex;align-items:center;gap:2px;}
+.voice .wave i{width:3px;background:var(--brand);border-radius:3px;display:block;opacity:.5;}
+
+/* inline task receipt in agent chat */
+.receipt{
+  margin-top:8px; background:var(--mint-tint); border:1px solid rgba(0,168,132,.35);
+  border-radius:12px; padding:10px 12px; display:flex; align-items:center; gap:11px; cursor:pointer; transition:.15s;
+}
+.receipt:hover{background:#dff4e8; transform:translateY(-1px);}
+.receipt .ic{width:34px;height:34px;border-radius:10px;background:#fff;display:grid;place-items:center;color:var(--brand-d);flex:none;}
+.receipt .ic svg{width:18px;height:18px;}
+.receipt .rt b{font-size:13px; font-weight:800;}
+.receipt .rt small{display:block; font-size:11.5px; color:var(--muted); font-weight:600;}
+.receipt .arrow{margin-left:auto; color:var(--brand-d);}
+.receipt .arrow svg{width:18px;height:18px;}
+
+/* composer */
+.composer{padding:12px 18px 16px; display:flex; align-items:center; gap:10px; background:transparent;}
+.composer .cbtn{width:42px;height:42px;border-radius:50%;border:0;cursor:pointer;background:#fff;color:var(--muted);display:grid;place-items:center;box-shadow:var(--sh-1);flex:none; transition:.15s;}
+.composer .cbtn:hover{color:var(--brand-d);}
+.composer .cbtn svg{width:21px;height:21px;}
+.composer .input{flex:1; background:#fff; border-radius:24px; padding:13px 18px; color:var(--faint); font-size:14px; box-shadow:var(--sh-1); display:flex; align-items:center; gap:10px;}
+.composer .send{width:48px;height:48px;border-radius:50%;border:0;cursor:pointer;background:var(--brand-d);color:#fff;display:grid;place-items:center;box-shadow:var(--sh-2);flex:none;}
+.composer .send svg{width:22px;height:22px;}
+
+/* quick prompt hint */
+.qhint{position:absolute; left:18px; bottom:74px; background:#fff; border:1px solid var(--line); border-radius:14px; box-shadow:var(--sh-2); padding:6px; display:none; flex-direction:column; z-index:5; width:230px;}
+.qhint.show{display:flex; animation:rise .25s both;}
+.qhint button{border:0;background:transparent;text-align:left;padding:10px 12px;border-radius:10px;cursor:pointer;font-size:13px;font-weight:600;color:var(--ink);}
+.qhint button:hover{background:var(--mint-tint);}
+.qhint button span{color:var(--brand-d);}
+
+/* empty detail state (desktop, nothing selected) */
+.empty{flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; color:var(--muted); padding:30px;}
+.empty .glyph{width:96px;height:96px;border-radius:30px;background:linear-gradient(150deg,#12A97F,#0A6B50);display:grid;place-items:center;color:#fff;box-shadow:var(--sh-2);margin-bottom:20px;}
+.empty .glyph svg{width:46px;height:46px;}
+.empty h3{font-family:var(--font-display); font-size:20px; color:var(--ink); margin-bottom:8px;}
+.empty p{font-size:13.5px; max-width:320px; line-height:1.6;}
+
+/* ============ MOBILE TABBAR ============ */
+.tabbar{display:none;}
+
+/* animations */
+@keyframes rise{from{opacity:0; transform:translateY(9px);} to{opacity:1; transform:translateY(0);}}
+@keyframes slidein{from{transform:translateX(100%);} to{transform:translateX(0);}}
+
+/* ============================================================
+   MOBILE LAYOUT  (class .m applied by JS: forced or narrow)
+   ============================================================ */
+.app.m{grid-template-columns:1fr !important;}
+.app.m .rail{display:none;}
+.app.m .list{border-right:0; grid-column:1;}
+.app.m .detail{
+  position:absolute; inset:0; z-index:20; transform:translateX(100%);
+  transition:transform .28s cubic-bezier(.4,0,.2,1); border-radius:0;
+}
+.app.m.detail-open .detail{transform:translateX(0);}
+.app.m .dhead .back{display:grid;}
+.app.m .list-body{padding-bottom:88px;}
+.app.m .qhint{bottom:150px;}
+.app.m .tabbar{
+  display:flex; position:absolute; bottom:0; left:0; right:0; z-index:15;
+  background:#fff; border-top:1px solid var(--line); padding:8px 6px calc(8px + env(safe-area-inset-bottom));
+  box-shadow:0 -6px 20px rgba(11,27,33,.06);
+}
+.app.m .tabbar button{
+  flex:1; border:0; background:transparent; cursor:pointer; color:var(--faint);
+  display:flex; flex-direction:column; align-items:center; gap:3px;
+  font-family:var(--font-body); font-weight:700; font-size:11px; padding:6px 0; border-radius:12px; position:relative;
+}
+.app.m .tabbar button svg{width:23px; height:23px;}
+.app.m .tabbar button.active{color:var(--brand-d);}
+.app.m .tabbar button .dot{position:absolute; top:0; right:calc(50% - 26px); min-width:16px; height:16px; padding:0 4px; background:var(--brand); color:#04352a; font-size:10px; font-weight:800; border-radius:999px; display:grid; place-items:center;}
+.app.m .detail .taskmeta,.app.m .substrip,.app.m .taskmeta{margin-left:16px; margin-right:16px;}
+.app.m .detail .thread{padding:16px 16px 12px;}
+.app.m .composer{padding:10px 12px 14px;}
+
+@media (max-width:520px){
+  body{padding:0;}
+  .reviewbar{display:none;}
+  .stage{padding:0;}
+  .app{height:100vh; border-radius:0; border:0;}
+}
+</style>
+</head>
+<body>
+
+<!-- review chrome (hidden on real phones) -->
+<div class="reviewbar">
+  <div class="brandline">
+    <div class="logo">✦</div>
+    <div>
+      <h1>Orbita · <span>UX 2.0</span></h1>
+      <div class="sub">Chats and Tasks as two clean surfaces — depth by drill-down, never a tree.</div>
+    </div>
+  </div>
+  <div class="toggle" id="modeToggle">
+    <button data-mode="web" class="active">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 20h8M12 18v2"/></svg>Web
+    </button>
+    <button data-mode="mobile">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg>Mobile
+    </button>
+  </div>
+</div>
+
+<div class="stage" id="stage">
+  <div class="app" id="app">
+
+    <!-- ===== RAIL (desktop) ===== -->
+    <aside class="rail">
+      <div class="app-logo">✦</div>
+      <div class="nav" id="railNav"></div>
+      <div class="spacer"></div>
+      <button class="fab" title="New">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+    </aside>
+
+    <!-- ===== LIST PANE ===== -->
+    <section class="list">
+      <div class="list-head">
+        <div class="titlerow">
+          <h2 id="listTitle">Chats</h2>
+          <button class="iconbtn" title="New">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>
+          </button>
+        </div>
+        <div class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <span id="searchPh">Search contacts or chats</span>
+        </div>
+      </div>
+      <div id="chipsWrap"></div>
+      <div class="list-body" id="listBody"></div>
+    </section>
+
+    <!-- ===== DETAIL PANE ===== -->
+    <section class="detail" id="detail"></section>
+
+    <!-- ===== MOBILE TABBAR ===== -->
+    <nav class="tabbar" id="tabbar"></nav>
+  </div>
+</div>
+
+<script>
+/* ------------------------------------------------------------
+   ICONS
+------------------------------------------------------------ */
+const I = {
+  chats:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.4 8.4 0 0 1-3.8-.9L3 20l1.3-3.9A8.4 8.4 0 0 1 12 3a8.4 8.4 0 0 1 9 8.5Z"/></svg>',
+  tasks:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+  contacts:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></svg>',
+  settings:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 6.6 19l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3 12.6H3a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 4.6 6l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V2a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H22a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1Z"/></svg>',
+  spark:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l1.6 5.4L19 9l-5.4 1.6L12 16l-1.6-5.4L5 9l5.4-1.6z"/></svg>',
+  check:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M4 12l5 5L20 6"/></svg>',
+  back:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg>',
+  chevR:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>',
+  branch:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="6" r="3"/><path d="M18 9v1a3 3 0 0 1-3 3H9M6 9v6"/></svg>',
+  addUser:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/></svg>',
+  plus:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>',
+  help:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 4.5 1.5c0 1.7-2.5 2-2.5 3.5"/><path d="M12 17h.01"/></svg>',
+  cam:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>',
+  mic:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 19v3"/></svg>',
+  send:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 3l18 9-18 9 4-9-4-9z"/></svg>',
+  play:'<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>',
+  tick2:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12l4 4L14 6M9 16l1 1L23 6"/></svg>'
+};
+
+/* ------------------------------------------------------------
+   MOCK DATA
+------------------------------------------------------------ */
+const AGENTS = {
+  sales:{name:'Sales Agent', short:'S'},
+  ops:{name:'Ops Agent', short:'O'}
+};
+
+const CONVOS = [
+  {id:'sales', type:'agent', name:'Sales Agent', prev:'You: @orbita ask Adarsh to buy soap', time:'11:31', unread:4},
+  {id:'ops', type:'agent', name:'Ops Agent', prev:'Created TASK-10 · Meet Adarsh', time:'10:50', unread:0},
+  {id:'adharsh', type:'person', name:'Adharsh', prev:'🎙 Voice note', time:'10:45', unread:0, av:'#2FB48C'},
+  {id:'priya', type:'person', name:'Priya', prev:'See you at 5 👍', time:'09:20', unread:0, av:'#7C6CE0'}
+];
+
+const TASKS = {
+  t1:{num:'TASK-1', title:'Meet with Hashim', agent:'sales', status:'open', due:'Today', assignee:'You', parent:null},
+  t2:{num:'TASK-2', title:'Buy 10 packets of tissues', agent:'sales', status:'open', due:'Jul 3', assignee:'Adharsh', parent:null},
+  t2_1:{num:'TASK-2-1', title:'Buy soap', agent:'sales', status:'open', due:'Jul 3', assignee:'Adharsh', parent:'t2'},
+  t2_1_1:{num:'TASK-2-1-1', title:'Compare 3 soap brands', agent:'sales', status:'open', due:'Jul 3', assignee:'Adharsh', parent:'t2_1'},
+  t2_2:{num:'TASK-2-2', title:'Shampoo buy', agent:'sales', status:'open', due:'Jul 4', assignee:'Adharsh', parent:'t2'},
+  t10:{num:'TASK-10', title:'Meet Adarsh', agent:'ops', status:'in_progress', due:'Tomorrow', assignee:'You', parent:null},
+  t9:{num:'TASK-9', title:'Send invoice to client', agent:'sales', status:'done', due:'Jun 30', assignee:'You', parent:null}
+};
+
+const MESSAGES = {
+  sales:[
+    {from:'me', t:'@orbita ask Adarsh to buy soap', time:'11:27'},
+    {from:'agent', t:'Looking into it…', time:'11:28'},
+    {from:'agent', t:'Created TASK-2-1 “Buy soap” and assigned it to Adharsh.', time:'11:28', receipt:'t2_1'}
+  ],
+  ops:[
+    {from:'me', t:'@orbita schedule a meeting with Adarsh tomorrow', time:'10:49'},
+    {from:'agent', t:'Done — created TASK-10 and set it to in progress.', time:'10:50', receipt:'t10'}
+  ],
+  adharsh:[
+    {from:'them', t:'Hey, did the soap order go through?', time:'10:40'},
+    {from:'me', t:'Checking now, one sec', time:'10:44'},
+    {from:'them', voice:true, time:'10:45'}
+  ],
+  priya:[
+    {from:'them', t:'Lunch today?', time:'09:12'},
+    {from:'me', t:'See you at 5 👍', time:'09:20'}
+  ],
+  // task-scoped chats
+  t2_1:[
+    {from:'agent', context:true},
+    {from:'agent', t:'Hi Adarsh — Sajith asked me to let you know that you need to buy soap by tomorrow. Please confirm or let us know if you need more details.', time:'11:28'}
+  ],
+  t2:[
+    {from:'agent', context:true},
+    {from:'agent', t:'This task has 2 subtasks. Ask me anything and I’ll only use this task’s context.', time:'11:31'}
+  ],
+  t1:[{from:'agent', context:true}],
+  t2_2:[{from:'agent', context:true}],
+  t2_1_1:[{from:'agent', context:true}],
+  t10:[{from:'agent', context:true}],
+  t9:[{from:'agent', context:true}]
+};
+
+const STATUS = {
+  open:{label:'Open', cls:'open', pill:'sp-open'},
+  in_progress:{label:'In progress', cls:'prog', pill:'sp-prog'},
+  done:{label:'Done', cls:'done', pill:'sp-done'}
+};
+
+/* helpers */
+const childrenOf = id => Object.keys(TASKS).filter(k => TASKS[k].parent === id);
+const topTasksForAgent = a => Object.keys(TASKS).filter(k => TASKS[k].parent===null && (a==='all'||TASKS[k].agent===a));
+const ancestry = id => { const p=[]; let c=id; while(c){p.unshift(c); c=TASKS[c].parent;} return p; };
+const doneCount = id => childrenOf(id).filter(k=>TASKS[k].status==='done').length;
+
+/* ------------------------------------------------------------
+   STATE
+------------------------------------------------------------ */
+const state = { tab:'chats', taskFilter:'all', stack:[], mobile:false, userForcedMode:null };
+const TABS = [
+  {id:'chats', label:'Chats', icon:'chats', badge:4},
+  {id:'tasks', label:'Tasks', icon:'tasks'},
+  {id:'contacts', label:'Contacts', icon:'contacts'},
+  {id:'settings', label:'Settings', icon:'settings'}
+];
+
+/* ------------------------------------------------------------
+   RENDER: nav (rail + tabbar)
+------------------------------------------------------------ */
+function renderNav(){
+  const rail = document.getElementById('railNav');
+  const bar = document.getElementById('tabbar');
+  const html = TABS.map(t=>`
+    <button data-tab="${t.id}" class="${state.tab===t.id?'active':''}">
+      ${I[t.icon]}<span>${t.label}</span>
+      ${t.badge?`<span class="dot">${t.badge}</span>`:''}
+    </button>`).join('');
+  rail.innerHTML = html;
+  bar.innerHTML = html;
+  document.querySelectorAll('[data-tab]').forEach(b=>{
+    b.onclick = ()=>{ state.tab=b.dataset.tab; if(state.mobile){ closeDetail(); } else { state.stack=[]; } render(); };
+  });
+}
+
+/* ------------------------------------------------------------
+   RENDER: list pane
+------------------------------------------------------------ */
+function avatarHtml(c){
+  if(c.type==='agent') return `<div class="avatar agent">${AGENTS[c.id]?AGENTS[c.id].short:'A'}<div class="spark">${I.spark}</div></div>`;
+  return `<div class="avatar" style="background:${c.av}">${c.name[0]}</div>`;
+}
+
+function render(){
+  renderNav();
+  const title = {chats:'Chats', tasks:'Tasks', contacts:'Contacts', settings:'Settings'}[state.tab];
+  document.getElementById('listTitle').textContent = title;
+  document.getElementById('searchPh').textContent = state.tab==='tasks'?'Search tasks':'Search contacts or chats';
+
+  const chips = document.getElementById('chipsWrap');
+  const body = document.getElementById('listBody');
+  const sel = state.stack[state.stack.length-1];
+
+  if(state.tab==='chats'){
+    chips.innerHTML='';
+    body.innerHTML = CONVOS.map((c,i)=>`
+      <div class="row ${sel&&sel.type==='chat'&&sel.id===c.id?'sel':''}" data-chat="${c.id}" style="animation-delay:${i*45}ms">
+        ${avatarHtml(c)}
+        <div class="body">
+          <div class="line1"><span class="name">${c.name}</span><span class="time">${c.time}</span></div>
+          <div class="line1"><span class="prev">${c.prev}</span>${c.unread?`<span class="badge">${c.unread}</span>`:''}</div>
+        </div>
+      </div>`).join('');
+    body.querySelectorAll('[data-chat]').forEach(r=> r.onclick=()=>openDetail({type:'chat', id:r.dataset.chat}));
+  }
+
+  else if(state.tab==='tasks'){
+    const filters = [{id:'all',label:'All tasks'},{id:'sales',label:'Sales Agent',sh:'S'},{id:'ops',label:'Ops Agent',sh:'O'}];
+    chips.innerHTML = `<div class="chips">${filters.map(f=>`
+      <button class="chip ${state.taskFilter===f.id?'active':''}" data-filter="${f.id}">
+        ${f.sh?`<span class="av" style="background:var(--mint)">${f.sh}</span>`:''}${f.label}
+      </button>`).join('')}</div>`;
+    chips.querySelectorAll('[data-filter]').forEach(c=> c.onclick=()=>{state.taskFilter=c.dataset.filter; render();});
+
+    const ids = topTasksForAgent(state.taskFilter);
+    body.innerHTML = `<div class="section-label">${ids.length} top-level tasks</div>` + ids.map((id,i)=>{
+      const t=TASKS[id], s=STATUS[t.status]; const kids=childrenOf(id); const dn=doneCount(id);
+      const pct = kids.length? Math.round(dn/kids.length*100):0;
+      const agentTag = state.taskFilter==='all'?`<span class="pill"><span class="miniav">${AGENTS[t.agent].short}</span>${AGENTS[t.agent].name}</span>`:'';
+      return `<div class="tcard ${sel&&sel.type==='task'&&sel.id===id?'sel':''}" data-task="${id}" style="animation-delay:${i*55}ms">
+        <div class="statuscircle ${s.cls}" data-toggle="${id}" title="Toggle done">${t.status==='done'?I.check:''}</div>
+        <div class="tbody">
+          <div class="trow1"><span class="tasknum">${t.num}</span><span class="ttitle">${t.title}</span></div>
+          <div class="tmeta">
+            <span class="pill c-${s.cls}"><span class="dot bg-${s.cls}"></span>${s.label}</span>
+            <span class="pill">📅 ${t.due}</span>
+            <span class="pill"><span class="miniav">${t.assignee[0]}</span>${t.assignee}</span>
+            ${agentTag}
+          </div>
+          ${kids.length?`<div class="subline">
+            <svg class="ring" viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="#E9EDEF" stroke-width="4"/><circle cx="18" cy="18" r="15" fill="none" stroke="var(--brand)" stroke-width="4" stroke-linecap="round" stroke-dasharray="${pct*0.942} 999" transform="rotate(-90 18 18)"/></svg>
+            ${dn}/${kids.length} subtasks done
+            <span class="go">Open ${I.chevR}</span>
+          </div>`:''}
+        </div>
+      </div>`;
+    }).join('');
+    body.querySelectorAll('[data-task]').forEach(r=> r.onclick=(e)=>{ if(e.target.closest('[data-toggle]'))return; openDetail({type:'task', id:r.dataset.task}); });
+    body.querySelectorAll('[data-toggle]').forEach(c=> c.onclick=(e)=>{ e.stopPropagation(); const id=c.dataset.toggle; TASKS[id].status = TASKS[id].status==='done'?'open':'done'; render(); });
+  }
+
+  else if(state.tab==='contacts'){
+    chips.innerHTML='';
+    body.innerHTML = `<div class="section-label">Agents</div>`+
+      CONVOS.filter(c=>c.type==='agent').map(c=>`<div class="row">${avatarHtml(c)}<div class="body"><div class="name">${c.name}</div><div class="prev">AI teammate · ${Object.values(TASKS).filter(t=>t.agent===c.id).length} tasks</div></div></div>`).join('')+
+      `<div class="section-label">People</div>`+
+      CONVOS.filter(c=>c.type==='person').map(c=>`<div class="row">${avatarHtml(c)}<div class="body"><div class="name">${c.name}</div><div class="prev">Available</div></div></div>`).join('');
+  }
+
+  else if(state.tab==='settings'){
+    chips.innerHTML='';
+    const rows=[['Account','Profile, phone, about'],['Agents','Manage your 2 Orbita agents'],['Notifications','Sounds, task alerts'],['Appearance','Theme, chat wallpaper'],['Privacy','Blocked, read receipts']];
+    body.innerHTML = `<div style="padding:6px 6px 0">${rows.map(r=>`<div class="setrow"><div class="ic">${I.settings}</div><div><b>${r[0]}</b><small>${r[1]}</small></div><div style="margin-left:auto;color:var(--faint)">${I.chevR}</div></div>`).join('')}</div>`;
+  }
+
+  renderDetail();
+}
+
+/* ------------------------------------------------------------
+   RENDER: detail pane
+------------------------------------------------------------ */
+function bubble(m, agentName){
+  if(m.context){
+    const t = state._ctxTask;
+    return `<div class="msg them"><div class="mav">${I.spark}</div><div class="bubble"><div class="who">${agentName}</div>
+      <div class="context-note"><b>${t.num} · ${t.title}</b><br>Status: ${STATUS[t.status].label} · Due: ${t.due}<br>
+      This thread is linked to the task, so the agent only uses <b>this task’s</b> context — nothing else in your chats.</div>
+      <div class="meta">11:28 ${I.tick2}</div></div></div>`;
+  }
+  if(m.voice){
+    return `<div class="msg ${m.from==='me'?'me':'them'}">${m.from!=='me'?`<div class="mav">A</div>`:''}<div class="bubble"><div class="voice"><div class="play">${I.play}</div><div class="wave">${Array.from({length:26},(_,i)=>`<i style="height:${6+Math.abs(Math.sin(i*0.9))*16}px"></i>`).join('')}</div></div><div class="meta">${m.time}</div></div></div>`;
+  }
+  const who = m.from==='agent'?`<div class="who">${agentName}</div>`:'';
+  const av = m.from==='agent'?`<div class="mav">${I.spark}</div>` : m.from==='them'?`<div class="mav">A</div>`:'';
+  const receipt = m.receipt?`<div class="receipt" data-receipt="${m.receipt}"><div class="ic">${I.tasks}</div><div class="rt"><b>${TASKS[m.receipt].num} · ${TASKS[m.receipt].title}</b><small>${STATUS[TASKS[m.receipt].status].label} · assigned to ${TASKS[m.receipt].assignee}</small></div><div class="arrow">${I.chevR}</div></div>`:'';
+  return `<div class="msg ${m.from==='me'?'me':'them'}">${av}<div class="bubble">${who}<div class="t">${m.t}</div>${receipt}<div class="meta">${m.time} ${m.from==='me'?I.tick2:''}</div></div></div>`;
+}
+
+function composer(isAgentic){
+  return `<div class="qhint" id="qhint">
+      <button><span>@orbita</span> Task status</button>
+      <button><span>@orbita</span> Create subtask</button>
+      <button><span>@orbita</span> Summarize thread</button>
+      <button><span>@orbita</span> Mark done</button>
+    </div>
+    <div class="composer">
+      ${isAgentic?`<button class="cbtn" id="qbtn" title="Quick prompts">${I.help}</button>`:''}
+      <button class="cbtn">${I.plus}</button>
+      <div class="input"><span>${isAgentic?'Message  ·  type @orbita to ask the agent':'Message'}</span></div>
+      <button class="cbtn">${I.cam}</button>
+      <button class="send">${I.mic}</button>
+    </div>`;
+}
+
+function renderDetail(){
+  const d = document.getElementById('detail');
+  const ref = state.stack[state.stack.length-1];
+
+  if(!ref){
+    d.innerHTML = `<div class="empty"><div class="glyph">${I.chats}</div>
+      <h3>${state.tab==='tasks'?'Pick a task':'Pick a conversation'}</h3>
+      <p>${state.tab==='tasks'?'Open a task to chat in its focused thread. Subtasks open by drilling in — no giant tree.':'Chats stay pure and flat. Your work lives in the Tasks tab.'}</p></div>`;
+    return;
+  }
+
+  if(ref.type==='chat'){
+    const c = CONVOS.find(x=>x.id===ref.id);
+    const isAgent = c.type==='agent';
+    const msgs = (MESSAGES[c.id]||[]).map(m=>bubble(m, c.name)).join('');
+    d.innerHTML = `
+      <div class="dhead">
+        <button class="back" id="backBtn">${I.back}</button>
+        ${isAgent?`<div class="av">${AGENTS[c.id].short}<div class="spark">${I.spark}</div></div>`:`<div class="av" style="background:${c.av}">${c.name[0]}</div>`}
+        <div class="htext"><b>${c.name}</b><small>${isAgent?'AI teammate · online':'online'}</small></div>
+      </div>
+      <div class="thread"><div class="daydivider"><span>Today</span></div>${msgs}</div>
+      ${composer(isAgent)}`;
+  }
+
+  if(ref.type==='task'){
+    const id=ref.id, t=TASKS[id], s=STATUS[t.status]; state._ctxTask=t;
+    const path = ancestry(id);
+    const crumb = path.map((pid,i)=> i<path.length-1
+        ? `<a data-crumb="${pid}">${TASKS[pid].num}</a><span class="sep">${I.chevR}</span>`
+        : `<span class="cur">${TASKS[pid].num}</span>`).join('');
+    const kids = childrenOf(id); const dn=doneCount(id);
+    const msgs = (MESSAGES[id]||[]).map(m=>bubble(m,'Agent')).join('');
+    const subStrip = `
+      <div class="substrip">
+        <div class="sh"><b>Subtasks ${kids.length?`· ${dn}/${kids.length} done`:''}</b>
+          <button class="add">${I.plus} Subtask</button></div>
+        ${kids.length?`<div class="subscroll">${kids.map(k=>{const ct=TASKS[k],cs=STATUS[ct.status];return `<div class="subcard" data-task="${k}"><span class="n">${ct.num}</span><div class="t">${ct.title}</div><div class="s c-${cs.cls}"><span class="dot bg-${cs.cls}"></span>${cs.label}</div></div>`;}).join('')}</div>`
+          :`<div style="font-size:13px;color:var(--muted);padding:4px 2px">No subtasks yet. The agent adds one when you ask, or tap “+ Subtask”.</div>`}
+      </div>`;
+    d.innerHTML = `
+      <div class="dhead">
+        <button class="back" id="backBtn">${I.back}</button>
+        <div class="av">${AGENTS[t.agent].short}<div class="spark">${I.spark}</div></div>
+        <div class="htext"><b>${t.num} · ${t.title}</b><small>Scoped chat · ${AGENTS[t.agent].name} · 2 members</small></div>
+        <div class="hbtns">
+          <span class="hpill">${I.branch} ${dn}/${kids.length||0}</span>
+          <button class="hicon" title="Add member">${I.addUser}</button>
+        </div>
+      </div>
+      <div class="crumb"><a data-crumb="__list">Tasks</a><span class="sep">${I.chevR}</span>${crumb}</div>
+      <div style="overflow-y:auto; flex:1; display:flex; flex-direction:column;">
+        <div class="taskmeta">
+          <div class="mtop"><h3>${t.title}</h3><span class="statuspill ${s.pill}"><span class="dot"></span>${s.label}</span></div>
+          <div class="mgrid">
+            <div class="cell"><b>Assignee</b><span><span class="miniav">${t.assignee[0]}</span>${t.assignee}</span></div>
+            <div class="cell"><b>Due</b><span>📅 ${t.due}</span></div>
+            <div class="cell"><b>Agent</b><span>${AGENTS[t.agent].name}</span></div>
+            <div class="cell"><b>Number</b><span>${t.num}</span></div>
+          </div>
+        </div>
+        ${subStrip}
+        <div class="thread" style="flex:1">${msgs}</div>
+      </div>
+      ${composer(true)}`;
+  }
+
+  // wire detail interactions
+  const back = document.getElementById('backBtn'); if(back) back.onclick = ()=> back_();
+  d.querySelectorAll('[data-crumb]').forEach(a=> a.onclick=()=>{
+    if(a.dataset.crumb==='__list'){ closeDetail(); state.tab='tasks'; render(); return; }
+    openDetail({type:'task', id:a.dataset.crumb});
+  });
+  d.querySelectorAll('[data-task]').forEach(el=> el.onclick=()=> openDetail({type:'task', id:el.dataset.task}));
+  d.querySelectorAll('[data-receipt]').forEach(el=> el.onclick=()=> openDetail({type:'task', id:el.dataset.receipt}));
+  const qbtn=document.getElementById('qbtn'); const qhint=document.getElementById('qhint');
+  if(qbtn){ qbtn.onclick=(e)=>{e.stopPropagation(); qhint.classList.toggle('show');}; document.addEventListener('click',()=>qhint&&qhint.classList.remove('show'),{once:true}); }
+}
+
+/* ------------------------------------------------------------
+   NAVIGATION
+------------------------------------------------------------ */
+function openDetail(ref){
+  if(ref.type==='task') state.stack = ancestry(ref.id).map(id=>({type:'task', id}));
+  else state.stack = [ref];
+  if(state.mobile) document.getElementById('app').classList.add('detail-open');
+  render();
+  const th=document.querySelector('.detail .thread'); if(th) th.scrollTop=th.scrollHeight;
+}
+function back_(){
+  state.stack.pop();
+  if(state.stack.length===0){ closeDetail(); render(); }
+  else render();
+}
+function closeDetail(){ state.stack=[]; document.getElementById('app').classList.remove('detail-open'); }
+
+/* ------------------------------------------------------------
+   LAYOUT MODE (web / mobile)
+------------------------------------------------------------ */
+function applyMode(){
+  const forced = state.userForcedMode;
+  const auto = window.innerWidth < 900;
+  state.mobile = forced ? forced==='mobile' : auto;
+  const app=document.getElementById('app'), stage=document.getElementById('stage');
+  app.classList.toggle('m', state.mobile);
+  stage.classList.toggle('framed', forced==='mobile' && window.innerWidth>=560);
+  if(!state.mobile){ app.classList.remove('detail-open'); }
+  else if(state.stack.length){ app.classList.add('detail-open'); }
+}
+document.getElementById('modeToggle').querySelectorAll('button').forEach(b=>{
+  b.onclick=()=>{
+    state.userForcedMode=b.dataset.mode;
+    document.querySelectorAll('#modeToggle button').forEach(x=>x.classList.toggle('active',x===b));
+    applyMode(); render();
+  };
+});
+window.addEventListener('resize', ()=>{ applyMode(); });
+
+/* ------------------------------------------------------------
+   INIT
+------------------------------------------------------------ */
+applyMode();
+render();
+</script>
+</body>
+</html>
