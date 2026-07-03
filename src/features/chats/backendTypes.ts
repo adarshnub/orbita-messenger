@@ -21,11 +21,13 @@ export type BackendConversation = {
   unreadCount: number;
   taskManagerAgent?: {
     taskmanagerOrgId: string;
+    taskmanagerOrgName?: string | null;
     taskmanagerUserId: string;
     agentProfileId: string;
   } | null;
   taskThread?: {
     taskmanagerOrgId: string;
+    taskmanagerOrgName?: string | null;
     taskmanagerTaskId: string;
     taskNumber: string;
     agentProfileId: string;
@@ -34,6 +36,7 @@ export type BackendConversation = {
     rootTaskId: string;
     status: string;
     title: string;
+    dueDate?: string | null;
   } | null;
 };
 

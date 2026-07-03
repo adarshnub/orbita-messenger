@@ -1678,6 +1678,7 @@ async function loadConversations(userId) {
         taskManagerAgent: taskmanagerAgentByConversationId.has(conversation.id)
           ? {
               taskmanagerOrgId: taskmanagerAgentByConversationId.get(conversation.id).taskmanager_org_id,
+              taskmanagerOrgName: taskmanagerAgentByConversationId.get(conversation.id).taskmanager_org_name ?? null,
               taskmanagerUserId: taskmanagerAgentByConversationId.get(conversation.id).taskmanager_user_id,
               agentProfileId: taskmanagerAgentByConversationId.get(conversation.id).agent_profile_id,
             }
@@ -1685,6 +1686,7 @@ async function loadConversations(userId) {
         taskThread: taskThreadByConversationId.has(conversation.id)
           ? {
               taskmanagerOrgId: taskThreadByConversationId.get(conversation.id).taskmanager_org_id,
+              taskmanagerOrgName: taskThreadByConversationId.get(conversation.id).taskmanager_org_name ?? null,
               taskmanagerTaskId: taskThreadByConversationId.get(conversation.id).taskmanager_task_id,
               taskNumber: taskThreadByConversationId.get(conversation.id).task_number,
               agentProfileId: taskThreadByConversationId.get(conversation.id).agent_profile_id,
@@ -1693,6 +1695,7 @@ async function loadConversations(userId) {
               rootTaskId: taskThreadByConversationId.get(conversation.id).root_task_id,
               status: taskThreadByConversationId.get(conversation.id).status,
               title: taskThreadByConversationId.get(conversation.id).title,
+              dueDate: taskThreadByConversationId.get(conversation.id).due_date ?? null,
             }
           : null,
       };
@@ -2212,23 +2215,38 @@ async function ensureTaskmanagerTaskThread(payload) {
     agent_profile_id: agentProfileId,
     conversation_id: conversation.id,
     source_agent_conversation_id: sourceAgentConversationId || existingThread?.source_agent_conversation_id || null,
+    due_date: dueDate || null,
     updated_at: now,
   };
-  let threadResult = await supabase
+  const upsertThread = (candidatePayload) => supabase
     .from("taskmanager_task_threads")
-    .upsert(
-      threadPayload,
-      { onConflict: "taskmanager_org_id,taskmanager_task_id" },
-    )
+    .upsert(candidatePayload, { onConflict: "taskmanager_org_id,taskmanager_task_id" })
     .select()
     .single();
-  if (threadResult.error && errorMessage(threadResult.error).toLowerCase().includes("source_agent_conversation_id")) {
-    const { source_agent_conversation_id, ...fallbackThreadPayload } = threadPayload;
-    threadResult = await supabase
-      .from("taskmanager_task_threads")
-      .upsert(fallbackThreadPayload, { onConflict: "taskmanager_org_id,taskmanager_task_id" })
-      .select()
-      .single();
+  let threadResult = await upsertThread(threadPayload);
+  if (threadResult.error) {
+    const missingColumnMessage = errorMessage(threadResult.error).toLowerCase();
+    const fallbackThreadPayload = { ...threadPayload };
+    let shouldRetry = false;
+    if (missingColumnMessage.includes("source_agent_conversation_id")) {
+      delete fallbackThreadPayload.source_agent_conversation_id;
+      shouldRetry = true;
+    }
+    if (missingColumnMessage.includes("due_date")) {
+      delete fallbackThreadPayload.due_date;
+      shouldRetry = true;
+    }
+    if (shouldRetry) threadResult = await upsertThread(fallbackThreadPayload);
+  }
+  if (
+    threadResult.error &&
+    (
+      errorMessage(threadResult.error).toLowerCase().includes("source_agent_conversation_id") ||
+      errorMessage(threadResult.error).toLowerCase().includes("due_date")
+    )
+  ) {
+    const { due_date, source_agent_conversation_id, ...fallbackThreadPayload } = threadPayload;
+    threadResult = await upsertThread(fallbackThreadPayload);
   }
   const { data: thread, error: threadError } = threadResult;
   if (threadError) throw threadError;
