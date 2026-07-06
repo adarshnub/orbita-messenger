@@ -3,6 +3,9 @@ import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { LogBox } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { configureDefaultTypography } from "@/theme/typography";
+
+configureDefaultTypography();
 
 LogBox.ignoreLogs([
   "ProgressBarAndroid has been extracted from react-native core",

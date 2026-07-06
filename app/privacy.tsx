@@ -128,7 +128,7 @@ const styles = StyleSheet.create({
   },
   brandRow: { flexDirection: "row", alignItems: "center", gap: 12, minWidth: 0 },
   logo: { width: 44, height: 44, borderRadius: 12 },
-  brandTitle: { color: colors.ink, fontSize: 20, fontWeight: "900" },
+  brandTitle: { color: colors.ink, fontSize: 20, fontWeight: "700" },
   brandSub: { color: colors.muted, fontSize: 12, fontWeight: "700" },
   backButton: {
     minHeight: 40,
@@ -142,7 +142,7 @@ const styles = StyleSheet.create({
     borderColor: colors.line,
   },
   pressed: { opacity: 0.78 },
-  backText: { color: colors.primaryDark, fontSize: 13, fontWeight: "800" },
+  backText: { color: colors.primaryDark, fontSize: 13, fontWeight: "700" },
   hero: {
     borderRadius: 18,
     padding: 22,
@@ -150,10 +150,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(0,128,105,0.16)",
   },
-  kicker: { color: colors.primaryDark, fontSize: 12, fontWeight: "900", textTransform: "uppercase" },
-  title: { marginTop: 8, color: colors.ink, fontSize: 34, lineHeight: 39, fontWeight: "900" },
+  kicker: { color: colors.primaryDark, fontSize: 12, fontWeight: "700", textTransform: "uppercase" },
+  title: { marginTop: 8, color: colors.ink, fontSize: 34, lineHeight: 39, fontWeight: "700" },
   copy: { marginTop: 10, maxWidth: 680, color: colors.muted, fontSize: 16, lineHeight: 24, fontWeight: "600" },
-  updated: { marginTop: 16, color: colors.primaryDark, fontSize: 13, fontWeight: "800" },
+  updated: { marginTop: 16, color: colors.primaryDark, fontSize: 13, fontWeight: "700" },
   card: {
     borderRadius: 18,
     padding: 22,
@@ -164,7 +164,7 @@ const styles = StyleSheet.create({
     ...shadow,
   },
   section: { gap: 7 },
-  sectionTitle: { color: colors.ink, fontSize: 18, fontWeight: "900" },
+  sectionTitle: { color: colors.ink, fontSize: 18, fontWeight: "700" },
   sectionBody: { color: colors.muted, fontSize: 14, lineHeight: 22, fontWeight: "600" },
   contactBox: {
     marginTop: 4,
