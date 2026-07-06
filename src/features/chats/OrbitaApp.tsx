@@ -5895,6 +5895,7 @@ function TasksPanel({
   const [filter, setFilter] = useState<"all" | "active" | "archived">("all");
   const [orgFilter, setOrgFilter] = useState("all");
   const [departmentFilter, setDepartmentFilter] = useState("all");
+  const [taskFilterMenuOpen, setTaskFilterMenuOpen] = useState(false);
   const [visibleTaskCount, setVisibleTaskCount] = useState(TASK_PAGE_SIZE);
   const [taskActionConversation, setTaskActionConversation] = useState<BackendConversation | null>(null);
   const [taskActionBusy, setTaskActionBusy] = useState<TaskManagerAdminTask["status"] | null>(null);
@@ -6105,6 +6106,28 @@ function TasksPanel({
   const canLoadMoreTasks = visibleTaskCount < visibleRows.length;
   const totalOpen = taskData.activeThreadCount;
   const totalArchived = taskData.archivedThreadCount;
+  const statusFilterOptions = [
+    { id: "all", label: "All tasks", count: taskData.taskThreads.length },
+    { id: "active", label: "Open", count: totalOpen },
+    { id: "archived", label: "Archived", count: totalArchived },
+  ] as const;
+  const orgFilterOptions = [
+    { id: "all", label: "All orgs", count: conversations.filter((conversation) => conversation.taskThread).length },
+    ...taskData.orgOptions,
+  ];
+  const departmentFilterOptions = [
+    { id: "all", label: "All departments", count: taskData.orgScopedTaskThreads.length },
+    ...taskData.departmentOptions,
+  ];
+  const selectedStatusFilter = statusFilterOptions.find((item) => item.id === filter) ?? statusFilterOptions[0];
+  const selectedOrgFilter = orgFilterOptions.find((item) => item.id === orgFilter) ?? orgFilterOptions[0];
+  const selectedDepartmentFilter = departmentFilterOptions.find((item) => item.id === departmentFilter) ?? departmentFilterOptions[0];
+  const activeFilterCount = (filter !== "all" ? 1 : 0) + (orgFilter !== "all" ? 1 : 0) + (departmentFilter !== "all" ? 1 : 0);
+  const activeFilterSummary = [
+    selectedStatusFilter,
+    ...(orgFilter === "all" ? [] : [selectedOrgFilter]),
+    ...(departmentFilter === "all" ? [] : [selectedDepartmentFilter]),
+  ];
 
   useEffect(() => {
     setVisibleTaskCount(TASK_PAGE_SIZE);
@@ -6454,192 +6477,201 @@ function TasksPanel({
           </View>
         </View>
         <View style={styles.tasksPanelControls}>
-        <View style={[styles.searchBox, styles.tasksSearchBox, isDarkTheme && styles.searchBoxDark]}>
-          <Ionicons color={isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted} name="search-outline" size={18} />
-          <TextInput
-            onChangeText={setQuery}
-            placeholder="Search tasks"
-            placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
-            style={[styles.searchInput, isDarkTheme && styles.searchInputDark]}
-            value={query}
-          />
-          {query ? (
-            <Pressable
-              accessibilityLabel="Clear task search"
-              onPress={() => setQuery("")}
-              style={({ pressed }) => [styles.inlineIconHit, pressed && styles.pressablePressed]}
-            >
-              <Ionicons color={isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted} name="close-circle" size={18} />
-            </Pressable>
-          ) : null}
-        </View>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.tasksFilterRail}
-        >
-          {[
-            { id: "all", label: "All tasks", count: taskData.taskThreads.length },
-            { id: "active", label: "Open", count: totalOpen },
-            { id: "archived", label: "Archived", count: totalArchived },
-          ].map((item) => {
-            const selected = filter === item.id;
-            return (
-              <Pressable
-                key={item.id}
-                onPress={() => setFilter(item.id as "all" | "active" | "archived")}
-                style={({ pressed }) => [
-                  styles.tasksFilterChip,
-                  isDarkTheme && styles.tasksFilterChipDark,
-                  selected && { backgroundColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark, borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
-                  pressed && styles.pressablePressed,
-                ]}
-              >
-                <Text style={[styles.tasksFilterText, selected && styles.tasksFilterTextActive, isDarkTheme && !selected && styles.tasksFilterTextDark]}>
-                  {item.label}
-                </Text>
-                <View
-                  style={[
-                    styles.tasksFilterCountPill,
-                    selected && styles.tasksFilterCountPillActive,
-                    selected && { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : "rgba(255,255,255,0.88)" },
-                    isDarkTheme && !selected && styles.tasksFilterCountPillDark,
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.tasksFilterCountText,
-                      selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
-                      isDarkTheme && !selected && styles.tasksFilterCountTextDark,
-                    ]}
-                  >
-                    {item.count}
-                  </Text>
-                </View>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.tasksOrgRail}
-        >
-          {[
-            { id: "all", label: "All orgs", count: conversations.filter((conversation) => conversation.taskThread).length },
-            ...taskData.orgOptions,
-          ].map((item) => {
-            const selected = orgFilter === item.id;
-            const orgColorway = item.id === "all" ? null : taskOrgColorway(item.id);
-            return (
-              <Pressable
-                key={item.id}
-                onPress={() => {
-                  setOrgFilter(item.id);
-                  setDepartmentFilter("all");
-                }}
-                style={({ pressed }) => [
-                  styles.taskOrgFilterChip,
-                  isDarkTheme && styles.taskOrgFilterChipDark,
-                  selected && { borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark, backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
-                  orgColorway && {
-                    backgroundColor: isDarkTheme
-                      ? orgColorway.darkBg
-                      : selected
-                        ? orgColorway.selectedBg
-                        : orgColorway.bg,
-                    borderColor: isDarkTheme ? orgColorway.darkBorder : orgColorway.border,
-                  },
-                  pressed && styles.pressablePressed,
-                ]}
-              >
-                <View
-                  style={[
-                    styles.taskOrgFilterDot,
-                    { backgroundColor: selected ? themeColors.primaryDark : colors.faint },
-                    isDarkTheme && { backgroundColor: selected ? themeColors.accent : "rgba(233,237,239,0.48)" },
-                    orgColorway && { backgroundColor: orgColorway.dot },
-                  ]}
-                />
-                <Text
-                  numberOfLines={1}
-                  style={[
-                    styles.taskOrgFilterText,
-                    selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
-                    isDarkTheme && styles.taskOrgFilterTextDark,
-                    orgColorway && { color: isDarkTheme ? orgColorway.darkText : orgColorway.text },
-                  ]}
-                >
-                  {item.label}
-                </Text>
-                <Text
-                  style={[
-                    styles.taskOrgFilterCount,
-                    selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
-                    orgColorway && { color: isDarkTheme ? orgColorway.darkText : orgColorway.text },
-                  ]}
-                >
-                  {item.count}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-        {taskData.departmentOptions.length ? (
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.tasksOrgRail}
-          >
-            {[
-              { id: "all", label: "All departments", count: taskData.orgScopedTaskThreads.length },
-              ...taskData.departmentOptions,
-            ].map((item) => {
-              const selected = departmentFilter === item.id;
-              return (
+          <View style={styles.tasksSearchFilterRow}>
+            <View style={[styles.searchBox, styles.tasksSearchBox, isDarkTheme && styles.searchBoxDark]}>
+              <Ionicons color={isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted} name="search-outline" size={18} />
+              <TextInput
+                onChangeText={setQuery}
+                placeholder="Search tasks"
+                placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
+                style={[styles.searchInput, isDarkTheme && styles.searchInputDark]}
+                value={query}
+              />
+              {query ? (
                 <Pressable
-                  key={item.id}
-                  onPress={() => setDepartmentFilter(item.id)}
-                  style={({ pressed }) => [
-                    styles.taskOrgFilterChip,
-                    isDarkTheme && styles.taskOrgFilterChipDark,
-                    selected && {
-                      borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark,
-                      backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft,
-                    },
-                    pressed && styles.pressablePressed,
-                  ]}
+                  accessibilityLabel="Clear task search"
+                  onPress={() => setQuery("")}
+                  style={({ pressed }) => [styles.inlineIconHit, pressed && styles.pressablePressed]}
                 >
-                  <View
-                    style={[
-                      styles.taskOrgFilterDot,
-                      { backgroundColor: selected ? themeColors.primaryDark : colors.faint },
-                      isDarkTheme && { backgroundColor: selected ? themeColors.accent : "rgba(233,237,239,0.48)" },
-                    ]}
-                  />
-                  <Text
-                    numberOfLines={1}
-                    style={[
-                      styles.taskOrgFilterText,
-                      selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
-                      isDarkTheme && styles.taskOrgFilterTextDark,
-                    ]}
-                  >
-                    {item.label}
-                  </Text>
-                  <Text
-                    style={[
-                      styles.taskOrgFilterCount,
-                      selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
-                    ]}
-                  >
-                    {item.count}
-                  </Text>
+                  <Ionicons color={isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted} name="close-circle" size={18} />
                 </Pressable>
-              );
-            })}
+              ) : null}
+            </View>
+            <Pressable
+              accessibilityLabel="Task filters"
+              onPress={() => setTaskFilterMenuOpen((current) => !current)}
+              style={({ pressed }) => [
+                styles.taskFilterButton,
+                isDarkTheme && styles.taskFilterButtonDark,
+                taskFilterMenuOpen && { borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark, backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
+                pressed && styles.pressablePressed,
+              ]}
+            >
+              <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="filter-outline" size={19} />
+              {activeFilterCount ? (
+                <View style={[styles.taskFilterButtonBadge, { backgroundColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark }]}>
+                  <Text style={[styles.taskFilterButtonBadgeText, { color: isDarkTheme ? "#111B21" : "#FFFFFF" }]}>{activeFilterCount}</Text>
+                </View>
+              ) : null}
+            </Pressable>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.activeTaskFilterRail}>
+            {activeFilterSummary.map((item) => (
+              <View key={`active-filter-${item.id}-${item.label}`} style={[styles.activeTaskFilterChip, isDarkTheme && styles.activeTaskFilterChipDark]}>
+                <Text numberOfLines={1} style={[styles.activeTaskFilterText, isDarkTheme && styles.activeTaskFilterTextDark]}>{item.label}</Text>
+                <Text style={[styles.activeTaskFilterCount, isDarkTheme && styles.activeTaskFilterCountDark]}>{item.count}</Text>
+              </View>
+            ))}
           </ScrollView>
-        ) : null}
+          {taskFilterMenuOpen ? (
+            <View style={[styles.taskFilterPopover, isDarkTheme && styles.taskFilterPopoverDark]}>
+              <View style={styles.taskFilterPopoverHeader}>
+                <Text style={[styles.taskFilterPopoverTitle, isDarkTheme && styles.chatTitleDark]}>Filters</Text>
+                <Pressable
+                  accessibilityLabel="Reset task filters"
+                  onPress={() => {
+                    setFilter("all");
+                    setOrgFilter("all");
+                    setDepartmentFilter("all");
+                  }}
+                  style={({ pressed }) => [styles.taskFilterResetButton, pressed && styles.pressablePressed]}
+                >
+                  <Text style={[styles.taskFilterResetText, { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark }]}>Reset</Text>
+                </Pressable>
+              </View>
+              <View style={styles.taskFilterMenuSection}>
+                <Text style={[styles.taskFilterMenuLabel, isDarkTheme && styles.tasksSectionLabelDark]}>Status</Text>
+                <View style={styles.taskFilterOptionGrid}>
+                  {statusFilterOptions.map((item) => {
+                    const selected = filter === item.id;
+                    return (
+                      <Pressable
+                        key={item.id}
+                        onPress={() => setFilter(item.id)}
+                        style={({ pressed }) => [
+                          styles.taskFilterMenuOption,
+                          isDarkTheme && styles.taskFilterMenuOptionDark,
+                          selected && { borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark, backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
+                          pressed && styles.pressablePressed,
+                        ]}
+                      >
+                        <Text numberOfLines={1} style={[styles.taskFilterMenuOptionText, selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark }, isDarkTheme && styles.taskFilterMenuOptionTextDark]}>{item.label}</Text>
+                        <Text style={[styles.taskFilterMenuOptionCount, selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark }]}>{item.count}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+              <View style={styles.taskFilterMenuSection}>
+                <Text style={[styles.taskFilterMenuLabel, isDarkTheme && styles.tasksSectionLabelDark]}>Organization</Text>
+                <View style={styles.taskFilterOptionGrid}>
+                  {orgFilterOptions.map((item) => {
+                    const selected = orgFilter === item.id;
+                    const orgColorway = item.id === "all" ? null : taskOrgColorway(item.id);
+                    return (
+                      <Pressable
+                        key={item.id}
+                        onPress={() => {
+                          setOrgFilter(item.id);
+                          setDepartmentFilter("all");
+                        }}
+                        style={({ pressed }) => [
+                          styles.taskOrgFilterChip,
+                          isDarkTheme && styles.taskOrgFilterChipDark,
+                          selected && { borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark, backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
+                          orgColorway && {
+                            backgroundColor: isDarkTheme ? orgColorway.darkBg : selected ? orgColorway.selectedBg : orgColorway.bg,
+                            borderColor: isDarkTheme ? orgColorway.darkBorder : orgColorway.border,
+                          },
+                          pressed && styles.pressablePressed,
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.taskOrgFilterDot,
+                            { backgroundColor: selected ? themeColors.primaryDark : colors.faint },
+                            isDarkTheme && { backgroundColor: selected ? themeColors.accent : "rgba(233,237,239,0.48)" },
+                            orgColorway && { backgroundColor: orgColorway.dot },
+                          ]}
+                        />
+                        <Text
+                          numberOfLines={1}
+                          style={[
+                            styles.taskOrgFilterText,
+                            selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                            isDarkTheme && styles.taskOrgFilterTextDark,
+                            orgColorway && { color: isDarkTheme ? orgColorway.darkText : orgColorway.text },
+                          ]}
+                        >
+                          {item.label}
+                        </Text>
+                        <Text
+                          style={[
+                            styles.taskOrgFilterCount,
+                            selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                            orgColorway && { color: isDarkTheme ? orgColorway.darkText : orgColorway.text },
+                          ]}
+                        >
+                          {item.count}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
+              {taskData.departmentOptions.length ? (
+                <View style={styles.taskFilterMenuSection}>
+                  <Text style={[styles.taskFilterMenuLabel, isDarkTheme && styles.tasksSectionLabelDark]}>Department</Text>
+                  <View style={styles.taskFilterOptionGrid}>
+                    {departmentFilterOptions.map((item) => {
+                      const selected = departmentFilter === item.id;
+                      return (
+                        <Pressable
+                          key={item.id}
+                          onPress={() => setDepartmentFilter(item.id)}
+                          style={({ pressed }) => [
+                            styles.taskOrgFilterChip,
+                            isDarkTheme && styles.taskOrgFilterChipDark,
+                            selected && {
+                              borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark,
+                              backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft,
+                            },
+                            pressed && styles.pressablePressed,
+                          ]}
+                        >
+                          <View
+                            style={[
+                              styles.taskOrgFilterDot,
+                              { backgroundColor: selected ? themeColors.primaryDark : colors.faint },
+                              isDarkTheme && { backgroundColor: selected ? themeColors.accent : "rgba(233,237,239,0.48)" },
+                            ]}
+                          />
+                          <Text
+                            numberOfLines={1}
+                            style={[
+                              styles.taskOrgFilterText,
+                              selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                              isDarkTheme && styles.taskOrgFilterTextDark,
+                            ]}
+                          >
+                            {item.label}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.taskOrgFilterCount,
+                              selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                            ]}
+                          >
+                            {item.count}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
         </View>
       </View>
       <ScrollView
@@ -10309,6 +10341,8 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.line,
     borderBottomWidth: 1,
     backgroundColor: colors.surface,
+    overflow: "visible",
+    zIndex: 40,
   },
   tasksPanelHeaderDark: { backgroundColor: "#202C33", borderBottomColor: "rgba(6,207,156,0.12)" },
   tasksPanelTopBar: {
@@ -10320,10 +10354,12 @@ const styles = StyleSheet.create({
     borderBottomColor: "rgba(255,255,255,0.12)",
   },
   tasksPanelControls: {
-    gap: 10,
+    gap: 8,
     paddingHorizontal: 16,
-    paddingTop: 14,
-    paddingBottom: 12,
+    paddingTop: 12,
+    paddingBottom: 10,
+    position: "relative",
+    zIndex: 45,
   },
   tasksPanelTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 14 },
   tasksPanelTitle: { color: colors.ink, fontSize: 25, fontWeight: "800" },
@@ -10402,6 +10438,108 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   tasksFilterCountTextDark: { color: colors.accent },
+  tasksSearchFilterRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  taskFilterButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    borderWidth: 1,
+    borderColor: "rgba(0,168,132,0.16)",
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.82)",
+    flexShrink: 0,
+  },
+  taskFilterButtonDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  taskFilterButtonBadge: {
+    position: "absolute",
+    top: -2,
+    right: -2,
+    minWidth: 17,
+    height: 17,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  taskFilterButtonBadgeText: { fontSize: 10, lineHeight: 12, fontWeight: "900" },
+  activeTaskFilterRail: { gap: 6, paddingRight: 12 },
+  activeTaskFilterChip: {
+    maxWidth: 154,
+    minHeight: 26,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: "rgba(0,168,132,0.12)",
+    paddingHorizontal: 9,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(240,242,245,0.74)",
+  },
+  activeTaskFilterChipDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  activeTaskFilterText: { color: colors.muted, fontSize: 11, fontWeight: "800", maxWidth: 112 },
+  activeTaskFilterTextDark: { color: "rgba(233,237,239,0.68)" },
+  activeTaskFilterCount: { color: colors.faint, fontSize: 11, fontWeight: "900" },
+  activeTaskFilterCountDark: { color: "rgba(233,237,239,0.58)" },
+  taskFilterPopover: {
+    position: "absolute",
+    top: 84,
+    left: 16,
+    right: 16,
+    zIndex: 80,
+    gap: 11,
+    padding: 11,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: "rgba(0,168,132,0.14)",
+    backgroundColor: "rgba(255,255,255,0.96)",
+    shadowColor: "#111B21",
+    shadowOpacity: 0.12,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+  taskFilterPopoverDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "#202C33",
+  },
+  taskFilterPopoverHeader: { minHeight: 28, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  taskFilterPopoverTitle: { color: colors.ink, fontSize: 14, fontWeight: "900" },
+  taskFilterResetButton: { minHeight: 28, paddingHorizontal: 8, justifyContent: "center" },
+  taskFilterResetText: { fontSize: 12, fontWeight: "900" },
+  taskFilterMenuSection: { gap: 7 },
+  taskFilterMenuLabel: {
+    color: colors.faint,
+    fontSize: 10,
+    fontWeight: "900",
+    letterSpacing: 0.4,
+    textTransform: "uppercase",
+  },
+  taskFilterOptionGrid: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  taskFilterMenuOption: {
+    minHeight: 30,
+    borderRadius: 15,
+    borderWidth: 1,
+    borderColor: "rgba(17,27,33,0.08)",
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "rgba(240,242,245,0.72)",
+  },
+  taskFilterMenuOptionDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  taskFilterMenuOptionText: { color: colors.muted, fontSize: 11, fontWeight: "800", maxWidth: 92 },
+  taskFilterMenuOptionTextDark: { color: "rgba(233,237,239,0.68)" },
+  taskFilterMenuOptionCount: { color: colors.faint, fontSize: 11, fontWeight: "900" },
   tasksOrgRail: { gap: 8, paddingRight: 16 },
   taskOrgFilterChip: {
     maxWidth: 164,
@@ -10445,7 +10583,7 @@ const styles = StyleSheet.create({
     gap: 8,
     backgroundColor: colors.page,
   },
-  tasksSearchBox: { flex: 0, width: "100%", minHeight: 42, borderRadius: 21 },
+  tasksSearchBox: { flex: 1, minHeight: 42, borderRadius: 21 },
   searchBoxDark: { backgroundColor: "rgba(255,255,255,0.08)" },
   searchInput: { flex: 1, minWidth: 0, color: colors.ink, fontSize: 14, paddingVertical: 8 },
   searchInputDark: { color: "#FFFFFF" },
