@@ -1696,6 +1696,8 @@ async function loadConversations(userId) {
               status: taskThreadByConversationId.get(conversation.id).status,
               title: taskThreadByConversationId.get(conversation.id).title,
               dueDate: taskThreadByConversationId.get(conversation.id).due_date ?? null,
+              departmentIds: taskThreadByConversationId.get(conversation.id).department_ids ?? [],
+              departmentNames: taskThreadByConversationId.get(conversation.id).department_names ?? [],
             }
           : null,
       };
@@ -2169,6 +2171,8 @@ async function ensureTaskmanagerTaskThread(payload) {
   const dueDate = optionalString(payload, "dueDate");
   const completionNote = optionalString(payload, "completionNote").slice(0, 1000);
   const completedAt = optionalString(payload, "completedAt");
+  const departmentIds = [...new Set(stringArray(payload, "departmentIds").map((item) => item.trim()).filter(Boolean))].slice(0, 12);
+  const departmentNames = [...new Set(stringArray(payload, "departmentNames").map((item) => item.trim()).filter(Boolean))].slice(0, 12);
   const notifySourceCreated = payload.notifySourceCreated === true;
   const sourceAgentProfileId = optionalString(payload, "sourceAgentProfileId") || null;
   const sourceAgentConversationId = optionalString(payload, "sourceAgentConversationId") || null;
@@ -2216,6 +2220,8 @@ async function ensureTaskmanagerTaskThread(payload) {
     conversation_id: conversation.id,
     source_agent_conversation_id: sourceAgentConversationId || existingThread?.source_agent_conversation_id || null,
     due_date: dueDate || null,
+    department_ids: departmentIds,
+    department_names: departmentNames,
     updated_at: now,
   };
   const upsertThread = (candidatePayload) => supabase
@@ -2236,16 +2242,26 @@ async function ensureTaskmanagerTaskThread(payload) {
       delete fallbackThreadPayload.due_date;
       shouldRetry = true;
     }
+    if (missingColumnMessage.includes("department_ids")) {
+      delete fallbackThreadPayload.department_ids;
+      shouldRetry = true;
+    }
+    if (missingColumnMessage.includes("department_names")) {
+      delete fallbackThreadPayload.department_names;
+      shouldRetry = true;
+    }
     if (shouldRetry) threadResult = await upsertThread(fallbackThreadPayload);
   }
   if (
     threadResult.error &&
     (
       errorMessage(threadResult.error).toLowerCase().includes("source_agent_conversation_id") ||
-      errorMessage(threadResult.error).toLowerCase().includes("due_date")
+      errorMessage(threadResult.error).toLowerCase().includes("due_date") ||
+      errorMessage(threadResult.error).toLowerCase().includes("department_ids") ||
+      errorMessage(threadResult.error).toLowerCase().includes("department_names")
     )
   ) {
-    const { due_date, source_agent_conversation_id, ...fallbackThreadPayload } = threadPayload;
+    const { due_date, source_agent_conversation_id, department_ids, department_names, ...fallbackThreadPayload } = threadPayload;
     threadResult = await upsertThread(fallbackThreadPayload);
   }
   const { data: thread, error: threadError } = threadResult;
@@ -3652,33 +3668,28 @@ async function handleAction(user, action, payload, req) {
       return { taskAcknowledgement, taskManagerForward };
     };
 
-    if (attachmentRow) {
-      void runTaskmanagerPostSend().then((result) => {
-        console.info("[orbita-send-message] async post-send completed", {
-          conversationId,
-          messageId: mappedMessage.id,
-          kind,
-          taskManagerForwarded: result.taskManagerForward?.forwarded ?? null,
-          taskAcknowledged: Boolean(result.taskAcknowledgement?.message),
-        });
-      }).catch((error) => {
-        console.error("[orbita-send-message] async post-send failed", {
-          conversationId,
-          messageId: mappedMessage.id,
-          kind,
-          error: errorMessage(error),
-        });
+    void runTaskmanagerPostSend().then((result) => {
+      console.info("[orbita-send-message] async post-send completed", {
+        conversationId,
+        messageId: mappedMessage.id,
+        kind,
+        taskManagerForwarded: result.taskManagerForward?.forwarded ?? null,
+        taskAcknowledged: Boolean(result.taskAcknowledgement?.message),
       });
-      return {
-        message: mappedMessage,
-        taskManagerForward: { forwarded: true, pending: true },
-        taskAcknowledgement: { pending: true },
-      };
-    }
+    }).catch((error) => {
+      console.error("[orbita-send-message] async post-send failed", {
+        conversationId,
+        messageId: mappedMessage.id,
+        kind,
+        error: errorMessage(error),
+      });
+    });
 
-    const { taskAcknowledgement, taskManagerForward } = await runTaskmanagerPostSend();
-
-    return { message: mappedMessage, taskManagerForward, taskAcknowledgement };
+    return {
+      message: mappedMessage,
+      taskManagerForward: { forwarded: true, pending: true },
+      taskAcknowledgement: { pending: true },
+    };
   }
 
   if (action === "forward_messages") {

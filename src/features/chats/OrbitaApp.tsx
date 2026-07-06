@@ -2486,6 +2486,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [adminUsers, setAdminUsers] = useState<TaskManagerAdminUser[]>([]);
   const [adminTasks, setAdminTasks] = useState<TaskManagerAdminTask[]>([]);
   const [adminDepartments, setAdminDepartments] = useState<TaskManagerDepartment[]>([]);
+  const [adminTaskDepartmentId, setAdminTaskDepartmentId] = useState("all");
   const [adminReports, setAdminReports] = useState<Awaited<ReturnType<typeof taskManagerAdminApi.taskReports>> | null>(null);
   const [adminSettings, setAdminSettings] = useState<Record<string, unknown> | null>(null);
   const [adminChats, setAdminChats] = useState<TaskManagerChatMessage[]>([]);
@@ -2526,6 +2527,7 @@ function MessengerShell({ session }: { session: Session }) {
   const bootstrapHasLoadedRef = useRef(false);
   const adminModeCheckInFlightRef = useRef(false);
   const adminSessionRef = useRef<TaskManagerAdminSession | null>(null);
+  const adminTaskDepartmentIdRef = useRef("all");
   const pushTokenRef = useRef<string | null>(null);
   const processingOutboxRef = useRef(false);
   const openingAgentFromFabRef = useRef(false);
@@ -2590,6 +2592,10 @@ function MessengerShell({ session }: { session: Session }) {
   useEffect(() => {
     adminSessionRef.current = adminSession;
   }, [adminSession]);
+
+  useEffect(() => {
+    adminTaskDepartmentIdRef.current = adminTaskDepartmentId;
+  }, [adminTaskDepartmentId]);
 
   useEffect(() => {
     appLifecycleStateRef.current = appLifecycleState;
@@ -2794,7 +2800,9 @@ function MessengerShell({ session }: { session: Session }) {
       const [summary, users, tasks, departments, reports, settings] = await Promise.all([
         taskManagerAdminApi.summary(currentSession),
         taskManagerAdminApi.users(currentSession),
-        taskManagerAdminApi.tasks(currentSession),
+        taskManagerAdminApi.tasks(currentSession, {
+          departmentId: adminTaskDepartmentIdRef.current === "all" ? undefined : adminTaskDepartmentIdRef.current,
+        }),
         taskManagerAdminApi.departments(currentSession),
         taskManagerAdminApi.taskReports(currentSession),
         taskManagerAdminApi.settings(currentSession),
@@ -4365,6 +4373,7 @@ function MessengerShell({ session }: { session: Session }) {
                 adminSelectedUserId={adminSelectedUserId}
                 adminSession={adminSession}
                 adminSummary={adminSummary}
+                adminTaskDepartmentId={adminTaskDepartmentId}
                 adminTasks={adminTasks}
                 adminUsers={adminUsers}
                 contacts={chatListContacts}
@@ -4386,6 +4395,13 @@ function MessengerShell({ session }: { session: Session }) {
                 onOpenProfile={() => setProfileOpen(true)}
                 onOpenContact={openContactConversation}
                 onRefreshAdmin={() => refreshAdminData()}
+                onSelectAdminTaskDepartment={async (departmentId) => {
+                  adminTaskDepartmentIdRef.current = departmentId;
+                  setAdminTaskDepartmentId(departmentId);
+                  if (adminSession) {
+                    await refreshAdminData(adminSession, { silent: true });
+                  }
+                }}
                 onSelectAdminUser={async (userId) => {
                   setAdminSelectedUserId(userId);
                   if (!adminSession) return;
@@ -4751,6 +4767,7 @@ function Panel({
   adminSelectedUserId,
   adminSession,
   adminSummary,
+  adminTaskDepartmentId,
   adminTasks,
   adminUsers,
   contacts,
@@ -4764,6 +4781,7 @@ function Panel({
   onOpenProfile,
   onRefreshAdmin,
   onSelect,
+  onSelectAdminTaskDepartment,
   onSelectAdminUser,
   onSetAdminEmployeeName,
   onSetAdminEmployeeRole,
@@ -4791,6 +4809,7 @@ function Panel({
   adminSelectedUserId: string;
   adminSession: TaskManagerAdminSession | null;
   adminSummary: TaskManagerAdminSummary | null;
+  adminTaskDepartmentId: string;
   adminTasks: TaskManagerAdminTask[];
   adminUsers: TaskManagerAdminUser[];
   contacts: ChatListContact[];
@@ -4804,6 +4823,7 @@ function Panel({
   onOpenProfile: () => void;
   onRefreshAdmin: () => void;
   onSelect: (id: string) => void;
+  onSelectAdminTaskDepartment: (departmentId: string) => Promise<void>;
   onSelectAdminUser: (userId: string) => Promise<void>;
   onSetAdminEmployeeName: (value: string) => void;
   onSetAdminEmployeeRole: (value: "admin" | "member") => void;
@@ -4861,6 +4881,7 @@ function Panel({
         notice={adminNotice}
         onCreateEmployee={onCreateAdminEmployee}
         onRefresh={onRefreshAdmin}
+        onSelectTaskDepartment={onSelectAdminTaskDepartment}
         onSelectUser={onSelectAdminUser}
         onSetEmployeeName={onSetAdminEmployeeName}
         onSetEmployeeRole={onSetAdminEmployeeRole}
@@ -4870,6 +4891,7 @@ function Panel({
         selectedUserId={adminSelectedUserId}
         session={adminSession}
         summary={adminSummary}
+        taskDepartmentId={adminTaskDepartmentId}
         tasks={adminTasks}
         users={adminUsers}
       />
@@ -4915,6 +4937,7 @@ function AdminPanelV2({
   notice,
   onCreateEmployee,
   onRefresh,
+  onSelectTaskDepartment,
   onSelectUser,
   onSetEmployeeName,
   onSetEmployeeRole,
@@ -4924,6 +4947,7 @@ function AdminPanelV2({
   selectedUserId,
   session,
   summary,
+  taskDepartmentId,
   tasks,
   users,
 }: {
@@ -4936,6 +4960,7 @@ function AdminPanelV2({
   notice: string;
   onCreateEmployee: () => Promise<void>;
   onRefresh: () => void;
+  onSelectTaskDepartment: (departmentId: string) => Promise<void>;
   onSelectUser: (userId: string) => Promise<void>;
   onSetEmployeeName: (value: string) => void;
   onSetEmployeeRole: (value: "admin" | "member") => void;
@@ -4945,6 +4970,7 @@ function AdminPanelV2({
   selectedUserId: string;
   session: TaskManagerAdminSession | null;
   summary: TaskManagerAdminSummary | null;
+  taskDepartmentId: string;
   tasks: TaskManagerAdminTask[];
   users: TaskManagerAdminUser[];
 }) {
@@ -4964,6 +4990,12 @@ function AdminPanelV2({
   void onCreateEmployee;
   void onSetEmployeeName;
   void onSetEmployeeRole;
+  useEffect(() => {
+    if (taskDepartmentId === "all") return;
+    if (departments.some((department) => department._id === taskDepartmentId)) return;
+    void onSelectTaskDepartment("all");
+  }, [departments, onSelectTaskDepartment, taskDepartmentId]);
+
   if (!session) {
     return (
       <View style={[styles.listPanel, styles.adminPanel, isWide && styles.adminPanelWide, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
@@ -4982,6 +5014,7 @@ function AdminPanelV2({
   const visibleTasks = taskAssigneeFilter === "all"
     ? tasks
     : tasks.filter((task) => task.assignee_id === taskAssigneeFilter);
+  const selectedTaskDepartment = departments.find((department) => department._id === taskDepartmentId) ?? null;
   const selectedTaskAssignee = users.find((user) => user._id === taskAssigneeFilter) ?? null;
   const openTasks = summary?.tasks.open ?? tasks.filter((task) => task.status === "open").length;
   const inProgressTasks = summary?.tasks.in_progress ?? tasks.filter((task) => task.status === "in_progress").length;
@@ -5132,8 +5165,68 @@ function AdminPanelV2({
 
         {section === "tasks" ? (
           <View style={[styles.adminSection, isDarkTheme && styles.adminSectionDark]}>
-            <AdminSectionHeader title="Tasks" meta={`${visibleTasks.length} shown, ${openTasks} open`} />
+            <AdminSectionHeader
+              title="Tasks"
+              meta={`${visibleTasks.length} shown${selectedTaskDepartment ? ` in ${selectedTaskDepartment.name}` : ""}`}
+            />
             {taskNotice ? <Text style={styles.errorBar}>{taskNotice}</Text> : null}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.tasksOrgRail}
+            >
+              {[
+                { _id: "all", name: "All tasks", member_count: reports?.summary.total ?? tasks.length },
+                ...departments,
+              ].map((department) => {
+                const selected = taskDepartmentId === department._id;
+                return (
+                  <Pressable
+                    key={department._id}
+                    accessibilityLabel={`Filter tasks by ${department.name}`}
+                    onPress={() => {
+                      setTaskAssigneeFilter("all");
+                      void onSelectTaskDepartment(department._id);
+                    }}
+                    style={({ pressed }) => [
+                      styles.taskOrgFilterChip,
+                      isDarkTheme && styles.taskOrgFilterChipDark,
+                      selected && {
+                        borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark,
+                        backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft,
+                      },
+                      pressed && styles.pressablePressed,
+                    ]}
+                  >
+                    <View
+                      style={[
+                        styles.taskOrgFilterDot,
+                        { backgroundColor: selected ? themeColors.primaryDark : colors.faint },
+                        isDarkTheme && { backgroundColor: selected ? themeColors.accent : "rgba(233,237,239,0.48)" },
+                      ]}
+                    />
+                    <Text
+                      numberOfLines={1}
+                      style={[
+                        styles.taskOrgFilterText,
+                        selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                        isDarkTheme && styles.taskOrgFilterTextDark,
+                      ]}
+                    >
+                      {department.name}
+                    </Text>
+                    <Text
+                      style={[
+                        styles.taskOrgFilterCount,
+                        selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                      ]}
+                    >
+                      {department._id === "all" ? tasks.length : department.member_count ?? 0}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
             <View style={[styles.adminFilterCard, isDarkTheme && styles.adminFilterCardDark]}>
               <Pressable
                 accessibilityLabel="Filter tasks by employee"
@@ -5801,13 +5894,22 @@ function TasksPanel({
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<"all" | "active" | "archived">("all");
   const [orgFilter, setOrgFilter] = useState("all");
+  const [departmentFilter, setDepartmentFilter] = useState("all");
   const [visibleTaskCount, setVisibleTaskCount] = useState(TASK_PAGE_SIZE);
   const [taskActionConversation, setTaskActionConversation] = useState<BackendConversation | null>(null);
   const [taskActionBusy, setTaskActionBusy] = useState<TaskManagerAdminTask["status"] | null>(null);
   const normalizedQuery = query.trim().toLowerCase();
 
-  const taskData = useMemo(() => {
+    const taskData = useMemo(() => {
     const allTaskThreads = conversations.filter((conversation) => conversation.taskThread);
+    const newestTaskFirst = (left: BackendConversation, right: BackendConversation) => {
+      const createdDiff = Date.parse(right.createdAt) - Date.parse(left.createdAt);
+      if (Number.isFinite(createdDiff) && createdDiff !== 0) return createdDiff;
+      return (right.taskThread?.taskNumber ?? "").localeCompare(left.taskThread?.taskNumber ?? "", undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+    };
     const taskmanagerAgentsByConversationId = new Map(
       conversations
         .filter((conversation) => conversation.taskManagerAgent)
@@ -5844,8 +5946,35 @@ function TasksPanel({
         count: allTaskThreads.filter((conversation) => conversation.taskThread?.taskmanagerOrgId === orgId).length,
       }));
 
-    const taskThreads = allTaskThreads
+    const orgScopedTaskThreads = allTaskThreads
       .filter((conversation) => orgFilter === "all" || conversation.taskThread?.taskmanagerOrgId === orgFilter)
+      .sort((left, right) =>
+        (left.taskThread?.taskNumber ?? "").localeCompare(right.taskThread?.taskNumber ?? "", undefined, {
+          numeric: true,
+          sensitivity: "base",
+        }),
+      );
+
+    const departmentLabelById = new Map<string, string>();
+    for (const conversation of orgScopedTaskThreads) {
+      const ids = conversation.taskThread?.departmentIds ?? [];
+      const names = conversation.taskThread?.departmentNames ?? [];
+      ids.forEach((id, index) => {
+        if (!id) return;
+        const label = names[index]?.trim() || id;
+        if (!departmentLabelById.has(id)) departmentLabelById.set(id, label);
+      });
+    }
+    const departmentOptions = Array.from(departmentLabelById.entries())
+      .sort((left, right) => left[1].localeCompare(right[1]))
+      .map(([departmentId, label]) => ({
+        id: departmentId,
+        label,
+        count: orgScopedTaskThreads.filter((conversation) => conversation.taskThread?.departmentIds?.includes(departmentId)).length,
+      }));
+
+    const taskThreads = orgScopedTaskThreads
+      .filter((conversation) => departmentFilter === "all" || conversation.taskThread?.departmentIds?.includes(departmentFilter))
       .sort((left, right) =>
         (left.taskThread?.taskNumber ?? "").localeCompare(right.taskThread?.taskNumber ?? "", undefined, {
           numeric: true,
@@ -5932,12 +6061,7 @@ function TasksPanel({
         topLevelById.set(topLevelTaskId, topLevel);
       }
       return Array.from(topLevelById.values())
-        .sort((left, right) =>
-          (left.taskThread?.taskNumber ?? "").localeCompare(right.taskThread?.taskNumber ?? "", undefined, {
-            numeric: true,
-            sensitivity: "base",
-          }),
-        )
+        .sort(newestTaskFirst)
         .map((conversation) => {
           const subtasks = collectDescendants(conversation);
           return {
@@ -5961,13 +6085,15 @@ function TasksPanel({
       archivedRows,
       archivedThreadCount: archivedThreads.length,
       archivedThreads,
+      departmentOptions,
       orgLabelById,
       orgOptions,
+      orgScopedTaskThreads,
       taskThreads,
       topLevelActiveCount,
       topLevelArchivedCount,
     };
-  }, [adminSession?.orgId, adminSession?.orgName, conversations, normalizedQuery, orgFilter]);
+  }, [adminSession?.orgId, adminSession?.orgName, conversations, departmentFilter, normalizedQuery, orgFilter]);
 
   const visibleRows =
     filter === "archived"
@@ -5982,7 +6108,13 @@ function TasksPanel({
 
   useEffect(() => {
     setVisibleTaskCount(TASK_PAGE_SIZE);
-  }, [filter, normalizedQuery, orgFilter, taskData.activeRows.length, taskData.archivedRows.length]);
+  }, [departmentFilter, filter, normalizedQuery, orgFilter, taskData.activeRows.length, taskData.archivedRows.length]);
+
+  useEffect(() => {
+    if (departmentFilter === "all") return;
+    if (taskData.departmentOptions.some((item) => item.id === departmentFilter)) return;
+    setDepartmentFilter("all");
+  }, [departmentFilter, taskData.departmentOptions]);
 
   function handleTaskScroll(event: {
     nativeEvent: {
@@ -6054,7 +6186,6 @@ function TasksPanel({
             pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
           ]}
         >
-          <TaskStatusMark isDarkTheme={isDarkTheme} status={taskThread?.status} />
           <View style={[styles.chatListRowBody, styles.taskListRowBody]}>
             <View style={styles.chatListTextColumn}>
               <View style={styles.taskThreadTitleRow}>
@@ -6403,7 +6534,10 @@ function TasksPanel({
             return (
               <Pressable
                 key={item.id}
-                onPress={() => setOrgFilter(item.id)}
+                onPress={() => {
+                  setOrgFilter(item.id);
+                  setDepartmentFilter("all");
+                }}
                 style={({ pressed }) => [
                   styles.taskOrgFilterChip,
                   isDarkTheme && styles.taskOrgFilterChipDark,
@@ -6451,6 +6585,61 @@ function TasksPanel({
             );
           })}
         </ScrollView>
+        {taskData.departmentOptions.length ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.tasksOrgRail}
+          >
+            {[
+              { id: "all", label: "All departments", count: taskData.orgScopedTaskThreads.length },
+              ...taskData.departmentOptions,
+            ].map((item) => {
+              const selected = departmentFilter === item.id;
+              return (
+                <Pressable
+                  key={item.id}
+                  onPress={() => setDepartmentFilter(item.id)}
+                  style={({ pressed }) => [
+                    styles.taskOrgFilterChip,
+                    isDarkTheme && styles.taskOrgFilterChipDark,
+                    selected && {
+                      borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark,
+                      backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft,
+                    },
+                    pressed && styles.pressablePressed,
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.taskOrgFilterDot,
+                      { backgroundColor: selected ? themeColors.primaryDark : colors.faint },
+                      isDarkTheme && { backgroundColor: selected ? themeColors.accent : "rgba(233,237,239,0.48)" },
+                    ]}
+                  />
+                  <Text
+                    numberOfLines={1}
+                    style={[
+                      styles.taskOrgFilterText,
+                      selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                      isDarkTheme && styles.taskOrgFilterTextDark,
+                    ]}
+                  >
+                    {item.label}
+                  </Text>
+                  <Text
+                    style={[
+                      styles.taskOrgFilterCount,
+                      selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                    ]}
+                  >
+                    {item.count}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        ) : null}
         </View>
       </View>
       <ScrollView

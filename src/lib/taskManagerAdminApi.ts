@@ -21,7 +21,7 @@ export type TaskManagerAdminUser = {
   _id: string;
   name: string;
   role: "admin" | "member";
-  departments?: string[];
+  departments?: Array<{ department_id: string; roles?: string[] }> | string[];
   preferred_language?: string;
   agent_channel?: "whatsapp" | "orbita";
   channels?: {
@@ -189,8 +189,11 @@ export const taskManagerAdminApi = {
       `/orbita/admin/orgs/${session.orgId}/users/${userId}/chats?limit=100`,
     );
   },
-  tasks(session: TaskManagerAdminSession) {
-    return adminFetch<TaskManagerAdminTask[]>(session, `/orbita/admin/orgs/${session.orgId}/tasks`);
+  tasks(session: TaskManagerAdminSession, filter: { departmentId?: string } = {}) {
+    const params = new URLSearchParams();
+    if (filter.departmentId) params.set("department_id", filter.departmentId);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return adminFetch<TaskManagerAdminTask[]>(session, `/orbita/admin/orgs/${session.orgId}/tasks${suffix}`);
   },
   createSubtask(
     session: TaskManagerAdminSession,

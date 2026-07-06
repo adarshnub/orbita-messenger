@@ -151,6 +151,25 @@ describe("Task Manager admin API", () => {
     });
   });
 
+  it("loads tasks for a selected department with the admin bearer token", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => [{ _id: "task_1", title: "Nursing task" }],
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await taskManagerAdminApi.tasks(session({ apiBaseUrl: "http://localhost:4000" }), { departmentId: "dept_1" });
+
+    expect(fetchMock).toHaveBeenCalledWith("http://192.168.1.25:4000/orbita/admin/orgs/org_1/tasks?department_id=dept_1", {
+      method: "GET",
+      headers: {
+        Authorization: "Bearer admin-token",
+        "Content-Type": "application/json",
+      },
+    });
+  });
+
   it("clears admin mode when task status refresh auth fails", async () => {
     vi.stubGlobal(
       "fetch",

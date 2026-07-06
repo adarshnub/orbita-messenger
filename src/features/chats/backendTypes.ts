@@ -37,6 +37,8 @@ export type BackendConversation = {
     status: string;
     title: string;
     dueDate?: string | null;
+    departmentIds?: string[];
+    departmentNames?: string[];
   } | null;
 };
 
