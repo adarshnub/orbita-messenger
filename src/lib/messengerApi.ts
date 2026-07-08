@@ -24,6 +24,7 @@ type ApiAction =
   | "create_group"
   | "add_group_members"
   | "add_task_thread_members"
+  | "create_taskmanager_task_shell"
   | "list_taskmanager_org_members"
   | "create_task_thread_subtask"
   | "update_task_thread_status"
@@ -299,6 +300,18 @@ export const messengerApi = {
     return callApi<{ conversation: BackendConversation }>("add_task_thread_members", {
       conversationId,
       memberIds,
+    });
+  },
+  createTaskmanagerTaskShell(conversationId: string, title: string) {
+    return callApi<{
+      conversation: BackendConversation;
+      message?: BackendMessage;
+      task: unknown;
+      taskManagerForward?: { forwarded: boolean; reason?: string };
+    }>("create_taskmanager_task_shell", {
+      conversationId,
+      title,
+      clientPlatform: Platform.OS === "web" ? "web" : "mobile",
     });
   },
   listTaskmanagerOrgMembers(conversationId: string) {

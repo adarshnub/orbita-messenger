@@ -168,6 +168,12 @@ type UnsavedPeer = {
   defaultName: string;
   phone: string;
 };
+type TaskThreadInvite = {
+  conversationId: string;
+  isSubtask: boolean;
+  taskNumber: string;
+  title: string;
+};
 type AdminSectionId = "overview" | "employees" | "departments" | "tasks" | "chats" | "reports" | "settings";
 
 const KEYBOARD_COMPOSER_GAP = 18;
@@ -297,12 +303,18 @@ const ACCENT_THEMES: Array<{
     darkAccentSoft: "rgba(251,191,36,0.16)",
   },
 ];
-type QuickPrompt = { id: string; label: string; prompt: string };
+type QuickPrompt = { id: string; label: string; prompt: string; action?: "create_task_shell" };
 type MentionCandidate =
   | { id: "orbita"; kind: "orbita"; displayName: string; handle: string; subtitle: string }
   | { id: string; kind: "member"; displayName: string; handle: string; subtitle: string; profile: BackendProfile };
 
 const AGENT_QUICK_PROMPTS: QuickPrompt[] = [
+  {
+    id: "create_task",
+    label: "Create task",
+    prompt: "",
+    action: "create_task_shell",
+  },
   {
     id: "team_overdue_widget",
     label: "My Team - Overdue Tasks",
@@ -357,9 +369,23 @@ if (Platform.OS === "android") {
 }
 
 function animateNextListLayout() {
-  LayoutAnimation.configureNext(
-    LayoutAnimation.create(180, LayoutAnimation.Types.easeInEaseOut, LayoutAnimation.Properties.opacity),
-  );
+  LayoutAnimation.configureNext({
+    duration: 280,
+    create: {
+      duration: 220,
+      property: LayoutAnimation.Properties.opacity,
+      type: LayoutAnimation.Types.easeInEaseOut,
+    },
+    update: {
+      duration: 280,
+      type: LayoutAnimation.Types.easeInEaseOut,
+    },
+    delete: {
+      duration: 200,
+      property: LayoutAnimation.Properties.opacity,
+      type: LayoutAnimation.Types.easeInEaseOut,
+    },
+  });
 }
 
 function isActiveTaskThreadStatus(status?: string | null) {
@@ -763,6 +789,72 @@ function isTaskManagerMainAgentConversation(conversation: BackendConversation) {
   return isTaskManagerAgentConversation(conversation);
 }
 
+function taskManagerAgentId(conversation: BackendConversation) {
+  return conversation.taskManagerAgent?.agentProfileId ??
+    conversation.taskThread?.agentProfileId ??
+    conversation.participants.find((participant) => participant.about?.trim().toLowerCase() === "task manager agent")?.id ??
+    conversation.participants[0]?.id ??
+    "";
+}
+
+function taskCreatedFallbackFromText(body: string) {
+  const match = body.match(/\b(?:Task|Subtask)\s+(TASK-\d+(?:-\d+)*)\s*(?:-\s*(.*?))?\s+was created\.?\s*$/i);
+  if (match) {
+    return {
+      taskNumber: match[1],
+      title: (match[2] || "").trim(),
+    };
+  }
+  const createdMatch = body.match(/\bCreated\s+(TASK-\d+(?:-\d+)*)\s+"([^"]+)"(?:\s+and\s+assigned\b.*?)?\.?\s*$/i);
+  if (createdMatch) {
+    return {
+      taskNumber: createdMatch[1],
+      title: createdMatch[2].trim(),
+    };
+  }
+  return null;
+}
+
+function taskThreadInviteFromMessage(message: BackendMessage, conversations: BackendConversation[]): TaskThreadInvite | null {
+  const system = message.system ?? null;
+  const fallback = taskCreatedFallbackFromText(message.body);
+  const isCreatedNotice =
+    system?.kind === "task_thread_source_created" ||
+    system?.kind === "task_thread_subtask_created" ||
+    system?.event === "created" ||
+    Boolean(fallback);
+  if (!isCreatedNotice) return null;
+
+  const fallbackTaskNumber = fallback?.taskNumber ?? "";
+  const systemTaskNumber = system?.taskNumber ?? "";
+  const fallbackIsSubtask = /TASK-\d+-\d+/.test(fallbackTaskNumber);
+  const taskNumber = fallbackIsSubtask ? fallbackTaskNumber : systemTaskNumber || fallbackTaskNumber;
+  const isSubtask = Boolean(system?.parentTaskId || system?.kind === "task_thread_subtask_created" || /TASK-\d+-\d+/.test(taskNumber));
+  const conversationId = system?.taskThreadConversationId ?? system?.conversationId ?? "";
+  const taskmanagerTaskId = system?.taskmanagerTaskId ?? "";
+  const byTaskNumber = taskNumber
+    ? conversations.find((candidate) => candidate.taskThread?.taskNumber === taskNumber)
+    : null;
+  const byTaskId = taskmanagerTaskId
+    ? conversations.find((candidate) => candidate.taskThread?.taskmanagerTaskId === taskmanagerTaskId)
+    : null;
+  const byConversationId = conversationId
+    ? conversations.find((candidate) => candidate.id === conversationId && candidate.taskThread)
+    : null;
+  const taskThreadConversation = isSubtask
+    ? byTaskNumber ?? byTaskId ?? (system?.taskThreadConversationId ? byConversationId : null)
+    : byTaskId ?? byTaskNumber ?? byConversationId;
+  const resolvedConversationId = taskThreadConversation?.id ?? (isSubtask ? system?.taskThreadConversationId ?? "" : conversationId);
+  if (!resolvedConversationId || !taskNumber) return null;
+
+  return {
+    conversationId: resolvedConversationId,
+    isSubtask,
+    taskNumber,
+    title: taskThreadConversation?.taskThread?.title ?? (fallbackIsSubtask ? fallback?.title : system?.title ?? fallback?.title) ?? "Task group",
+  };
+}
+
 function isAgentProgressMessage(message: Pick<BackendMessage, "attachments" | "body">) {
   if (message.attachments?.length) return false;
   const normalized = message.body
@@ -1110,7 +1202,8 @@ function isTaskConversation(conversation: BackendConversation) {
 
 function shouldExpectTaskManagerAgentReply(conversation: BackendConversation, text: string) {
   if (!isTaskManagerAgentConversation(conversation)) return false;
-  return !isTaskConversation(conversation) || hasOrbitaMention(text);
+  if (!isTaskConversation(conversation)) return Boolean(text.trim());
+  return hasOrbitaMention(text);
 }
 
 function activeMentionQuery(text: string) {
@@ -1633,6 +1726,51 @@ function MessageBody({ mine, text }: { mine: boolean; text: string }) {
     >
       {renderMessageInline(text, mine, isDarkTheme, "message")}
     </Text>
+  );
+}
+
+function TaskThreadInviteCard({
+  invite,
+  onOpen,
+}: {
+  invite: TaskThreadInvite;
+  onOpen: (conversationId: string) => void;
+}) {
+  const { isDarkTheme, themeColors } = useAppTheme();
+  return (
+    <View style={[styles.taskInviteCard, isDarkTheme && styles.taskInviteCardDark]}>
+      <View style={styles.taskInviteHeader}>
+        <View style={[styles.taskInviteIcon, { backgroundColor: themeColors.primarySoft }, isDarkTheme && styles.taskInviteIconDark]}>
+          <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="people-outline" size={18} />
+        </View>
+        <View style={styles.taskInviteCopy}>
+          <Text numberOfLines={1} style={[styles.taskInviteLabel, isDarkTheme && styles.taskInviteLabelDark]}>
+            {invite.isSubtask ? "Subtask group" : "Task group"}
+          </Text>
+          <Text numberOfLines={1} style={[styles.taskInviteTitle, isDarkTheme && styles.taskInviteTitleDark]}>
+            {invite.taskNumber}
+          </Text>
+          <Text numberOfLines={2} style={[styles.taskInviteSubtitle, isDarkTheme && styles.taskInviteSubtitleDark]}>
+            {invite.title || "Task group"}
+          </Text>
+        </View>
+      </View>
+      <Pressable
+        accessibilityRole="button"
+        onPress={() => onOpen(invite.conversationId)}
+        style={({ pressed }) => [
+          styles.taskInviteButton,
+          { backgroundColor: themeColors.primaryDark },
+          isDarkTheme && { backgroundColor: themeColors.accent },
+          pressed && styles.pressablePressed,
+        ]}
+      >
+        <Ionicons color={isDarkTheme ? "#0B141A" : "#FFFFFF"} name="open-outline" size={16} />
+        <Text style={[styles.taskInviteButtonText, isDarkTheme && styles.taskInviteButtonTextDark]}>
+          {invite.isSubtask ? "Open subtask group" : "Open task group"}
+        </Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -2465,6 +2603,8 @@ function MessengerShell({ session }: { session: Session }) {
   const [selectedMessages, setSelectedMessages] = useState<ChatMessage[]>([]);
   const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
   const [draft, setDraft] = useState("");
+  const [pendingCreateTaskTitleFor, setPendingCreateTaskTitleFor] = useState("");
+  const [creatingTaskFor, setCreatingTaskFor] = useState("");
   const [composerAttachment, setComposerAttachment] = useState<ComposerAttachment | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMessagesFor, setLoadingMessagesFor] = useState("");
@@ -2909,6 +3049,16 @@ function MessengerShell({ session }: { session: Session }) {
       [conversationId]: messages,
     };
   }, []);
+
+  const appendLocalMessage = useCallback((message: ChatMessage) => {
+    const currentForConversation = messagesByConversationRef.current[message.conversationId] ?? [];
+    const nextMessages = upsertMessage(currentForConversation, message);
+    rememberMessages(message.conversationId, nextMessages);
+    if (selectedIdRef.current === message.conversationId) {
+      setSelectedMessages(nextMessages);
+    }
+    updateConversationPreview(message);
+  }, [rememberMessages, updateConversationPreview]);
 
   const applyRealtimeMessage = useCallback((message: BackendMessage) => {
     const activeConversationId = selectedIdRef.current;
@@ -3580,6 +3730,23 @@ function MessengerShell({ session }: { session: Session }) {
     scheduleMessageRefresh(conversationId);
   }, [scheduleBootstrapRefresh, scheduleMessageRefresh, selectConversation]);
 
+  const openTaskThreadConversation = useCallback((conversationId: string) => {
+    if (!conversationId) return;
+    const exists = conversationsRef.current.some((conversation) => conversation.id === conversationId);
+    if (exists) {
+      selectConversation(conversationId);
+      return;
+    }
+    selectedIdRef.current = conversationId;
+    activeTabRef.current = "tasks";
+    setActiveTab("tasks");
+    setSelectedId(conversationId);
+    setSelectedMessages([]);
+    setLoadingMessagesFor(conversationId);
+    scheduleBootstrapRefresh();
+    scheduleMessageRefresh(conversationId);
+  }, [scheduleBootstrapRefresh, scheduleMessageRefresh, selectConversation]);
+
   useEffect(() => {
     if (!profileId || Platform.OS === "web") return undefined;
     let cancelled = false;
@@ -3960,6 +4127,86 @@ function MessengerShell({ session }: { session: Session }) {
     });
   }
 
+  function startCreateTaskTitlePrompt(conversationId: string) {
+    const conversation = conversationsRef.current.find((item) => item.id === conversationId);
+    if (!conversation || !profile) return;
+    if (!isTaskManagerMainAgentConversation(conversation)) {
+      setError("Open your Task Manager Agent chat to create a task.");
+      return;
+    }
+    setPendingCreateTaskTitleFor(conversationId);
+    setDraft("");
+    if (pendingCreateTaskTitleFor === conversationId) return;
+
+    appendLocalMessage({
+      id: createLocalMessageId(),
+      conversationId,
+      senderId: taskManagerAgentId(conversation),
+      kind: "text",
+      body: "What should be the task title?",
+      attachments: [],
+      forwardedFrom: null,
+      replyTo: null,
+      replyToMessageId: null,
+      createdAt: new Date().toISOString(),
+      status: "sent",
+    });
+  }
+
+  async function createTaskShellFromAgentChat(conversationId: string, title: string) {
+    if (!conversationId || creatingTaskFor === conversationId) return;
+    setCreatingTaskFor(conversationId);
+    setError("");
+    setAgentThinkingFor((current) => ({ ...current, [conversationId]: new Date().toISOString() }));
+    try {
+      const result = await messengerApi.createTaskmanagerTaskShell(conversationId, title);
+      const nextMessage = result.message;
+      const nextConversation = nextMessage
+        ? { ...result.conversation, lastMessage: nextMessage, updatedAt: nextMessage.createdAt, unreadCount: 0 }
+        : result.conversation;
+      const nextConversations = [
+        nextConversation,
+        ...conversationsRef.current.filter((conversation) => conversation.id !== nextConversation.id),
+      ];
+      conversationsRef.current = nextConversations;
+      setConversations(nextConversations);
+
+      let selectedThreadMessages = messagesByConversationRef.current[nextConversation.id] ?? [];
+      if (nextMessage) {
+        selectedThreadMessages = upsertMessage(selectedThreadMessages, nextMessage);
+        rememberMessages(nextConversation.id, selectedThreadMessages);
+        void upsertCachedMessage(session.user.id, nextMessage).catch(() => undefined);
+        setAgentThinkingFor((current) => ({ ...current, [nextConversation.id]: nextMessage.createdAt }));
+      }
+
+      setAgentThinkingFor((current) => {
+        const next = { ...current };
+        delete next[conversationId];
+        return next;
+      });
+      selectedIdRef.current = nextConversation.id;
+      activeTabRef.current = "tasks";
+      setSelectedMessages(mergeWithConversationPreview(nextConversation.id, selectedThreadMessages));
+      setLoadingMessagesFor("");
+      setSelectedId(nextConversation.id);
+      setActiveTab("tasks");
+      setDraft(insertMentionToken("", "orbita"));
+      scheduleMessageRefresh(nextConversation.id);
+      scheduleBootstrapRefresh();
+    } catch (nextError) {
+      setAgentThinkingFor((current) => {
+        const next = { ...current };
+        delete next[conversationId];
+        return next;
+      });
+      setPendingCreateTaskTitleFor(conversationId);
+      setDraft("");
+      setError(nextError instanceof Error ? userFacingTaskManagerError(nextError.message) : "Unable to create task.");
+    } finally {
+      setCreatingTaskFor((current) => (current === conversationId ? "" : current));
+    }
+  }
+
   async function sendMessage(
     kind: BackendMessage["kind"] = "text",
     body = draft.trim(),
@@ -3969,6 +4216,38 @@ function MessengerShell({ session }: { session: Session }) {
     const text = body.trim();
     const baseModelText = (modelBodyOverride ?? body).trim();
     if (!selected || !profile) return;
+    if (creatingTaskFor === selected.id) return;
+    if (pendingCreateTaskTitleFor === selected.id) {
+      if (attachment) {
+        setError("Send the task title as text first.");
+        return;
+      }
+      if (!text) {
+        setError("Enter a task title first.");
+        return;
+      }
+      const titleMessage: ChatMessage = {
+        id: createLocalMessageId(),
+        conversationId: selected.id,
+        senderId: profile.id,
+        kind: "text",
+        body: text,
+        attachments: [],
+        forwardedFrom: null,
+        replyTo: null,
+        replyToMessageId: null,
+        createdAt: new Date().toISOString(),
+        status: "sent",
+      };
+      setDraft("");
+      setComposerAttachment(null);
+      setReplyingToMessage(null);
+      setError("");
+      setPendingCreateTaskTitleFor("");
+      appendLocalMessage(titleMessage);
+      await createTaskShellFromAgentChat(selected.id, text);
+      return;
+    }
     const replyTarget = replyingToMessage?.conversationId === selected.id ? replyingToMessage : null;
     const replyTo = replyTarget ? buildReplyPreviewFromMessage(replyTarget) : null;
     const modelText = replyTo && isTaskManagerAgentConversation(selected)
@@ -4429,6 +4708,7 @@ function MessengerShell({ session }: { session: Session }) {
                 agentThinking={Boolean(selected && agentThinkingFor[selected.id])}
                 bottomInset={bottomInset}
                 conversation={selected}
+                creatingTask={creatingTaskFor === selected.id}
                 currentUserId={profile.id}
                 draft={draft}
                 isWide={isWide}
@@ -4441,11 +4721,13 @@ function MessengerShell({ session }: { session: Session }) {
                 onMessageActions={setMessageActionTarget}
                 onOpenMemberDirect={openContactConversation}
                 onOpenSubtask={(conversationId) => selectConversation(conversationId)}
+                onOpenTaskThread={openTaskThreadConversation}
                 onReplyToMessage={setReplyingToMessage}
                 onLoadOlder={() => loadOlderMessages(selected.id)}
                 onOpenAttachmentMenu={() => setAttachmentMenuOpen(true)}
                 onTakePhoto={() => void takePhotoAttachment()}
                 onBack={() => selectConversation("")}
+                onCreateTaskShell={() => startCreateTaskTitlePrompt(selected.id)}
                 onRemoveAttachment={() => setComposerAttachment(null)}
                 onRemoveReply={() => setReplyingToMessage(null)}
                 onSend={(nextKind, nextBody, nextAttachment, modelBodyOverride) =>
@@ -4456,6 +4738,7 @@ function MessengerShell({ session }: { session: Session }) {
                 setDraft={handleDraftChange}
                 replyingToMessage={replyingToMessage?.conversationId === selected.id ? replyingToMessage : null}
                 subtaskConversations={selectedSubtaskConversations}
+                taskInviteConversations={conversations}
                 typingText={typingStatusText(selectedTypingParticipants)}
                 unsavedPeer={selectedUnsavedPeer}
               />
@@ -5894,6 +6177,8 @@ function TasksPanel({
   const [visibleTaskCount, setVisibleTaskCount] = useState(TASK_PAGE_SIZE);
   const [taskActionConversation, setTaskActionConversation] = useState<BackendConversation | null>(null);
   const [taskActionBusy, setTaskActionBusy] = useState<TaskManagerAdminTask["status"] | null>(null);
+  const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
+  const [showTaskDetails, setShowTaskDetails] = useState(false);
   const normalizedQuery = query.trim().toLowerCase();
 
     const taskData = useMemo(() => {
@@ -6171,11 +6456,19 @@ function TasksPanel({
     const dueInfo = taskDueInfo(taskThread?.dueDate, taskThread?.status);
     const openTaskActions = () => setTaskActionConversation((current) => current?.id === conversation.id ? null : conversation);
     const completedSubtaskCount = row.subtasks.filter((subtask) => isCompletedTaskThreadStatus(subtask.taskThread?.status)).length;
-    const visibleSubtasks = row.matchingSubtasks.slice(0, 8);
-    const hiddenSubtaskCount = Math.max(0, row.matchingSubtasks.length - visibleSubtasks.length);
-    const subtaskStripTitle = normalizedQuery && row.matchingSubtasks.length !== row.subtasks.length
+    const expandedSubtasks = normalizedQuery && row.matchingSubtasks.length ? row.matchingSubtasks : row.subtasks;
+    const subtasksExpanded = Boolean(expandedTaskIds[conversation.id]);
+    const detailsExpanded = showTaskDetails;
+    const subtaskSummary = normalizedQuery && row.matchingSubtasks.length !== row.subtasks.length
       ? `${row.matchingSubtasks.length} matching subtask${row.matchingSubtasks.length === 1 ? "" : "s"}`
       : `${completedSubtaskCount}/${row.subtaskCount} subtasks`;
+    const toggleSubtasks = () => {
+      animateNextListLayout();
+      setExpandedTaskIds((current) => ({
+        ...current,
+        [conversation.id]: !current[conversation.id],
+      }));
+    };
 
     return (
       <View key={row.id} style={[styles.taskThreadRowFrame, (taskActionsOpen || subtaskActionsOpen) && styles.taskThreadRowFrameOpen]}>
@@ -6193,6 +6486,7 @@ function TasksPanel({
           style={({ pressed }) => [
             styles.chatRow,
             styles.taskThreadRow,
+            !detailsExpanded && styles.taskThreadRowCompact,
             !isDarkTheme && { borderColor: themeColors.primarySoft },
             isCompletedTaskThread && styles.taskThreadRowArchived,
             isDarkTheme && styles.chatRowDark,
@@ -6204,9 +6498,33 @@ function TasksPanel({
             pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
           ]}
         >
+          <View style={styles.taskThreadRowTop}>
           <View style={[styles.chatListRowBody, styles.taskListRowBody]}>
             <View style={styles.chatListTextColumn}>
               <View style={styles.taskThreadTitleRow}>
+                {row.subtaskCount ? (
+                  <Pressable
+                    accessibilityLabel={subtasksExpanded ? "Hide subtasks" : "Show subtasks"}
+                    onPress={(event) => {
+                      event.stopPropagation?.();
+                      toggleSubtasks();
+                    }}
+                    style={({ pressed }) => [
+                      styles.taskTreeExpandButton,
+                      {
+                        borderColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.primarySoft,
+                        backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft,
+                      },
+                      pressed && styles.pressablePressed,
+                    ]}
+                  >
+                    <Ionicons
+                      color={isDarkTheme ? themeColors.accent : themeColors.primaryDark}
+                      name={subtasksExpanded ? "remove" : "add"}
+                      size={16}
+                    />
+                  </Pressable>
+                ) : null}
                 <Text
                   numberOfLines={2}
                   style={[
@@ -6219,7 +6537,7 @@ function TasksPanel({
                   {taskThread?.title ?? conversation.title}
                 </Text>
               </View>
-              <View style={styles.taskRowMetaLine}>
+              <View style={[styles.taskRowMetaLine, row.subtaskCount ? styles.taskRowMetaLineWithTree : null]}>
                 <View style={[
                   styles.taskNumberPill,
                   !isDarkTheme && { backgroundColor: themeColors.primarySoft, borderColor: themeColors.accentSoft },
@@ -6239,6 +6557,8 @@ function TasksPanel({
                     {taskThread?.taskNumber ?? "TASK"}
                   </Text>
                 </View>
+                {detailsExpanded ? (
+                <>
                 <View
                   style={[
                     styles.taskOrgBadge,
@@ -6264,8 +6584,12 @@ function TasksPanel({
                     {statusLabel ? `${statusLabel} · ` : ""}
                     {messagePreviewText(conversation.lastMessage) || `${conversation.participants.length} members`}
                   </Text>
+                </>
+                ) : null}
               </View>
-              <View style={styles.taskDueLine}>
+              {detailsExpanded ? (
+              <>
+              <View style={[styles.taskDueLine, row.subtaskCount ? styles.taskDueLineWithTree : null]}>
                 <View
                   style={[
                     styles.taskDueBadge,
@@ -6286,11 +6610,16 @@ function TasksPanel({
                 </Text>
               ) : null}
             </View>
+              </>
+              ) : null}
+          </View>
           </View>
             <View style={[styles.chatListMetaColumn, styles.taskListMetaColumn]}>
-              <Text numberOfLines={1} style={[styles.chatTime, styles.taskCardColumnTime, isDarkTheme && styles.chatTimeDark]}>
-                {conversation.lastMessage ? formatTime(conversation.lastMessage.createdAt) : ""}
-              </Text>
+              {detailsExpanded ? (
+                <Text numberOfLines={1} style={[styles.chatTime, styles.taskCardColumnTime, isDarkTheme && styles.chatTimeDark]}>
+                  {conversation.lastMessage ? formatTime(conversation.lastMessage.createdAt) : ""}
+                </Text>
+              ) : null}
               <View style={styles.taskThreadMetaActions}>
                 {conversation.unreadCount > 0 ? <UnreadBadge count={conversation.unreadCount} /> : null}
                 <Pressable
@@ -6313,109 +6642,110 @@ function TasksPanel({
               </View>
             </View>
           </View>
-        </Pressable>
-        {row.subtaskCount ? (
-          <View
-            style={[
-              styles.subtaskDeck,
-              isDarkTheme && styles.subtaskDeckDark,
-              {
-                backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft,
-                borderColor: isDarkTheme ? themeColors.primaryDark : themeColors.primarySoft,
-              },
-            ]}
-          >
-            <View style={styles.subtaskDeckHeader}>
-              <View style={styles.subtaskDeckTitleRow}>
-                <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="git-branch-outline" size={14} />
-                <Text
-                  style={[
-                    styles.subtaskDeckTitle,
-                    isDarkTheme && styles.subtaskDeckTitleDark,
-                    { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
-                  ]}
-                >
-                  {subtaskStripTitle}
-                </Text>
-              </View>
-              <Pressable
-                accessibilityLabel="Open parent task"
-                onPress={() => onSelect(conversation.id)}
-                style={({ pressed }) => [
-                  styles.subtaskDeckOpenButton,
-                  { backgroundColor: isDarkTheme ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.78)" },
-                  isDarkTheme && styles.subtaskDeckOpenButtonDark,
-                  pressed && styles.pressablePressed,
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.subtaskDeckOpenText,
-                    isDarkTheme && styles.subtaskDeckOpenTextDark,
-                    { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
-                  ]}
-                >
-                  Open
-                </Text>
-                <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="chevron-forward" size={13} />
-              </Pressable>
-            </View>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.subtaskDeckScroller}>
-              {visibleSubtasks.map((subtask) => {
+          {row.subtaskCount && subtasksExpanded ? (
+            <View style={styles.taskSubtaskTree}>
+              {expandedSubtasks.map((subtask, subtaskIndex) => {
                 const subtaskThread = subtask.taskThread;
                 const subtaskCompleted = isCompletedTaskThreadStatus(subtaskThread?.status);
                 const subtaskSelected = selectedId === subtask.id;
                 const subtaskActionsActive = taskActionConversation?.id === subtask.id;
+                const subtaskDueInfo = taskDueInfo(subtaskThread?.dueDate, subtaskThread?.status);
+                const lastSubtask = subtaskIndex === expandedSubtasks.length - 1;
                 return (
-                  <Pressable
-                    key={subtask.id}
-                    accessibilityLabel={`Open ${subtaskThread?.taskNumber ?? "subtask"}`}
-                    onLongPress={() => setTaskActionConversation((current) => current?.id === subtask.id ? null : subtask)}
-                    onPress={() => onSelect(subtask.id)}
-                    style={({ pressed }) => [
-                      styles.subtaskDeckCard,
-                      !isDarkTheme && { borderColor: themeColors.primarySoft },
-                      isDarkTheme && styles.subtaskDeckCardDark,
-                      subtaskCompleted && styles.subtaskDeckCardDone,
-                      subtaskSelected && { borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark, backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
-                      pressed && styles.pressablePressed,
-                    ]}
-                  >
-                    <View style={styles.subtaskDeckCardTop}>
-                      <TaskStatusMark isDarkTheme={isDarkTheme} size="small" status={subtaskThread?.status} />
-                      <Text numberOfLines={1} style={[styles.subtaskDeckNumber, isDarkTheme && styles.subtaskDeckNumberDark]}>
-                        {subtaskThread?.taskNumber ?? "SUBTASK"}
+                  <View key={subtask.id} style={styles.taskSubtaskTreeItem}>
+                    <View
+                      style={[
+                        styles.taskSubtaskTreeStem,
+                        lastSubtask && styles.taskSubtaskTreeStemLast,
+                        { backgroundColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                      ]}
+                    />
+                    <View
+                      style={[
+                        styles.taskSubtaskTreeBranch,
+                        { backgroundColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                      ]}
+                    />
+                    <Pressable
+                      accessibilityLabel={`Open ${subtaskThread?.taskNumber ?? "subtask"}`}
+                      onLongPress={() => setTaskActionConversation((current) => current?.id === subtask.id ? null : subtask)}
+                      onPress={(event) => {
+                        event.stopPropagation?.();
+                        onSelect(subtask.id);
+                      }}
+                      style={({ pressed }) => [
+                        styles.subtaskStackRow,
+                        !detailsExpanded && styles.subtaskStackRowCompact,
+                        !isDarkTheme && { borderColor: themeColors.primarySoft },
+                        isDarkTheme && styles.subtaskStackRowDark,
+                        subtaskCompleted && styles.subtaskDeckCardDone,
+                        subtaskSelected && {
+                          borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark,
+                          backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft,
+                        },
+                        pressed && styles.pressablePressed,
+                      ]}
+                    >
+                      {detailsExpanded ? (
+                        <View style={styles.subtaskStackRowTop}>
+                          <TaskStatusMark isDarkTheme={isDarkTheme} size="small" status={subtaskThread?.status} />
+                          <Text
+                            numberOfLines={1}
+                            style={[
+                              styles.subtaskDeckNumber,
+                              isDarkTheme && styles.subtaskDeckNumberDark,
+                              { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                            ]}
+                          >
+                            {subtaskThread?.taskNumber ?? "SUBTASK"}
+                          </Text>
+                          <Pressable
+                            accessibilityLabel="Subtask actions"
+                            onPress={(event) => {
+                              event.stopPropagation?.();
+                              setTaskActionConversation((current) => current?.id === subtask.id ? null : subtask);
+                            }}
+                            style={({ pressed }) => [
+                              styles.subtaskDeckAction,
+                              subtaskActionsActive && { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
+                              pressed && styles.pressablePressed,
+                            ]}
+                          >
+                            <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="ellipsis-horizontal" size={14} />
+                          </Pressable>
+                        </View>
+                      ) : null}
+                      <Text numberOfLines={detailsExpanded ? 2 : 1} style={[styles.subtaskStackTitle, isDarkTheme && styles.subtaskStackTitleDark]}>
+                        {subtaskThread?.title ?? subtask.title}
                       </Text>
-                      <Pressable
-                        accessibilityLabel="Subtask actions"
-                        onPress={(event) => {
-                          event.stopPropagation?.();
-                          setTaskActionConversation((current) => current?.id === subtask.id ? null : subtask);
-                        }}
-                        style={({ pressed }) => [
-                          styles.subtaskDeckAction,
-                          subtaskActionsActive && { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
-                          pressed && styles.pressablePressed,
-                        ]}
-                      >
-                        <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="ellipsis-horizontal" size={14} />
-                      </Pressable>
-                    </View>
-                    <Text numberOfLines={2} style={[styles.subtaskDeckCardTitle, isDarkTheme && styles.subtaskDeckCardTitleDark]}>
-                      {subtaskThread?.title ?? subtask.title}
-                    </Text>
-                  </Pressable>
+                      {detailsExpanded ? (
+                        <View style={styles.subtaskStackFooter}>
+                          <Text style={[styles.subtaskCardStatus, isDarkTheme && styles.subtaskCardStatusDark]}>
+                            {taskThreadStatusLabel(subtaskThread?.status) || "Open"}
+                          </Text>
+                          <View
+                            style={[
+                              styles.subtaskStackDueBadge,
+                              {
+                                backgroundColor: isDarkTheme ? subtaskDueInfo.tone.darkBg : subtaskDueInfo.tone.bg,
+                                borderColor: isDarkTheme ? subtaskDueInfo.tone.darkBorder : subtaskDueInfo.tone.border,
+                              },
+                            ]}
+                          >
+                            <Ionicons color={isDarkTheme ? subtaskDueInfo.tone.darkColor : subtaskDueInfo.tone.color} name={subtaskDueInfo.tone.icon} size={11} />
+                            <Text numberOfLines={1} style={[styles.subtaskStackDueText, { color: isDarkTheme ? subtaskDueInfo.tone.darkColor : subtaskDueInfo.tone.color }]}>
+                              {subtaskDueInfo.label}
+                            </Text>
+                          </View>
+                        </View>
+                      ) : null}
+                    </Pressable>
+                  </View>
                 );
               })}
-              {hiddenSubtaskCount ? (
-                <View style={[styles.subtaskDeckMoreCard, isDarkTheme && styles.subtaskDeckMoreCardDark]}>
-                  <Text style={[styles.subtaskDeckMoreCount, isDarkTheme && styles.subtaskDeckMoreCountDark]}>+{hiddenSubtaskCount}</Text>
-                  <Text style={[styles.subtaskDeckMoreText, isDarkTheme && styles.subtaskDeckMoreTextDark]}>more</Text>
-                </View>
-              ) : null}
-            </ScrollView>
-          </View>
-        ) : null}
+            </View>
+          ) : null}
+        </Pressable>
         {inlineActionTarget ? (
           <TaskThreadInlineActions
             busyStatus={taskActionBusy}
@@ -6525,6 +6855,37 @@ function TasksPanel({
               </View>
             ))}
           </ScrollView>
+          <View style={[styles.taskDetailsToolbar, isDarkTheme && styles.taskDetailsToolbarDark]}>
+            <View style={styles.taskDetailsToolbarCopy}>
+              <Text style={[styles.taskDetailsToolbarTitle, isDarkTheme && styles.taskDetailsToolbarTitleDark]}>Task details</Text>
+              <Text style={[styles.taskDetailsToolbarMeta, isDarkTheme && styles.taskDetailsToolbarMetaDark]}>
+                {showTaskDetails ? "Showing task metadata" : "Titles only"}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityLabel={showTaskDetails ? "Hide task details" : "Show task details"}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: showTaskDetails }}
+              onPress={() => {
+                animateNextListLayout();
+                setShowTaskDetails((current) => !current);
+              }}
+              style={({ pressed }) => [
+                styles.taskDetailsSwitch,
+                showTaskDetails && { backgroundColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                !showTaskDetails && { backgroundColor: isDarkTheme ? "rgba(255,255,255,0.14)" : "rgba(17,27,33,0.10)" },
+                pressed && styles.pressablePressed,
+              ]}
+            >
+              <View
+                style={[
+                  styles.taskDetailsSwitchKnob,
+                  showTaskDetails && styles.taskDetailsSwitchKnobOn,
+                  showTaskDetails && { backgroundColor: isDarkTheme ? "#0B141A" : "#FFFFFF" },
+                ]}
+              />
+            </Pressable>
+          </View>
           {taskFilterMenuOpen ? (
             <View style={[styles.taskFilterPopover, isDarkTheme && styles.taskFilterPopoverDark]}>
               <View style={styles.taskFilterPopoverHeader}>
@@ -6859,6 +7220,7 @@ function ChatPane({
   agentThinking,
   bottomInset,
   conversation,
+  creatingTask,
   currentUserId,
   messages,
   messagesLoading,
@@ -6867,6 +7229,7 @@ function ChatPane({
   onCreateSubtask,
   onOpenMemberDirect,
   onOpenSubtask,
+  onOpenTaskThread,
   onOpenAttachmentMenu,
   onTakePhoto,
   draft,
@@ -6877,12 +7240,14 @@ function ChatPane({
   onSend,
   onBack,
   onAddMembers,
+  onCreateTaskShell,
   isWide,
   loadingOlder,
   mentionMembers,
   onLoadOlder,
   replyingToMessage,
   subtaskConversations,
+  taskInviteConversations,
   typingText,
   unsavedPeer,
 }: {
@@ -6890,6 +7255,7 @@ function ChatPane({
   agentThinking: boolean;
   bottomInset: number;
   conversation: BackendConversation;
+  creatingTask: boolean;
   currentUserId: string;
   messages: ChatMessage[];
   messagesLoading: boolean;
@@ -6898,6 +7264,7 @@ function ChatPane({
   onCreateSubtask: () => void;
   onOpenMemberDirect: (profileId: string) => void | Promise<void>;
   onOpenSubtask: (conversationId: string) => void;
+  onOpenTaskThread: (conversationId: string) => void;
   onOpenAttachmentMenu: () => void;
   onTakePhoto: () => void;
   draft: string;
@@ -6913,12 +7280,14 @@ function ChatPane({
   ) => Promise<void> | void;
   onBack: () => void;
   onAddMembers: () => void | Promise<void>;
+  onCreateTaskShell: () => void | Promise<void>;
   isWide: boolean;
   loadingOlder: boolean;
   mentionMembers: BackendProfile[];
   onLoadOlder: () => void;
   replyingToMessage: ChatMessage | null;
   subtaskConversations: BackendConversation[];
+  taskInviteConversations: BackendConversation[];
   typingText: string;
   unsavedPeer: UnsavedPeer | null;
 }) {
@@ -7712,6 +8081,10 @@ function ChatPane({
 
   async function sendQuickPrompt(item: QuickPrompt) {
     setQuickPromptOpen(false);
+    if (item.action === "create_task_shell") {
+      await onCreateTaskShell();
+      return;
+    }
     if (isTaskThreadConversation && item.id === "create_subtask") {
       lastSubtaskPrefillMessageIdRef.current = "";
       setSubtaskPromptFollowupActive(true);
@@ -7721,6 +8094,7 @@ function ChatPane({
 
   const quickPrompts = isTaskThreadConversation ? TASK_THREAD_QUICK_PROMPTS : AGENT_QUICK_PROMPTS;
   const composerCanSend = Boolean(draft.trim() || attachment);
+  const composerSendDisabled = creatingTask || !composerCanSend;
   const composerInputScrollEnabled = composerInputHeight >= COMPOSER_INPUT_MAX_HEIGHT - 1;
   const voiceElapsedMs = voiceRecordingBackend === "expo" ? expoRecorderState.durationMillis : simformElapsedMs;
   const voiceElapsedLabel = formatDurationMs(voiceElapsedMs);
@@ -7870,6 +8244,9 @@ function ChatPane({
                 ? messages.find((candidate) => candidate.id === message.replyToMessageId)
                 : null;
               const replyTo = repliedMessage ? buildReplyPreviewFromMessage(repliedMessage) : message.replyTo ?? null;
+              const taskInvite = !mine
+                ? taskThreadInviteFromMessage(message, taskInviteConversations)
+                : null;
               return (
                 <View key={message.id} style={styles.messageWithDate}>
                   {showDate ? (
@@ -7924,6 +8301,9 @@ function ChatPane({
                         ) : null}
                         {message.attachments[0] ? <MessageAttachmentCard attachment={message.attachments[0]} mine={mine} /> : null}
                         {message.body ? <MessageBody mine={mine} text={message.body} /> : null}
+                        {taskInvite ? (
+                          <TaskThreadInviteCard invite={taskInvite} onOpen={onOpenTaskThread} />
+                        ) : null}
                         <View style={styles.messageMeta}>
                           <Text style={[styles.metaText, mine && (isDarkTheme ? styles.metaTextMineDark : styles.metaTextMine)]}>{formatTime(message.createdAt)}</Text>
                           {mine && message.localState === "sending" ? (
@@ -8161,6 +8541,7 @@ function ChatPane({
                 <TextInput
                   blurOnSubmit={false}
                   cursorColor={isDarkTheme ? "#FFFFFF" : themeColors.primaryDark}
+                  editable={!creatingTask}
                   onContentSizeChange={handleComposerInputContentSizeChange}
                   scrollEnabled={composerInputScrollEnabled}
                   selectionColor={isDarkTheme ? themeColors.accent : themeColors.primaryDark}
@@ -8174,10 +8555,10 @@ function ChatPane({
                     };
                     if (webEvent.nativeEvent.key !== "Enter" || webEvent.nativeEvent.shiftKey) return;
                     webEvent.preventDefault?.();
-                    onSend();
+                    if (!creatingTask) onSend();
                   }}
                   onSubmitEditing={() => {
-                    if (Platform.OS !== "web") onSend();
+                    if (Platform.OS !== "web" && !creatingTask) onSend();
                   }}
                   placeholder="Message"
                   placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
@@ -8196,11 +8577,11 @@ function ChatPane({
             {composerCanSend ? (
               <Pressable
                 accessibilityLabel="Send message"
-                disabled={!composerCanSend}
+                disabled={composerSendDisabled}
                 onPress={() => onSend()}
-                style={({ pressed }) => [styles.sendButton, { backgroundColor: themeColors.primaryDark }, pressed && styles.pressablePressed, !composerCanSend && styles.buttonDisabled]}
+                style={({ pressed }) => [styles.sendButton, { backgroundColor: themeColors.primaryDark }, pressed && styles.pressablePressed, composerSendDisabled && styles.buttonDisabled]}
               >
-                <Ionicons color="#FFFFFF" name="send" size={20} />
+                {creatingTask ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Ionicons color="#FFFFFF" name="send" size={20} />}
               </Pressable>
             ) : (
               <View style={styles.composerQuickActions}>
@@ -10363,6 +10744,28 @@ const styles = StyleSheet.create({
     position: "relative",
     zIndex: 45,
   },
+  taskDetailsToolbar: {
+    minHeight: 38,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: "rgba(0,168,132,0.12)",
+    backgroundColor: "rgba(255,255,255,0.58)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  taskDetailsToolbarDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  taskDetailsToolbarCopy: { flex: 1, minWidth: 0 },
+  taskDetailsToolbarTitle: { color: colors.ink, fontSize: 12.5, fontWeight: "800" },
+  taskDetailsToolbarTitleDark: { color: "#E9EDEF" },
+  taskDetailsToolbarMeta: { color: colors.muted, fontSize: 11, fontWeight: "700", marginTop: 1 },
+  taskDetailsToolbarMetaDark: { color: "rgba(233,237,239,0.62)" },
   tasksPanelTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 14 },
   tasksPanelTitle: { color: colors.ink, fontSize: 25, fontWeight: "700" },
   tasksPanelTitleInTopBar: { color: "#FFFFFF", fontSize: 23, lineHeight: 28, fontWeight: "700" },
@@ -10930,6 +11333,7 @@ const styles = StyleSheet.create({
   taskThreadRowFrame: { position: "relative", zIndex: 1 },
   taskThreadRowFrameOpen: { zIndex: 30 },
   taskThreadRow: {
+    flexDirection: "column",
     minHeight: 86,
     gap: 8,
     paddingVertical: 11,
@@ -10938,6 +11342,11 @@ const styles = StyleSheet.create({
     borderStyle: "solid",
     backgroundColor: "rgba(255,255,255,0.58)",
   },
+  taskThreadRowCompact: {
+    minHeight: 54,
+    paddingVertical: 10,
+  },
+  taskThreadRowTop: { width: "100%", flexDirection: "row", alignItems: "flex-start", gap: 12 },
   subtaskThreadRow: {
     minHeight: 68,
     marginLeft: 10,
@@ -11029,14 +11438,25 @@ const styles = StyleSheet.create({
   taskNumberText: { color: colors.primaryDark, fontSize: 10, fontWeight: "700" },
   taskNumberTextDark: { color: colors.accent },
   taskNumberTextArchived: { color: colors.faint },
-  taskThreadTitleRow: { flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 },
+  taskThreadTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 7, minWidth: 0 },
+  taskTreeExpandButton: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    marginTop: -1,
+  },
   taskThreadTitle: { flex: 1, minWidth: 0, fontSize: 15.5, lineHeight: 21 },
   subtaskThreadTitle: { fontSize: 13, fontWeight: "700" },
   taskThreadTitleArchived: { color: colors.faint },
   taskThreadMetaActions: { alignItems: "flex-end", gap: 8 },
   taskListRowBody: { alignItems: "flex-start", gap: 7, paddingTop: 0 },
-  taskListMetaColumn: { width: 30, minHeight: 30, justifyContent: "flex-start" },
+  taskListMetaColumn: { width: 38, minHeight: 30, justifyContent: "flex-start" },
   taskRowMetaLine: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 5, minWidth: 0 },
+  taskRowMetaLineWithTree: { marginLeft: 33 },
   taskRowSecondary: { flex: 1, minWidth: 0 },
   taskDueLine: {
     marginTop: 6,
@@ -11045,6 +11465,7 @@ const styles = StyleSheet.create({
     gap: 8,
     minWidth: 0,
   },
+  taskDueLineWithTree: { marginLeft: 33 },
   taskCardInlineTime: {
     flexShrink: 0,
     maxWidth: 72,
@@ -11065,6 +11486,87 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   taskDueText: { fontSize: 10.5, fontWeight: "700" },
+  taskDetailsSwitch: {
+    width: 34,
+    height: 20,
+    borderRadius: 10,
+    padding: 2,
+    justifyContent: "center",
+  },
+  taskDetailsSwitchKnob: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: "#FFFFFF",
+  },
+  taskDetailsSwitchKnobOn: {
+    transform: [{ translateX: 14 }],
+  },
+  taskSubtaskTree: {
+    position: "relative",
+    width: "100%",
+    gap: 8,
+    paddingLeft: 30,
+    paddingTop: 8,
+  },
+  taskSubtaskToggle: {
+    width: "100%",
+    minHeight: 36,
+    marginTop: 9,
+    borderRadius: 11,
+    borderWidth: 1,
+    overflow: "hidden",
+  },
+  taskSubtaskToggleExpanded: {
+    minHeight: 126,
+  },
+  taskSubtaskToggleHeader: {
+    width: "100%",
+    minHeight: 36,
+    paddingHorizontal: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 8,
+  },
+  taskSubtaskToggleTextWrap: { flex: 1, minWidth: 0 },
+  taskSubtaskToggleText: { fontSize: 12, fontWeight: "800" },
+  taskSubtaskToggleMeta: { color: colors.muted, fontSize: 10.5, fontWeight: "700", marginTop: 1 },
+  taskSubtaskToggleMetaDark: { color: "rgba(233,237,239,0.62)" },
+  taskSubtaskInlineList: {
+    position: "relative",
+    gap: 8,
+    paddingLeft: 12,
+    paddingRight: 10,
+    paddingTop: 4,
+    paddingBottom: 10,
+  },
+  taskSubtaskTreeStem: {
+    position: "absolute",
+    left: -17,
+    top: -46,
+    bottom: -8,
+    width: 2,
+    borderRadius: 1,
+    opacity: 0.78,
+  },
+  taskSubtaskTreeStemLast: {
+    bottom: undefined,
+    height: 72,
+  },
+  taskSubtaskTreeItem: {
+    position: "relative",
+    paddingLeft: 28,
+  },
+  taskSubtaskTreeBranch: {
+    position: "absolute",
+    left: -17,
+    top: 25,
+    width: 28,
+    height: 2,
+    borderRadius: 1,
+    opacity: 0.78,
+  },
   subtaskDeck: {
     marginTop: 4,
     marginHorizontal: 8,
@@ -11146,6 +11648,60 @@ const styles = StyleSheet.create({
   subtaskDeckMoreCountDark: { color: colors.accent },
   subtaskDeckMoreText: { color: colors.muted, fontSize: 10, fontWeight: "700" },
   subtaskDeckMoreTextDark: { color: "rgba(233,237,239,0.62)" },
+  subtaskStack: {
+    marginTop: 6,
+    marginHorizontal: 8,
+    marginBottom: 2,
+    padding: 10,
+    borderRadius: 15,
+    borderWidth: 1,
+    backgroundColor: "rgba(255,255,255,0.52)",
+    gap: 9,
+  },
+  subtaskStackDark: {
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  subtaskStackHeader: {
+    minHeight: 22,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+  },
+  subtaskStackList: { gap: 8 },
+  subtaskStackRow: {
+    width: "100%",
+    minHeight: 84,
+    padding: 10,
+    borderRadius: 13,
+    borderWidth: 1,
+    borderColor: "rgba(0,128,105,0.12)",
+    backgroundColor: "rgba(255,255,255,0.88)",
+    gap: 6,
+  },
+  subtaskStackRowCompact: {
+    minHeight: 46,
+    justifyContent: "center",
+  },
+  subtaskStackRowDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.055)",
+  },
+  subtaskStackRowTop: { minHeight: 22, flexDirection: "row", alignItems: "center", gap: 6 },
+  subtaskStackTitle: { color: colors.ink, fontSize: 13, lineHeight: 18, fontWeight: "800" },
+  subtaskStackTitleDark: { color: "#E9EDEF" },
+  subtaskStackFooter: { minHeight: 22, flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  subtaskStackDueBadge: {
+    maxWidth: 148,
+    minHeight: 22,
+    borderRadius: 11,
+    borderWidth: 1,
+    paddingHorizontal: 7,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  subtaskStackDueText: { fontSize: 10, fontWeight: "800" },
   taskOrgBadge: {
     maxWidth: 112,
     minHeight: 20,
@@ -11538,6 +12094,50 @@ const styles = StyleSheet.create({
   forwardedText: { color: colors.primaryDark, fontSize: 11, fontWeight: "600" },
   forwardedTextMine: { color: colors.primaryDark },
   forwardedTextMineDark: { color: "rgba(233,237,239,0.82)" },
+  taskInviteCard: {
+    width: "100%",
+    minWidth: 224,
+    maxWidth: "100%",
+    alignSelf: "stretch",
+    gap: 9,
+    padding: 9,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "rgba(17,27,33,0.08)",
+    backgroundColor: "rgba(255,255,255,0.74)",
+  },
+  taskInviteCardDark: {
+    borderColor: "rgba(255,255,255,0.10)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  taskInviteHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  taskInviteIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  taskInviteIconDark: { backgroundColor: "rgba(6,207,156,0.16)" },
+  taskInviteCopy: { flex: 1, minWidth: 0 },
+  taskInviteLabel: { color: colors.muted, fontSize: 10.5, fontWeight: "800", textTransform: "uppercase" },
+  taskInviteLabelDark: { color: "rgba(233,237,239,0.58)" },
+  taskInviteTitle: { color: colors.ink, fontSize: 13.5, fontWeight: "800", marginTop: 1 },
+  taskInviteTitleDark: { color: "#E9EDEF" },
+  taskInviteSubtitle: { color: colors.muted, fontSize: 12, fontWeight: "600", lineHeight: 16, marginTop: 1 },
+  taskInviteSubtitleDark: { color: "rgba(233,237,239,0.70)" },
+  taskInviteButton: {
+    width: "100%",
+    minHeight: 32,
+    borderRadius: 7,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    paddingHorizontal: 12,
+  },
+  taskInviteButtonText: { color: "#FFFFFF", fontSize: 13, fontWeight: "800" },
+  taskInviteButtonTextDark: { color: "#0B141A" },
   replyQuote: {
     minWidth: 180,
     maxWidth: "100%",

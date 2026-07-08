@@ -60,6 +60,20 @@ export type BackendReplyPreview = {
   kind: "text" | "image" | "video" | "document" | "audio" | "voice";
 };
 
+export type BackendMessageSystem = {
+  kind?: string;
+  event?: string;
+  status?: string;
+  taskmanagerOrgId?: string;
+  taskmanagerTaskId?: string;
+  taskNumber?: string;
+  title?: string;
+  parentTaskId?: string | null;
+  rootTaskId?: string | null;
+  taskThreadConversationId?: string | null;
+  conversationId?: string | null;
+};
+
 export type BackendMessage = {
   id: string;
   clientMessageId?: string | null;
@@ -75,6 +89,7 @@ export type BackendMessage = {
   } | null;
   replyTo?: BackendReplyPreview | null;
   replyToMessageId?: string | null;
+  system?: BackendMessageSystem | null;
   createdAt: string;
   status: "sent" | "delivered" | "read";
 };
