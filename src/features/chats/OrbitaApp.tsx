@@ -545,8 +545,8 @@ function formatTime(iso: string) {
 
 function appVersionLabel() {
   const version =
-    Constants.nativeAppVersion ??
     Constants.expoConfig?.version ??
+    Constants.nativeAppVersion ??
     "0.1.0";
   const build = Constants.nativeBuildVersion ?? Constants.expoConfig?.android?.versionCode?.toString();
   if (!build) return `Version ${version}`;
