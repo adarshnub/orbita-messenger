@@ -1403,6 +1403,11 @@ async function ensureConversationParticipants(conversationId, participants) {
   if (error) throw error;
 }
 
+function isMissingRelationError(error, relationName) {
+  const message = errorMessage(error).toLowerCase();
+  return error?.code === "42P01" || message.includes(`relation "${relationName}" does not exist`);
+}
+
 async function ensureProfile(user) {
   const metadataPhone = typeof user.user_metadata?.phone === "string" ? user.user_metadata.phone : "";
   const phone = user.phone ? normalizePhone(user.phone) : metadataPhone ? normalizePhone(metadataPhone) : null;
@@ -1601,6 +1606,8 @@ async function markConversationRead(userId, conversationId) {
 }
 
 async function loadConversations(userId) {
+  await ensureTaskmanagerAgentLinksVisibleForUser(userId);
+
   const { data: memberships, error: membershipError } = await supabase
     .from("conversation_participants")
     .select("conversation_id")
@@ -1845,6 +1852,134 @@ async function createTaskmanagerConversation(agentProfileId, orbitaUserId, title
   const created = (await loadConversations(orbitaUserId)).find((item) => item.id === conversation.id);
   if (!created) throw new Error("Unable to load created Task Manager conversation.");
   return created;
+}
+
+async function ensureTaskmanagerAgentLink({
+  taskmanagerOrgId,
+  taskmanagerUserId,
+  orbitaProfile,
+  agentDisplayName,
+}) {
+  const agentProfileId = await ensureTaskmanagerAgentProfile(taskmanagerOrgId, agentDisplayName);
+
+  const { data: existing, error: existingError } = await supabase
+    .from("taskmanager_agent_links")
+    .select("*")
+    .eq("taskmanager_org_id", taskmanagerOrgId)
+    .eq("taskmanager_user_id", taskmanagerUserId)
+    .maybeSingle();
+  if (existingError) throw existingError;
+
+  if (existing?.enabled && existing.orbita_user_id === orbitaProfile.id && existing.agent_profile_id === agentProfileId) {
+    await ensureConversationParticipants(existing.conversation_id, [
+      { user_id: existing.agent_profile_id, role: "owner" },
+      { user_id: existing.orbita_user_id, role: "member" },
+    ]);
+    await materializePendingTaskThreadMemberships(taskmanagerOrgId, taskmanagerUserId, orbitaProfile.id);
+    return existing;
+  }
+
+  const conversation = await createTaskmanagerConversation(agentProfileId, orbitaProfile.id, agentDisplayName);
+
+  const { data: link, error: linkError } = await supabase
+    .from("taskmanager_agent_links")
+    .upsert(
+      {
+        taskmanager_org_id: taskmanagerOrgId,
+        taskmanager_user_id: taskmanagerUserId,
+        orbita_user_id: orbitaProfile.id,
+        agent_profile_id: agentProfileId,
+        conversation_id: conversation.id,
+        enabled: true,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "taskmanager_org_id,taskmanager_user_id" },
+    )
+    .select()
+    .single();
+  if (linkError) throw linkError;
+  await materializePendingTaskThreadMemberships(taskmanagerOrgId, taskmanagerUserId, orbitaProfile.id);
+  return link;
+}
+
+async function rememberPendingTaskmanagerAgentLink({
+  taskmanagerOrgId,
+  taskmanagerUserId,
+  phone,
+  agentDisplayName,
+}) {
+  const { error } = await supabase
+    .from("taskmanager_pending_agent_links")
+    .upsert(
+      {
+        taskmanager_org_id: taskmanagerOrgId,
+        taskmanager_user_id: taskmanagerUserId,
+        phone,
+        agent_display_name: agentDisplayName,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "taskmanager_org_id,taskmanager_user_id" },
+    );
+  if (error) {
+    if (isMissingRelationError(error, "taskmanager_pending_agent_links")) return { stored: false };
+    throw error;
+  }
+  return { stored: true };
+}
+
+async function materializePendingTaskmanagerAgentLinksForProfile(profile) {
+  if (!profile?.id || !profile.phone) return { linked: 0 };
+  const { data: pendingRows, error } = await supabase
+    .from("taskmanager_pending_agent_links")
+    .select("*")
+    .eq("phone", profile.phone)
+    .order("created_at", { ascending: true });
+  if (error) {
+    if (isMissingRelationError(error, "taskmanager_pending_agent_links")) return { linked: 0 };
+    throw error;
+  }
+
+  let linked = 0;
+  for (const pending of pendingRows ?? []) {
+    const agentDisplayName = normalizeTaskmanagerAgentDisplayName(pending.agent_display_name);
+    await ensureTaskmanagerAgentLink({
+      taskmanagerOrgId: pending.taskmanager_org_id,
+      taskmanagerUserId: pending.taskmanager_user_id,
+      orbitaProfile: profile,
+      agentDisplayName,
+    });
+    linked += 1;
+  }
+
+  if (linked) {
+    const ids = pendingRows.map((row) => row.id).filter(Boolean);
+    if (ids.length) {
+      const { error: deleteError } = await supabase
+        .from("taskmanager_pending_agent_links")
+        .delete()
+        .in("id", ids);
+      if (deleteError && !isMissingRelationError(deleteError, "taskmanager_pending_agent_links")) throw deleteError;
+    }
+  }
+  return { linked };
+}
+
+async function ensureTaskmanagerAgentLinksVisibleForUser(userId) {
+  const { data: links, error } = await supabase
+    .from("taskmanager_agent_links")
+    .select("conversation_id, orbita_user_id, agent_profile_id")
+    .eq("orbita_user_id", userId)
+    .eq("enabled", true);
+  if (error) throw error;
+
+  for (const link of links ?? []) {
+    if (!link.conversation_id || !link.orbita_user_id || !link.agent_profile_id) continue;
+    await ensureConversationParticipants(link.conversation_id, [
+      { user_id: link.agent_profile_id, role: "owner" },
+      { user_id: link.orbita_user_id, role: "member" },
+    ]);
+  }
+  return { repaired: links?.length ?? 0 };
 }
 
 async function createTaskmanagerTaskConversation(agentProfileId, title) {
@@ -2860,48 +2995,29 @@ async function handleServiceAction(action, payload) {
       .eq("phone", phone)
       .maybeSingle();
     if (profileError) throw profileError;
-    if (!orbitaProfile) throw new Error("No Orbita user found for that phone number.");
-
-    const agentProfileId = await ensureTaskmanagerAgentProfile(taskmanagerOrgId, agentDisplayName);
-
-    const { data: existing, error: existingError } = await supabase
-      .from("taskmanager_agent_links")
-      .select("*")
-      .eq("taskmanager_org_id", taskmanagerOrgId)
-      .eq("taskmanager_user_id", taskmanagerUserId)
-      .maybeSingle();
-    if (existingError) throw existingError;
-    if (existing?.enabled && existing.orbita_user_id === orbitaProfile.id && existing.agent_profile_id === agentProfileId) {
-      await materializePendingTaskThreadMemberships(taskmanagerOrgId, taskmanagerUserId, orbitaProfile.id);
+    if (!orbitaProfile) {
+      const pending = await rememberPendingTaskmanagerAgentLink({
+        taskmanagerOrgId,
+        taskmanagerUserId,
+        phone,
+        agentDisplayName,
+      });
       return {
-        orbitaProfileId: existing.orbita_user_id,
-        conversationId: existing.conversation_id,
+        pending: true,
+        stored: pending.stored,
+        reason: "No Orbita user found for that phone number. Link will be completed when the user signs in.",
         channel: TASK_MANAGER_ORBITA_CHANNEL,
         connection: TASK_MANAGER_ORBITA_CHANNEL,
         userConnection: TASK_MANAGER_ORBITA_CHANNEL,
       };
     }
 
-    const conversation = await createTaskmanagerConversation(agentProfileId, orbitaProfile.id, agentDisplayName);
-
-    const { data: link, error: linkError } = await supabase
-      .from("taskmanager_agent_links")
-      .upsert(
-        {
-          taskmanager_org_id: taskmanagerOrgId,
-          taskmanager_user_id: taskmanagerUserId,
-          orbita_user_id: orbitaProfile.id,
-          agent_profile_id: agentProfileId,
-          conversation_id: conversation.id,
-          enabled: true,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "taskmanager_org_id,taskmanager_user_id" },
-      )
-      .select()
-      .single();
-    if (linkError) throw linkError;
-    await materializePendingTaskThreadMemberships(taskmanagerOrgId, taskmanagerUserId, orbitaProfile.id);
+    const link = await ensureTaskmanagerAgentLink({
+      taskmanagerOrgId,
+      taskmanagerUserId,
+      orbitaProfile,
+      agentDisplayName,
+    });
 
     return {
       orbitaProfileId: link.orbita_user_id,
@@ -3168,7 +3284,8 @@ async function handleServiceAction(action, payload) {
 }
 
 async function handleAction(user, action, payload, req) {
-  await ensureProfile(user);
+  const ensuredProfile = await ensureProfile(user);
+  await materializePendingTaskmanagerAgentLinksForProfile(ensuredProfile);
 
   if (action === "create_taskmanager_admin_session") {
     const secret = process.env.TASK_MANAGER_ORBITA_SECRET;
