@@ -1203,10 +1203,10 @@ function isTaskConversation(conversation: BackendConversation) {
   return Boolean(conversation.taskThread);
 }
 
-function shouldExpectTaskManagerAgentReply(conversation: BackendConversation, text: string) {
+function shouldExpectTaskManagerAgentReply(conversation: BackendConversation, text: string, hasAttachment = false) {
   if (!isTaskManagerAgentConversation(conversation)) return false;
-  if (!isTaskConversation(conversation)) return Boolean(text.trim());
-  return hasOrbitaMention(text);
+  if (!isTaskConversation(conversation)) return Boolean(text.trim() || hasAttachment);
+  return hasAnyMention(text);
 }
 
 function activeMentionQuery(text: string) {
@@ -1563,7 +1563,7 @@ function Avatar({
   );
 }
 
-function SkeletonBlock({ style }: { style?: StyleProp<ViewStyle> }) {
+function SkeletonBlock({ style, tone = "default" }: { style?: StyleProp<ViewStyle>; tone?: "default" | "accent" | "strong" }) {
   const { isDarkTheme, themeColors } = useAppTheme();
   const opacity = useRef(new Animated.Value(0.42)).current;
 
@@ -1578,7 +1578,20 @@ function SkeletonBlock({ style }: { style?: StyleProp<ViewStyle> }) {
     return () => loop.stop();
   }, [opacity]);
 
-  return <Animated.View style={[styles.skeletonBlock, isDarkTheme && styles.skeletonBlockDark, style, { opacity }]} />;
+  const themedBackground =
+    tone === "strong"
+      ? isDarkTheme
+        ? themeColors.darkAccentSoft
+        : themeColors.primarySoft
+      : tone === "accent"
+        ? isDarkTheme
+          ? themeColors.darkAccentSoft
+          : themeColors.accentSoft
+        : isDarkTheme
+          ? themeColors.darkAccentSoft
+          : themeColors.primarySoft;
+
+  return <Animated.View style={[styles.skeletonBlock, isDarkTheme && styles.skeletonBlockDark, style, { backgroundColor: themedBackground, opacity }]} />;
 }
 
 function DummyVoiceRecordingWaveform({
@@ -1668,8 +1681,16 @@ function ChatRowsSkeleton({ count = 5 }: { count?: number }) {
   return (
     <>
       {Array.from({ length: count }).map((_, index) => (
-        <View key={index} style={[styles.chatRow, isDarkTheme && styles.chatRowDark]}>
-          <SkeletonBlock style={styles.skeletonAvatar} />
+        <View
+          key={index}
+          style={[
+            styles.chatRow,
+            !isDarkTheme && { borderColor: themeColors.primarySoft, backgroundColor: themeColors.accentSoft },
+            isDarkTheme && styles.chatRowDark,
+            isDarkTheme && { borderColor: themeColors.darkAccentSoft },
+          ]}
+        >
+          <SkeletonBlock style={styles.skeletonAvatar} tone="strong" />
           <View style={styles.chatListRowBody}>
             <View style={styles.chatListTextColumn}>
               <SkeletonBlock style={styles.skeletonTitle} />
@@ -1677,7 +1698,7 @@ function ChatRowsSkeleton({ count = 5 }: { count?: number }) {
             </View>
             <View style={styles.chatListMetaColumn}>
               <SkeletonBlock style={styles.skeletonTime} />
-              <SkeletonBlock style={styles.skeletonUnreadBadge} />
+              <SkeletonBlock style={styles.skeletonUnreadBadge} tone="accent" />
             </View>
           </View>
         </View>
@@ -1691,25 +1712,55 @@ function MessageListSkeleton() {
   return (
     <>
       <View style={[styles.messageWrap, styles.messageTheirs]}>
-        <View style={[styles.skeletonBubble, styles.skeletonBubbleIncoming, isDarkTheme && styles.skeletonBubbleIncomingDark]}>
+        <View
+          style={[
+            styles.skeletonBubble,
+            styles.skeletonBubbleIncoming,
+            isDarkTheme && styles.skeletonBubbleIncomingDark,
+            { backgroundColor: isDarkTheme ? "rgba(255,255,255,0.08)" : themeColors.accentSoft },
+            isDarkTheme && { borderColor: themeColors.darkAccentSoft },
+          ]}
+        >
           <SkeletonBlock style={styles.skeletonMessageLineWide} />
           <SkeletonBlock style={styles.skeletonMessageLineMid} />
         </View>
       </View>
       <View style={[styles.messageWrap, styles.messageMine]}>
-        <View style={[styles.skeletonBubble, styles.skeletonBubbleOutgoing, isDarkTheme && styles.skeletonBubbleOutgoingDark]}>
+        <View
+          style={[
+            styles.skeletonBubble,
+            styles.skeletonBubbleOutgoing,
+            isDarkTheme && styles.skeletonBubbleOutgoingDark,
+            { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.bubbleMine },
+          ]}
+        >
           <SkeletonBlock style={styles.skeletonMessageLineWide} />
           <SkeletonBlock style={styles.skeletonMessageLineShort} />
         </View>
       </View>
       <View style={[styles.messageWrap, styles.messageTheirs]}>
-        <View style={[styles.skeletonBubble, styles.skeletonBubbleIncoming, isDarkTheme && styles.skeletonBubbleIncomingDark]}>
+        <View
+          style={[
+            styles.skeletonBubble,
+            styles.skeletonBubbleIncoming,
+            isDarkTheme && styles.skeletonBubbleIncomingDark,
+            { backgroundColor: isDarkTheme ? "rgba(255,255,255,0.08)" : themeColors.accentSoft },
+            isDarkTheme && { borderColor: themeColors.darkAccentSoft },
+          ]}
+        >
           <SkeletonBlock style={styles.skeletonMessageLineMid} />
           <SkeletonBlock style={styles.skeletonMedia} />
         </View>
       </View>
       <View style={[styles.messageWrap, styles.messageMine]}>
-        <View style={[styles.skeletonBubble, styles.skeletonBubbleOutgoing, isDarkTheme && styles.skeletonBubbleOutgoingDark]}>
+        <View
+          style={[
+            styles.skeletonBubble,
+            styles.skeletonBubbleOutgoing,
+            isDarkTheme && styles.skeletonBubbleOutgoingDark,
+            { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.bubbleMine },
+          ]}
+        >
           <SkeletonBlock style={styles.skeletonMessageLineShort} />
         </View>
       </View>
@@ -2076,14 +2127,28 @@ function StatusSkeleton() {
   const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <>
-      <View style={[styles.statusComposer, isDarkTheme && styles.statusComposerDark]}>
+      <View
+        style={[
+          styles.statusComposer,
+          !isDarkTheme && { borderColor: themeColors.primarySoft, backgroundColor: themeColors.accentSoft },
+          isDarkTheme && styles.statusComposerDark,
+          isDarkTheme && { borderColor: themeColors.darkAccentSoft },
+        ]}
+      >
         <SkeletonBlock style={styles.skeletonAvatarLarge} />
         <View style={styles.chatRowBody}>
           <SkeletonBlock style={styles.skeletonTitle} />
           <SkeletonBlock style={styles.skeletonLineMid} />
         </View>
       </View>
-      <View style={[styles.statusCard, isDarkTheme && styles.statusCardDark]}>
+      <View
+        style={[
+          styles.statusCard,
+          !isDarkTheme && { borderColor: themeColors.primarySoft, backgroundColor: themeColors.accentSoft },
+          isDarkTheme && styles.statusCardDark,
+          isDarkTheme && { borderColor: themeColors.darkAccentSoft },
+        ]}
+      >
         <View style={styles.row}>
           <SkeletonBlock style={styles.skeletonAvatar} />
           <View style={styles.chatRowBody}>
@@ -2101,7 +2166,14 @@ function SettingsSkeleton() {
   const { isDarkTheme, themeColors } = useAppTheme();
   return (
     <>
-      <View style={[styles.profileCard, isDarkTheme && styles.profileCardDark]}>
+      <View
+        style={[
+          styles.profileCard,
+          !isDarkTheme && { borderColor: themeColors.primarySoft, backgroundColor: themeColors.accentSoft },
+          isDarkTheme && styles.profileCardDark,
+          isDarkTheme && { borderColor: themeColors.darkAccentSoft },
+        ]}
+      >
         <SkeletonBlock style={styles.skeletonAvatarXL} />
         <View style={styles.chatRowBody}>
           <SkeletonBlock style={styles.skeletonTitleWide} />
@@ -2110,7 +2182,15 @@ function SettingsSkeleton() {
         </View>
       </View>
       {Array.from({ length: 3 }).map((_, index) => (
-        <View key={index} style={[styles.settingRow, isDarkTheme && styles.settingRowDark]}>
+        <View
+          key={index}
+          style={[
+            styles.settingRow,
+            !isDarkTheme && { borderColor: themeColors.primarySoft, backgroundColor: themeColors.accentSoft },
+            isDarkTheme && styles.settingRowDark,
+            isDarkTheme && { borderColor: themeColors.darkAccentSoft },
+          ]}
+        >
           <SkeletonBlock style={styles.skeletonIcon} />
           <View style={styles.chatRowBody}>
             <SkeletonBlock style={styles.skeletonTitle} />
@@ -3613,7 +3693,7 @@ function MessengerShell({ session }: { session: Session }) {
           const conversation = conversationsRef.current.find((item) => item.id === queued.conversationId);
           if (
             conversation &&
-            shouldExpectTaskManagerAgentReply(conversation, queued.taskManagerText || queued.body) &&
+            shouldExpectTaskManagerAgentReply(conversation, queued.taskManagerText || queued.body, Boolean(attachmentId || queued.attachment)) &&
             result.taskManagerForward?.forwarded !== false
           ) {
             setAgentThinkingFor((current) => ({ ...current, [queued.conversationId]: mergedMessage.createdAt }));
@@ -4257,8 +4337,8 @@ function MessengerShell({ session }: { session: Session }) {
       ? taskManagerReplyText(replyTo, baseModelText || text)
       : baseModelText;
     if (!text && !modelText && !attachment) return;
-    const expectsAgentReply = shouldExpectTaskManagerAgentReply(selected, modelText || text);
-    const taskManagerMentioned = isTaskConversation(selected) && hasOrbitaMention(modelText || text);
+    const expectsAgentReply = shouldExpectTaskManagerAgentReply(selected, modelText || text, Boolean(attachment));
+    const taskManagerMentioned = isTaskConversation(selected) && hasAnyMention(modelText || text);
     if (Platform.OS === "web") {
       console.info("[orbita-web-send] message payload", {
         conversationId: selected.id,

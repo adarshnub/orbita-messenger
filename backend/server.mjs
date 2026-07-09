@@ -270,6 +270,10 @@ function hasOrbitaMention(text) {
   return /(^|[\s([{"'`])@orbita\b/i.test(String(text ?? ""));
 }
 
+function hasAnyMention(text) {
+  return /(^|[\s([{"'`])@[a-z0-9_]+\b/i.test(String(text ?? ""));
+}
+
 function stripOrbitaMention(text) {
   return String(text ?? "")
     .replace(/(^|[\s([{"'`])@orbita\b[:,]?\s*/gi, (match, prefix) => prefix || "")
@@ -2761,9 +2765,9 @@ async function forwardTaskmanagerInbound(
   }
   if (taskThreadContext) {
     const outboundText = taskManagerTextOverride || message.body || "";
-    const mentionTriggered = taskManagerMentioned || hasOrbitaMention(outboundText) || hasOrbitaMention(message.body);
+    const mentionTriggered = taskManagerMentioned || hasAnyMention(outboundText) || hasAnyMention(message.body);
     if (!mentionTriggered) {
-      return { forwarded: false, reason: "Task thread message did not mention @orbita." };
+      return { forwarded: false, reason: "Task thread message did not mention anyone." };
     }
     const taskThreadText = hasOrbitaMention(outboundText)
       ? outboundText
@@ -2815,6 +2819,8 @@ async function forwardTaskmanagerInbound(
       taskManagerMentioned,
       outboundHasMention: hasOrbitaMention(outboundText),
       bodyHasMention: hasOrbitaMention(message.body),
+      outboundHasAnyMention: hasAnyMention(outboundText),
+      bodyHasAnyMention: hasAnyMention(message.body),
       textPreview: taskThreadText.slice(0, 180),
       replyToMessageId: replyFields.replyToMessageId ?? null,
       replyToBody: typeof replyFields.replyTo?.body === "string" ? replyFields.replyTo.body.slice(0, 180) : null,
