@@ -543,14 +543,13 @@ function formatTime(iso: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
 }
 
-const APP_UI_VERSION = "0.1.4";
+const APP_FALLBACK_VERSION = "0.1.4";
 
 function appVersionLabel() {
   const version =
-    APP_UI_VERSION ||
-    Constants.expoConfig?.version ||
     Constants.nativeAppVersion ||
-    "0.1.0";
+    Constants.expoConfig?.version ||
+    APP_FALLBACK_VERSION;
   const build = Constants.nativeBuildVersion ?? Constants.expoConfig?.android?.versionCode?.toString();
   if (!build) return `Version ${version}`;
   return `Version ${version} (build ${build})`;
