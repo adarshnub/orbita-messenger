@@ -3574,7 +3574,20 @@ async function handleAction(user, action, payload, req) {
       "Do not create another task or subtask. Use this current task thread and ask one question only: who should this task be assigned to? " +
       "When the user replies with the assignee, find the matching employee and update this current task with task.update. " +
       "The due date is already set to today at 6 PM by default, so do not ask for a deadline while creating this task.";
-    const message = await insertMessageWithReceipts(thread.conversation_id, user.id, "text", { body: displayBody }, {
+    const message = await insertMessageWithReceipts(thread.conversation_id, user.id, "text", {
+      body: displayBody,
+      system: {
+        kind: "task_thread_source_created",
+        taskmanagerOrgId: thread.taskmanager_org_id,
+        taskmanagerTaskId: taskId,
+        taskNumber,
+        title,
+        parentTaskId: thread.parent_task_id,
+        rootTaskId: thread.root_task_id,
+        taskThreadConversationId: thread.conversation_id,
+        event: "created",
+      },
+    }, {
       pushSource: "create_taskmanager_task_shell",
     });
     const mappedMessage = await mapMessageWithAttachments(message);

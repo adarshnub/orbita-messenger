@@ -817,6 +817,10 @@ function taskCreatedFallbackFromText(body: string) {
   return null;
 }
 
+function normalizeCompareText(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
 function taskThreadInviteFromMessage(message: BackendMessage, conversations: BackendConversation[]): TaskThreadInvite | null {
   const system = message.system ?? null;
   const fallback = taskCreatedFallbackFromText(message.body);
@@ -834,26 +838,30 @@ function taskThreadInviteFromMessage(message: BackendMessage, conversations: Bac
   const isSubtask = Boolean(system?.parentTaskId || system?.kind === "task_thread_subtask_created" || /TASK-\d+-\d+/.test(taskNumber));
   const conversationId = system?.taskThreadConversationId ?? system?.conversationId ?? "";
   const taskmanagerTaskId = system?.taskmanagerTaskId ?? "";
-  const byTaskNumber = taskNumber
-    ? conversations.find((candidate) => candidate.taskThread?.taskNumber === taskNumber)
-    : null;
   const byTaskId = taskmanagerTaskId
     ? conversations.find((candidate) => candidate.taskThread?.taskmanagerTaskId === taskmanagerTaskId)
     : null;
   const byConversationId = conversationId
     ? conversations.find((candidate) => candidate.id === conversationId && candidate.taskThread)
     : null;
-  const taskThreadConversation = isSubtask
-    ? byTaskNumber ?? byTaskId ?? (system?.taskThreadConversationId ? byConversationId : null)
-    : byTaskId ?? byTaskNumber ?? byConversationId;
-  const resolvedConversationId = taskThreadConversation?.id ?? (isSubtask ? system?.taskThreadConversationId ?? "" : conversationId);
+  const payloadTitle = (system?.title ?? fallback?.title ?? "").trim();
+  const byTaskNumber = taskNumber
+    ? conversations.find((candidate) => {
+        if (candidate.taskThread?.taskNumber !== taskNumber) return false;
+        if (!payloadTitle) return true;
+        const candidateTitle = candidate.taskThread?.title ?? candidate.title ?? "";
+        return normalizeCompareText(candidateTitle) === normalizeCompareText(payloadTitle);
+      })
+    : null;
+  const taskThreadConversation = byTaskId ?? byConversationId ?? byTaskNumber ?? null;
+  const resolvedConversationId = taskThreadConversation?.id ?? conversationId;
   if (!resolvedConversationId || !taskNumber) return null;
 
   return {
     conversationId: resolvedConversationId,
     isSubtask,
     taskNumber,
-    title: taskThreadConversation?.taskThread?.title ?? (fallbackIsSubtask ? fallback?.title : system?.title ?? fallback?.title) ?? "Task group",
+    title: payloadTitle || taskThreadConversation?.taskThread?.title || "Task group",
   };
 }
 
@@ -2680,6 +2688,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [contacts, setContacts] = useState<BackendProfile[]>([]);
   const [conversations, setConversations] = useState<BackendConversation[]>([]);
   const [orgMembersByConversationId, setOrgMembersByConversationId] = useState<Record<string, BackendProfile[]>>({});
+  const [orgMembersLoadingByConversationId, setOrgMembersLoadingByConversationId] = useState<Record<string, boolean>>({});
   const [statuses, setStatuses] = useState<BackendStatus[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [selectedMessages, setSelectedMessages] = useState<ChatMessage[]>([]);
@@ -3936,18 +3945,28 @@ function MessengerShell({ session }: { session: Session }) {
     if (!selected) return undefined;
     if (orgMembersByConversationId[selected.id]) return undefined;
     let cancelled = false;
-    messengerApi.listTaskmanagerOrgMembers(selected.id)
+    const conversationId = selected.id;
+    setOrgMembersLoadingByConversationId((current) => (
+      current[conversationId] ? current : { ...current, [conversationId]: true }
+    ));
+    messengerApi.listTaskmanagerOrgMembers(conversationId)
       .then((result) => {
         if (cancelled) return;
         setOrgMembersByConversationId((current) => ({
           ...current,
-          [selected.id]: result.members,
+          [conversationId]: result.members,
         }));
       })
       .catch((nextError) => {
         if (!cancelled && selected.taskThread) {
           setError(nextError instanceof Error ? nextError.message : "Unable to load organization members.");
         }
+      })
+      .finally(() => {
+        setOrgMembersLoadingByConversationId((current) => ({
+          ...current,
+          [conversationId]: false,
+        }));
       });
     return () => {
       cancelled = true;
@@ -4796,6 +4815,7 @@ function MessengerShell({ session }: { session: Session }) {
                 isWide={isWide}
                 loadingOlder={loadingOlderFor === selected.id}
                 mentionMembers={orgMembersByConversationId[selected.id] ?? []}
+                mentionMembersLoading={Boolean(orgMembersLoadingByConversationId[selected.id])}
                 messages={selectedMessages.filter((message) => message.conversationId === selected.id)}
                 messagesLoading={loadingMessagesFor === selected.id}
                 onAddMembers={() => setMembersOpen(true)}
@@ -6618,10 +6638,9 @@ function TasksPanel({
                 >
                   {taskThread?.title ?? conversation.title}
                 </Text>
-              </View>
-              <View style={[styles.taskRowMetaLine, row.subtaskCount ? styles.taskRowMetaLineWithTree : null]}>
                 <View style={[
                   styles.taskNumberPill,
+                  styles.taskTitleNumberPill,
                   !isDarkTheme && { backgroundColor: themeColors.primarySoft, borderColor: themeColors.accentSoft },
                   isDarkTheme && styles.taskNumberPillDark,
                   isDarkTheme && { backgroundColor: themeColors.darkAccentSoft, borderColor: themeColors.primaryDark },
@@ -6639,7 +6658,9 @@ function TasksPanel({
                     {taskThread?.taskNumber ?? "TASK"}
                   </Text>
                 </View>
-                {detailsExpanded ? (
+              </View>
+              {detailsExpanded ? (
+              <View style={[styles.taskRowMetaLine, row.subtaskCount ? styles.taskRowMetaLineWithTree : null]}>
                 <>
                 <View
                   style={[
@@ -6667,8 +6688,8 @@ function TasksPanel({
                     {messagePreviewText(conversation.lastMessage) || `${conversation.participants.length} members`}
                   </Text>
                 </>
-                ) : null}
               </View>
+              ) : null}
               {detailsExpanded ? (
               <>
               <View style={[styles.taskDueLine, row.subtaskCount ? styles.taskDueLineWithTree : null]}>
@@ -7326,6 +7347,7 @@ function ChatPane({
   isWide,
   loadingOlder,
   mentionMembers,
+  mentionMembersLoading,
   onLoadOlder,
   replyingToMessage,
   subtaskConversations,
@@ -7366,6 +7388,7 @@ function ChatPane({
   isWide: boolean;
   loadingOlder: boolean;
   mentionMembers: BackendProfile[];
+  mentionMembersLoading: boolean;
   onLoadOlder: () => void;
   replyingToMessage: ChatMessage | null;
   subtaskConversations: BackendConversation[];
@@ -7453,7 +7476,8 @@ function ChatPane({
     }
     return candidates.slice(0, 7);
   }, [currentUserId, isTaskThreadConversation, mentionMembers, mentionQuery]);
-  const showMentionSuggestions = mentionCandidates.length > 0;
+  const showMentionLoading = mentionQuery !== null && mentionMembersLoading;
+  const showMentionSuggestions = mentionCandidates.length > 0 || showMentionLoading;
   const showComposerMentionHighlight = hasAnyMention(draft);
   const manualKeyboardInset = androidManualKeyboardInset(keyboardInset, height);
   const composerBottomGap = Math.max(bottomInset, KEYBOARD_COMPOSER_GAP) + manualKeyboardInset;
@@ -8189,6 +8213,50 @@ function ChatPane({
     setComposerInputHeight((current) => (Math.abs(current - normalizedHeight) > 1 ? normalizedHeight : current));
   }, []);
 
+  const renderMentionSuggestions = () => showMentionSuggestions ? (
+    <View style={[styles.mentionSuggestionList, isDarkTheme && styles.mentionSuggestionListDark]}>
+      {mentionCandidates.map((candidate) => (
+        <Pressable
+          accessibilityLabel={`Mention ${candidate.displayName}`}
+          key={`${candidate.kind}:${candidate.id}`}
+          onPress={() => setDraft(insertMentionToken(draft, candidate.handle))}
+          style={({ pressed }) => [
+            styles.mentionSuggestion,
+            isDarkTheme && styles.mentionSuggestionDark,
+            pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+          ]}
+        >
+          <View style={[styles.mentionSuggestionAvatar, isDarkTheme && styles.mentionSuggestionAvatarDark]}>
+            {candidate.kind === "orbita" ? (
+              <Ionicons color={isDarkTheme ? "#111B21" : "#FFFFFF"} name="sparkles-outline" size={16} />
+            ) : (
+              <Text style={styles.mentionSuggestionAvatarText}>
+                {initials(candidate.displayName)}
+              </Text>
+            )}
+          </View>
+          <View style={styles.mentionSuggestionBody}>
+            <Text numberOfLines={1} style={[styles.mentionSuggestionName, isDarkTheme && styles.mentionSuggestionNameDark]}>
+              {candidate.displayName}
+            </Text>
+            <Text numberOfLines={1} style={[styles.mentionSuggestionHandle, isDarkTheme && styles.mentionSuggestionHandleDark]}>
+              @{candidate.handle} - {candidate.subtitle}
+            </Text>
+          </View>
+          <Ionicons color={isDarkTheme ? "rgba(233,237,239,0.62)" : colors.faint} name="return-down-forward-outline" size={17} />
+        </Pressable>
+      ))}
+      {showMentionLoading ? (
+        <View style={[styles.mentionSuggestionLoading, isDarkTheme && styles.mentionSuggestionLoadingDark]}>
+          <ActivityIndicator color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} size="small" />
+          <Text style={[styles.mentionSuggestionLoadingText, isDarkTheme && styles.mentionSuggestionLoadingTextDark]}>
+            Loading employees...
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  ) : null;
+
   const chatPane = (
     <View
       style={[
@@ -8472,79 +8540,95 @@ function ChatPane({
           </View>
         ) : null}
         {voiceRecorderVisible ? (
-          <View style={[styles.inlineVoiceRecorder, isDarkTheme && styles.inlineVoiceRecorderDark]}>
-            <Pressable
-              accessibilityLabel="Delete voice recording"
-              disabled={voiceRecorderControlsDisabled}
-              onPress={() => {
-                void discardVoiceAttachment();
-              }}
-              style={({ pressed }) => [
-                styles.voiceInlineButton,
-                styles.voiceDeleteButton,
-                isDarkTheme && styles.voiceDeleteButtonDark,
-                pressed && styles.pressablePressed,
-              ]}
-            >
-              <Ionicons color={colors.danger} name="trash-outline" size={20} />
-            </Pressable>
-            <View style={styles.voiceRecorderContent}>
-              <View style={styles.voiceRecorderMeta}>
-                <View style={[styles.voiceRecordingDot, voiceRecorderPaused && styles.voiceRecordingDotPaused]} />
-                <Text style={[styles.voiceRecorderTime, isDarkTheme && styles.voiceRecorderTimeDark]}>
-                  {voiceElapsedLabel}
-                </Text>
+          <>
+            {renderMentionSuggestions()}
+            <View style={[styles.inlineVoiceRecorder, isDarkTheme && styles.inlineVoiceRecorderDark]}>
+              <Pressable
+                accessibilityLabel="Delete voice recording"
+                disabled={voiceRecorderControlsDisabled}
+                onPress={() => {
+                  void discardVoiceAttachment();
+                }}
+                style={({ pressed }) => [
+                  styles.voiceInlineButton,
+                  styles.voiceDeleteButton,
+                  isDarkTheme && styles.voiceDeleteButtonDark,
+                  pressed && styles.pressablePressed,
+                ]}
+              >
+                <Ionicons color={colors.danger} name="trash-outline" size={20} />
+              </Pressable>
+              <View style={styles.voiceRecorderContent}>
+                <View style={styles.voiceRecorderMeta}>
+                  <View style={[styles.voiceRecordingDot, voiceRecorderPaused && styles.voiceRecordingDotPaused]} />
+                  <Text style={[styles.voiceRecorderTime, isDarkTheme && styles.voiceRecorderTimeDark]}>
+                    {voiceElapsedLabel}
+                  </Text>
+                </View>
+                <View style={styles.voiceRecorderWaveRow}>
+                  {useNativeVoiceRecorder && (
+                    <Waveform
+                      ref={simformRecorderRef}
+                      mode="live"
+                      candleSpace={2}
+                      candleWidth={4}
+                      containerStyle={styles.voiceRecorderHiddenNativeWaveform}
+                      maxCandlesToRender={VOICE_WAVEFORM_BARS}
+                      onRecorderStateChange={(nextRecorderState) => {
+                        setVoiceRecorderPaused(nextRecorderState === RecorderState.paused);
+                      }}
+                      showsHorizontalScrollIndicator={false}
+                      waveColor={isDarkTheme ? "#E9EDEF" : themeColors.primaryDark}
+                    />
+                  )}
+                  <DummyVoiceRecordingWaveform isDarkTheme={isDarkTheme} paused={voiceRecorderPaused || voiceRecorderControlsDisabled} />
+                </View>
               </View>
-              <View style={styles.voiceRecorderWaveRow}>
-                {useNativeVoiceRecorder && (
-                  <Waveform
-                    ref={simformRecorderRef}
-                    mode="live"
-                    candleSpace={2}
-                    candleWidth={4}
-                    containerStyle={styles.voiceRecorderHiddenNativeWaveform}
-                    maxCandlesToRender={VOICE_WAVEFORM_BARS}
-                    onRecorderStateChange={(nextRecorderState) => {
-                      setVoiceRecorderPaused(nextRecorderState === RecorderState.paused);
-                    }}
-                    showsHorizontalScrollIndicator={false}
-                    waveColor={isDarkTheme ? "#E9EDEF" : themeColors.primaryDark}
-                  />
+              <Pressable
+                accessibilityLabel={voiceRecorderPaused ? "Resume voice recording" : "Pause voice recording"}
+                disabled={voiceRecorderControlsDisabled}
+                onPress={voiceRecorderPaused ? startVoiceRecording : pauseVoiceRecording}
+                style={({ pressed }) => [
+                  styles.voiceInlineButton,
+                  isDarkTheme && styles.voiceInlineButtonDark,
+                  pressed && styles.pressablePressed,
+                ]}
+              >
+                <Ionicons color={isDarkTheme ? "#E9EDEF" : themeColors.primaryDark} name={voiceRecorderPaused ? "mic" : "pause"} size={20} />
+              </Pressable>
+              <Pressable
+                accessibilityLabel="Send voice recording"
+                disabled={voiceRecorderControlsDisabled}
+                onPress={() => {
+                  void sendVoiceAttachment();
+                }}
+                style={({ pressed }) => [
+                  styles.voiceSendButton,
+                  pressed && styles.pressablePressed,
+                  voiceRecorderControlsDisabled && styles.buttonDisabled,
+                ]}
+              >
+                {voiceRecorderControlsDisabled ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Ionicons color="#FFFFFF" name="send" size={19} />
                 )}
-                <DummyVoiceRecordingWaveform isDarkTheme={isDarkTheme} paused={voiceRecorderPaused || voiceRecorderControlsDisabled} />
-              </View>
+              </Pressable>
             </View>
-            <Pressable
-              accessibilityLabel={voiceRecorderPaused ? "Resume voice recording" : "Pause voice recording"}
-              disabled={voiceRecorderControlsDisabled}
-              onPress={voiceRecorderPaused ? startVoiceRecording : pauseVoiceRecording}
-              style={({ pressed }) => [
-                styles.voiceInlineButton,
-                isDarkTheme && styles.voiceInlineButtonDark,
-                pressed && styles.pressablePressed,
-              ]}
-            >
-              <Ionicons color={isDarkTheme ? "#E9EDEF" : themeColors.primaryDark} name={voiceRecorderPaused ? "mic" : "pause"} size={20} />
-            </Pressable>
-            <Pressable
-              accessibilityLabel="Send voice recording"
-              disabled={voiceRecorderControlsDisabled}
-              onPress={() => {
-                void sendVoiceAttachment();
-              }}
-              style={({ pressed }) => [
-                styles.voiceSendButton,
-                pressed && styles.pressablePressed,
-                voiceRecorderControlsDisabled && styles.buttonDisabled,
-              ]}
-            >
-              {voiceRecorderControlsDisabled ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-              ) : (
-                <Ionicons color="#FFFFFF" name="send" size={19} />
-              )}
-            </Pressable>
-          </View>
+            <View style={[styles.voiceCaptionInputShell, isDarkTheme && styles.voiceCaptionInputShellDark]}>
+              <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="at-outline" size={17} />
+              <TextInput
+                cursorColor={isDarkTheme ? "#FFFFFF" : themeColors.primaryDark}
+                editable={!creatingTask && !voiceRecorderControlsDisabled}
+                onChangeText={setDraft}
+                placeholder="Add @assignee or note"
+                placeholderTextColor={isDarkTheme ? "rgba(233,237,239,0.48)" : colors.faint}
+                selectionColor={isDarkTheme ? themeColors.accent : themeColors.primaryDark}
+                style={[styles.voiceCaptionInput, isDarkTheme && styles.voiceCaptionInputDark]}
+                value={draft}
+              />
+            </View>
+          </>
         ) : (
           <>
             <Pressable
@@ -8570,41 +8654,7 @@ function ChatPane({
               {attachment ? (
                 <ComposerAttachmentPreview attachment={attachment} onRemove={onRemoveAttachment} />
               ) : null}
-              {showMentionSuggestions ? (
-                <View style={[styles.mentionSuggestionList, isDarkTheme && styles.mentionSuggestionListDark]}>
-                  {mentionCandidates.map((candidate) => (
-                    <Pressable
-                      accessibilityLabel={`Mention ${candidate.displayName}`}
-                      key={`${candidate.kind}:${candidate.id}`}
-                      onPress={() => setDraft(insertMentionToken(draft, candidate.handle))}
-                      style={({ pressed }) => [
-                        styles.mentionSuggestion,
-                        isDarkTheme && styles.mentionSuggestionDark,
-                        pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
-                      ]}
-                    >
-                      <View style={[styles.mentionSuggestionAvatar, isDarkTheme && styles.mentionSuggestionAvatarDark]}>
-                        {candidate.kind === "orbita" ? (
-                          <Ionicons color={isDarkTheme ? "#111B21" : "#FFFFFF"} name="sparkles-outline" size={16} />
-                        ) : (
-                          <Text style={styles.mentionSuggestionAvatarText}>
-                            {initials(candidate.displayName)}
-                          </Text>
-                        )}
-                      </View>
-                      <View style={styles.mentionSuggestionBody}>
-                        <Text numberOfLines={1} style={[styles.mentionSuggestionName, isDarkTheme && styles.mentionSuggestionNameDark]}>
-                          {candidate.displayName}
-                        </Text>
-                        <Text numberOfLines={1} style={[styles.mentionSuggestionHandle, isDarkTheme && styles.mentionSuggestionHandleDark]}>
-                          @{candidate.handle} - {candidate.subtitle}
-                        </Text>
-                      </View>
-                      <Ionicons color={isDarkTheme ? "rgba(233,237,239,0.62)" : colors.faint} name="return-down-forward-outline" size={17} />
-                    </Pressable>
-                  ))}
-                </View>
-              ) : null}
+              {renderMentionSuggestions()}
               <View style={[styles.composerInputShell, isDarkTheme && styles.composerInputShellDark, attachment && styles.composerInputWithAttachment]}>
                 {showComposerMentionHighlight ? (
                   <View pointerEvents="none" style={styles.composerInputOverlay}>
@@ -11517,6 +11567,12 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(134,150,160,0.10)",
     borderColor: "rgba(134,150,160,0.22)",
   },
+  taskTitleNumberPill: {
+    height: 22,
+    minWidth: 50,
+    maxWidth: 72,
+    marginTop: 0,
+  },
   taskNumberText: { color: colors.primaryDark, fontSize: 10, fontWeight: "700" },
   taskNumberTextDark: { color: colors.accent },
   taskNumberTextArchived: { color: colors.faint },
@@ -12358,7 +12414,10 @@ const styles = StyleSheet.create({
     elevation: 14,
   },
   composerDark: { borderTopColor: "rgba(255,255,255,0.10)", backgroundColor: "#202C33" },
-  composerRecording: { alignItems: "center" },
+  composerRecording: {
+    alignItems: "stretch",
+    flexDirection: "column",
+  },
   inlineVoiceRecorder: {
     flex: 1,
     minHeight: 48,
@@ -12425,6 +12484,26 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primaryDark,
   },
   voiceRecorderDummyWaveBarDark: { backgroundColor: "#E9EDEF" },
+  voiceCaptionInputShell: {
+    minHeight: 42,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    borderRadius: 21,
+    backgroundColor: "#F0F2F5",
+  },
+  voiceCaptionInputShellDark: { backgroundColor: "rgba(255,255,255,0.08)" },
+  voiceCaptionInput: {
+    flex: 1,
+    minWidth: 0,
+    paddingVertical: Platform.select({ android: 0, default: 9 }),
+    color: colors.ink,
+    fontSize: 15,
+    lineHeight: 20,
+    includeFontPadding: false,
+  },
+  voiceCaptionInputDark: { color: "#FFFFFF" },
   voiceSendButton: {
     width: 42,
     height: 42,
@@ -12540,6 +12619,25 @@ const styles = StyleSheet.create({
   mentionSuggestionNameDark: { color: "#FFFFFF" },
   mentionSuggestionHandle: { color: colors.primaryDark, fontSize: 12, fontWeight: "700", marginTop: 1 },
   mentionSuggestionHandleDark: { color: colors.accent },
+  mentionSuggestionLoading: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(0,128,105,0.12)",
+  },
+  mentionSuggestionLoadingDark: {
+    borderBottomColor: "rgba(6,207,156,0.14)",
+  },
+  mentionSuggestionLoadingText: {
+    color: colors.primaryDark,
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  mentionSuggestionLoadingTextDark: { color: colors.accent },
   composerAccessoryButton: {
     width: 40,
     height: 40,
