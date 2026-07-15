@@ -163,7 +163,9 @@ async function backendUploadRequest(path: string, token: string, form: FormData,
       });
     };
     xhr.onerror = () => {
-      finish(() => reject(new Error("Orbita backend upload failed. Check your connection and retry.")));
+      finish(() => reject(new Error(
+        `Orbita backend upload failed (status ${xhr.status || 0}, state ${xhr.readyState}). Check your connection and retry.`,
+      )));
     };
     xhr.onabort = () => {
       finish(() => reject(new Error(`Orbita backend request timed out. Check that the backend is running at ${orbitaApiUrl}.`)));
@@ -214,6 +216,14 @@ async function getAccessToken(options: { forceRefresh?: boolean } = {}) {
 
 function isExpiredTokenError(message: string) {
   return /expired|invalid.*token|token.*invalid|jwt/i.test(message);
+}
+
+function isRetryableUploadTransportError(message: string) {
+  return /backend upload failed \(status 0, state/i.test(message);
+}
+
+function wait(delayMs: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, delayMs));
 }
 
 function resolveOrbitaApiUrl(value?: string) {
@@ -423,10 +433,16 @@ export const messengerApi = {
       return await uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), token, "media", input.onProgress);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!isExpiredTokenError(message)) throw error;
-      const retryToken = await getAccessToken({ forceRefresh: true });
+      if (isExpiredTokenError(message)) {
+        const retryToken = await getAccessToken({ forceRefresh: true });
+        input.onProgress?.(0);
+        return uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), retryToken, "media", input.onProgress);
+      }
+      if (!isRetryableUploadTransportError(message)) throw error;
+
+      await wait(750);
       input.onProgress?.(0);
-      return uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), retryToken, "media", input.onProgress);
+      return uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), token, "media", input.onProgress);
     }
   },
   async uploadProfileAvatar(input: {

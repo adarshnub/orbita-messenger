@@ -34,6 +34,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 
 const TASK_MANAGER_ORBITA_CHANNEL = "orbita";
 const TASK_MANAGER_WEBHOOK_TIMEOUT_MS = 20_000;
+const SUPABASE_TRANSIENT_RETRY_DELAYS_MS = [500, 1_500];
 const EXPO_PUSH_ENDPOINT = "https://exp.host/--/api/v2/push/send";
 const PUSH_DEBUG = process.env.ORBITA_PUSH_DEBUG === "1";
 const TASK_ACK_SYSTEM_KIND = "task_acknowledgement";
@@ -90,7 +91,7 @@ createServer(async (req, res) => {
       }
 
       const jwt = authHeader.replace(/^Bearer\s+/i, "");
-      const { data, error } = await supabase.auth.getUser(jwt);
+      const { data, error } = await getSupabaseUserWithRetry(jwt);
       if (error || !data.user) {
         sendJson(res, 401, { error: "Invalid session." }, req);
         return;
@@ -115,7 +116,7 @@ createServer(async (req, res) => {
       }
 
       const jwt = authHeader.replace(/^Bearer\s+/i, "");
-      const { data, error } = await supabase.auth.getUser(jwt);
+      const { data, error } = await getSupabaseUserWithRetry(jwt);
       if (error || !data.user) {
         sendJson(res, 401, { error: "Invalid session." }, req);
         return;
@@ -160,7 +161,7 @@ createServer(async (req, res) => {
       }
 
       const jwt = authHeader.replace(/^Bearer\s+/i, "");
-      const { data, error } = await supabase.auth.getUser(jwt);
+      const { data, error } = await getSupabaseUserWithRetry(jwt);
       if (error || !data.user) {
         sendJson(res, 401, { error: "Invalid session." }, req);
         return;
@@ -244,6 +245,74 @@ function sendJson(res, status, body, req = null) {
     "Content-Type": "application/json",
   });
   res.end(JSON.stringify(body));
+}
+
+async function getSupabaseUserWithRetry(jwt) {
+  let result;
+  for (let attempt = 0; attempt <= SUPABASE_TRANSIENT_RETRY_DELAYS_MS.length; attempt += 1) {
+    result = await supabase.auth.getUser(jwt);
+    if (!result.error || !isTransientSupabaseError(result.error)) return result;
+    if (attempt === SUPABASE_TRANSIENT_RETRY_DELAYS_MS.length) throw result.error;
+
+    const delayMs = SUPABASE_TRANSIENT_RETRY_DELAYS_MS[attempt];
+    console.warn("[orbita-supabase] retrying authentication", {
+      attempt: attempt + 2,
+      delayMs,
+      error: errorMessage(result.error),
+    });
+    await sleep(delayMs);
+  }
+  return result;
+}
+
+async function uploadStorageObjectWithRetry(bucket, objectPath, body, options) {
+  let result;
+  for (let attempt = 0; attempt <= SUPABASE_TRANSIENT_RETRY_DELAYS_MS.length; attempt += 1) {
+    result = await supabase.storage.from(bucket).upload(objectPath, body, {
+      ...options,
+      // Object paths are unique per upload, so retrying the same path is idempotent.
+      upsert: true,
+    });
+    if (!result.error) return result;
+    if (!isTransientSupabaseError(result.error) || attempt === SUPABASE_TRANSIENT_RETRY_DELAYS_MS.length) {
+      return result;
+    }
+
+    const delayMs = SUPABASE_TRANSIENT_RETRY_DELAYS_MS[attempt];
+    console.warn("[orbita-supabase] retrying storage upload", {
+      attempt: attempt + 2,
+      bucket,
+      delayMs,
+      error: errorMessage(result.error),
+    });
+    await sleep(delayMs);
+  }
+  return result;
+}
+
+function isTransientSupabaseError(error) {
+  if (!error) return false;
+  const status = Number(error.statusCode ?? error.status ?? error.originalError?.status ?? 0);
+  if (status === 408 || status === 425 || status === 429 || status >= 500) return true;
+
+  const details = [
+    error.message,
+    error.details,
+    error.code,
+    error.originalError?.message,
+    error.originalError?.code,
+    error.originalError?.cause?.message,
+    error.originalError?.cause?.code,
+    error.cause?.message,
+    error.cause?.code,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return /fetch failed|network|connect.*timeout|timed?\s*out|econn|enet|eai_again|und_err/i.test(details);
+}
+
+function sleep(delayMs) {
+  return new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 function requiredString(payload, key) {
@@ -952,9 +1021,8 @@ async function uploadMediaAttachment(userId, form) {
     waveformSamples: waveformSamples?.length ?? 0,
   });
 
-  const { error: uploadError } = await supabase.storage.from(bucket).upload(objectPath, buffer, {
+  const { error: uploadError } = await uploadStorageObjectWithRetry(bucket, objectPath, buffer, {
     contentType: mimeType,
-    upsert: false,
   });
   if (uploadError) throw uploadError;
 
@@ -1015,9 +1083,8 @@ async function createServiceAttachment(ownerId, input) {
 
   const bucket = storageBucketForMessageKind(kind);
   const objectPath = `${ownerId}/${new Date().toISOString().slice(0, 10)}/${randomUUID()}-${filename}`;
-  const { error: uploadError } = await supabase.storage.from(bucket).upload(objectPath, buffer, {
+  const { error: uploadError } = await uploadStorageObjectWithRetry(bucket, objectPath, buffer, {
     contentType: mimeType,
-    upsert: false,
   });
   if (uploadError) throw uploadError;
 
@@ -1063,9 +1130,8 @@ async function uploadProfileAvatar(userId, form) {
   const filename = sanitizeFilename(String(form.get("filename") ?? file.name ?? "avatar.jpg"), "avatar.jpg");
   const objectPath = `${userId}/avatars/${Date.now()}-${filename}`;
 
-  const { error: uploadError } = await supabase.storage.from(bucket).upload(objectPath, buffer, {
+  const { error: uploadError } = await uploadStorageObjectWithRetry(bucket, objectPath, buffer, {
     contentType: mimeType,
-    upsert: false,
   });
   if (uploadError) throw uploadError;
 

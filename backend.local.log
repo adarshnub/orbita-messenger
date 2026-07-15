@@ -462,3 +462,168 @@ fetch failed StorageUnknownError: fetch failed
     }
   }
 }
+[orbita-send-message] reply target {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1784106114690-dnxoj600i0t',
+  bodyPreview: 'Hey',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  messageId: '58810148-ca43-49ca-83e2-3690d9984a5d',
+  taskmanagerUserId: 'usr_817d42388ec04ec2ad8dcddf3b585237',
+  replyToMessageId: null,
+  replyToBody: null
+}
+{"event":"push.no_recipients","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"58810148-ca43-49ca-83e2-3690d9984a5d","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-send-message] async post-send completed {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  messageId: '58810148-ca43-49ca-83e2-3690d9984a5d',
+  kind: 'text',
+  taskManagerForwarded: true,
+  taskAcknowledged: false
+}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"76924717-dedc-4067-92ce-17f873633715","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"76924717-dedc-4067-92ce-17f873633715","ticketIds":["019f6503-0a1e-7198-bf3b-e6028f85932b"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"76924717-dedc-4067-92ce-17f873633715","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"68b975fa-0ee8-4bca-9a4c-07ab8c2e9272","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"68b975fa-0ee8-4bca-9a4c-07ab8c2e9272","ticketIds":["019f6503-0cf4-7162-8bdd-aba124526adb"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"68b975fa-0ee8-4bca-9a4c-07ab8c2e9272","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'image',
+  kind: 'image',
+  filename: '1000058439.jpg',
+  mimeType: 'image/jpeg',
+  byteLength: 384654,
+  durationMs: 0,
+  waveformSamples: 0
+}
+[orbita-media-upload] staged {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  attachmentId: 'fa1efcba-c877-43d2-9525-8d031bdb7e1d',
+  kind: 'image',
+  bucket: 'chat-media',
+  byteLength: 384654
+}
+[orbita-send-message] reply target {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1784106159794-8eq3fonu6o',
+  bodyPreview: 'Create a test task',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"c40c8295-5c45-4206-a1a3-9e1e049a27e2","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  messageId: 'c40c8295-5c45-4206-a1a3-9e1e049a27e2',
+  taskmanagerUserId: 'usr_817d42388ec04ec2ad8dcddf3b585237',
+  replyToMessageId: null,
+  replyToBody: null
+}
+[orbita-send-message] async post-send completed {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  messageId: 'c40c8295-5c45-4206-a1a3-9e1e049a27e2',
+  kind: 'image',
+  taskManagerForwarded: true,
+  taskAcknowledged: false
+}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"00cb49e6-5735-475f-ad58-7ddaf50dae81","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"00cb49e6-5735-475f-ad58-7ddaf50dae81","ticketIds":["019f6503-bbe1-775e-8602-76e94f0efc8f"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"00cb49e6-5735-475f-ad58-7ddaf50dae81","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+{"event":"push.sending","conversationId":"a3ec3eea-5d93-406d-8edf-6b98c7cac73e","messageId":"ada21a7f-babe-4246-962e-43269ca25e28","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_context"}
+{"event":"push.ticket_ok","conversationId":"a3ec3eea-5d93-406d-8edf-6b98c7cac73e","messageId":"ada21a7f-babe-4246-962e-43269ca25e28","ticketIds":["019f6503-f41c-723c-87b2-519405e2372a"],"source":"task_thread_context"}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"e0524761-7673-4664-9acd-72565e2de7d0","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"e0524761-7673-4664-9acd-72565e2de7d0","ticketIds":["019f6503-f857-752b-afc0-80c2dc162c5c"],"source":"task_thread_source_created"}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"344ac7f0-9183-4447-b455-679e0f55a2b9","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"344ac7f0-9183-4447-b455-679e0f55a2b9","ticketIds":["019f6504-01a3-71ab-8738-a40bc7abb093"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"344ac7f0-9183-4447-b455-679e0f55a2b9","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'video',
+  kind: 'video',
+  filename: '1000053409.mp4',
+  mimeType: 'video/mp4',
+  byteLength: 30549423,
+  durationMs: 10529,
+  waveformSamples: 0
+}
+[orbita-media-upload] staged {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  attachmentId: '9bddbf60-99d1-4709-a3bf-86d38636ce5c',
+  kind: 'video',
+  bucket: 'chat-media',
+  byteLength: 30549423
+}
+[orbita-send-message] reply target {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1784106229839-qtgzg7rshw',
+  bodyPreview: '',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"c2e20ddb-7f4f-4cbc-8e80-ce4b34272198","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  messageId: 'c2e20ddb-7f4f-4cbc-8e80-ce4b34272198',
+  taskmanagerUserId: 'usr_817d42388ec04ec2ad8dcddf3b585237',
+  replyToMessageId: null,
+  replyToBody: null
+}
+[orbita-send-message] async post-send completed {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  messageId: 'c2e20ddb-7f4f-4cbc-8e80-ce4b34272198',
+  kind: 'video',
+  taskManagerForwarded: true,
+  taskAcknowledged: false
+}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"993b0c19-27e3-48e0-bcb0-100bc1dfe37e","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"54bf3267-7766-4083-adc0-c468fad2a2fd","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"993b0c19-27e3-48e0-bcb0-100bc1dfe37e","ticketIds":["019f6505-b4f7-7108-9b53-1625a6b88d19"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"993b0c19-27e3-48e0-bcb0-100bc1dfe37e","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"54bf3267-7766-4083-adc0-c468fad2a2fd","ticketIds":["019f6505-bac9-76dd-88ca-225217ddb1b4"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"54bf3267-7766-4083-adc0-c468fad2a2fd","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'video',
+  kind: 'video',
+  filename: '1000053409.mp4',
+  mimeType: 'video/mp4',
+  byteLength: 30549423,
+  durationMs: 10529,
+  waveformSamples: 0
+}
