@@ -178,6 +178,7 @@ type AdminSectionId = "overview" | "employees" | "departments" | "tasks" | "chat
 
 const KEYBOARD_COMPOSER_GAP = 18;
 const KEYBOARD_SAFETY_GAP = Platform.OS === "android" ? 8 : 10;
+const RECORDING_COMPOSER_BOTTOM_GAP = Platform.OS === "android" ? 76 : 34;
 const COMPOSER_INPUT_MIN_HEIGHT = 44;
 const COMPOSER_INPUT_MAX_HEIGHT = 118;
 const MESSAGE_RECONCILE_WINDOW_MS = 12_000;
@@ -4834,6 +4835,7 @@ function MessengerShell({ session }: { session: Session }) {
                 onRemoveReply={() => setReplyingToMessage(null)}
                 onSend={(nextKind, nextBody, nextAttachment, modelBodyOverride) =>
                   sendMessage(nextKind, nextBody, nextAttachment, modelBodyOverride)}
+                onStageVoiceAttachment={setComposerAttachment}
                 onSaveContact={() => {
                   if (selectedUnsavedPeer) setSaveContactPeer(selectedUnsavedPeer);
                 }}
@@ -7341,6 +7343,7 @@ function ChatPane({
   onRemoveReply,
   onSaveContact,
   onSend,
+  onStageVoiceAttachment,
   onBack,
   onAddMembers,
   onCreateTaskShell,
@@ -7382,6 +7385,7 @@ function ChatPane({
     attachment?: ComposerAttachment | null,
     modelBodyOverride?: string,
   ) => Promise<void> | void;
+  onStageVoiceAttachment: (attachment: ComposerAttachment) => void;
   onBack: () => void;
   onAddMembers: () => void | Promise<void>;
   onCreateTaskShell: () => void | Promise<void>;
@@ -7481,6 +7485,9 @@ function ChatPane({
   const showComposerMentionHighlight = hasAnyMention(draft);
   const manualKeyboardInset = androidManualKeyboardInset(keyboardInset, height);
   const composerBottomGap = Math.max(bottomInset, KEYBOARD_COMPOSER_GAP) + manualKeyboardInset;
+  const composerBottomPadding = !isWide
+    ? Math.max(12, composerBottomGap, voiceRecorderVisible ? RECORDING_COMPOSER_BOTTOM_GAP : 0)
+    : 12;
   const compactHeader = !isWide && width < 390;
   const isArchivedTaskThread = isCompletedTaskThreadStatus(taskThread?.status);
   const archivedTaskTitle = isArchivedTaskThread ? taskThreadArchiveTitle(taskThread?.status) : "";
@@ -8173,16 +8180,15 @@ function ChatPane({
     resetLiveVoiceWaveform();
   }
 
-  async function sendVoiceAttachment() {
+  async function stageVoiceAttachment() {
     const pendingVoice = await finishVoiceRecording();
     if (!pendingVoice) return;
-    let sendPromise: Promise<void> | void;
     try {
-      sendPromise = onSend("voice", draft, pendingVoice);
+      onStageVoiceAttachment(pendingVoice);
     } finally {
       resetVoiceRecorderState();
+      resetLiveVoiceWaveform();
     }
-    await sendPromise;
   }
 
   async function sendQuickPrompt(item: QuickPrompt) {
@@ -8263,7 +8269,6 @@ function ChatPane({
         styles.chatPane,
         isDarkTheme && styles.chatPaneDark,
         !isWide && styles.chatPaneMobile,
-        !isWide && { paddingBottom: composerBottomGap },
       ]}
     >
       {quickPromptOpen ? (
@@ -8499,7 +8504,14 @@ function ChatPane({
           </View>
         ) : null}
       </ScrollView>
-      <View style={[styles.composer, voiceRecorderVisible && styles.composerRecording, isDarkTheme && styles.composerDark]}>
+      <View
+        style={[
+          styles.composer,
+          { paddingBottom: composerBottomPadding },
+          voiceRecorderVisible && styles.composerRecording,
+          isDarkTheme && styles.composerDark,
+        ]}
+      >
         {!voiceRecorderVisible && (isAgentConversation || isTaskThreadConversation) ? (
           <View style={styles.quickPromptDock}>
             {quickPromptOpen ? (
@@ -8541,7 +8553,6 @@ function ChatPane({
         ) : null}
         {voiceRecorderVisible ? (
           <>
-            {renderMentionSuggestions()}
             <View style={[styles.inlineVoiceRecorder, isDarkTheme && styles.inlineVoiceRecorderDark]}>
               <Pressable
                 accessibilityLabel="Delete voice recording"
@@ -8597,10 +8608,10 @@ function ChatPane({
                 <Ionicons color={isDarkTheme ? "#E9EDEF" : themeColors.primaryDark} name={voiceRecorderPaused ? "mic" : "pause"} size={20} />
               </Pressable>
               <Pressable
-                accessibilityLabel="Send voice recording"
+                accessibilityLabel="Attach voice recording"
                 disabled={voiceRecorderControlsDisabled}
                 onPress={() => {
-                  void sendVoiceAttachment();
+                  void stageVoiceAttachment();
                 }}
                 style={({ pressed }) => [
                   styles.voiceSendButton,
@@ -8611,22 +8622,9 @@ function ChatPane({
                 {voiceRecorderControlsDisabled ? (
                   <ActivityIndicator color="#FFFFFF" size="small" />
                 ) : (
-                  <Ionicons color="#FFFFFF" name="send" size={19} />
+                  <Ionicons color="#FFFFFF" name="checkmark" size={21} />
                 )}
               </Pressable>
-            </View>
-            <View style={[styles.voiceCaptionInputShell, isDarkTheme && styles.voiceCaptionInputShellDark]}>
-              <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="at-outline" size={17} />
-              <TextInput
-                cursorColor={isDarkTheme ? "#FFFFFF" : themeColors.primaryDark}
-                editable={!creatingTask && !voiceRecorderControlsDisabled}
-                onChangeText={setDraft}
-                placeholder="Add @assignee or note"
-                placeholderTextColor={isDarkTheme ? "rgba(233,237,239,0.48)" : colors.faint}
-                selectionColor={isDarkTheme ? themeColors.accent : themeColors.primaryDark}
-                style={[styles.voiceCaptionInput, isDarkTheme && styles.voiceCaptionInputDark]}
-                value={draft}
-              />
             </View>
           </>
         ) : (
@@ -8869,6 +8867,11 @@ function ComposerAttachmentPreview({
   onRemove: () => void;
 }) {
   const { isDarkTheme, themeColors } = useAppTheme();
+
+  if (attachment.kind === "voice" || attachment.kind === "audio") {
+    return <ComposerAudioAttachmentPreview attachment={attachment} onRemove={onRemove} />;
+  }
+
   return (
     <View style={[styles.composerAttachment, isDarkTheme && styles.composerAttachmentDark]}>
       {attachment.kind === "image" ? (
@@ -8892,6 +8895,60 @@ function ComposerAttachmentPreview({
               : attachment.kind === "image"
                 ? "Photo"
                 : "Audio"}
+        </Text>
+      </View>
+      <Pressable onPress={onRemove} style={({ pressed }) => [styles.composerAttachmentClose, pressed && styles.pressablePressed]}>
+        <Ionicons color={isDarkTheme ? "#FFFFFF" : colors.ink} name="close" size={16} />
+      </Pressable>
+    </View>
+  );
+}
+
+function ComposerAudioAttachmentPreview({
+  attachment,
+  onRemove,
+}: {
+  attachment: ComposerAttachment;
+  onRemove: () => void;
+}) {
+  const { isDarkTheme, themeColors } = useAppTheme();
+  const player = useAudioPlayer(attachment.uri);
+  const status = useAudioPlayerStatus(player);
+  const playerDurationSeconds = Number.isFinite(status.duration) && status.duration > 0 ? status.duration : null;
+  const currentTimeSeconds = Number.isFinite(status.currentTime) ? status.currentTime : 0;
+  const durationLabel = formatDurationMs(playerDurationSeconds ? playerDurationSeconds * 1000 : attachment.durationMs);
+
+  function togglePlayback() {
+    if (status.playing) {
+      player.pause();
+      return;
+    }
+    if (playerDurationSeconds && currentTimeSeconds >= playerDurationSeconds) {
+      void player.seekTo(0);
+    }
+    player.play();
+  }
+
+  return (
+    <View style={[styles.composerReply, isDarkTheme && styles.composerReplyDark]}>
+      <View style={[styles.composerReplyBar, { backgroundColor: themeColors.primaryDark }]} />
+      <Pressable
+        accessibilityLabel={status.playing ? "Pause voice preview" : "Play voice preview"}
+        onPress={togglePlayback}
+        style={({ pressed }) => [
+          styles.composerAudioReplyPlayButton,
+          isDarkTheme && styles.composerAudioReplyPlayButtonDark,
+          pressed && styles.pressablePressed,
+        ]}
+      >
+        <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name={status.playing ? "pause" : "play"} size={18} />
+      </Pressable>
+      <View style={styles.composerAudioReplyContent}>
+        <Text numberOfLines={1} style={[styles.composerReplyName, isDarkTheme && styles.composerReplyNameDark, { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark }]}>
+          Voice message
+        </Text>
+        <Text numberOfLines={1} style={[styles.composerReplyText, isDarkTheme && styles.composerReplyTextDark]}>
+          {status.playing ? "Playing" : "Ready"} - {durationLabel}
         </Text>
       </View>
       <Pressable onPress={onRemove} style={({ pressed }) => [styles.composerAttachmentClose, pressed && styles.pressablePressed]}>
@@ -12484,26 +12541,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primaryDark,
   },
   voiceRecorderDummyWaveBarDark: { backgroundColor: "#E9EDEF" },
-  voiceCaptionInputShell: {
-    minHeight: 42,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    paddingHorizontal: 12,
-    borderRadius: 21,
-    backgroundColor: "#F0F2F5",
-  },
-  voiceCaptionInputShellDark: { backgroundColor: "rgba(255,255,255,0.08)" },
-  voiceCaptionInput: {
-    flex: 1,
-    minWidth: 0,
-    paddingVertical: Platform.select({ android: 0, default: 9 }),
-    color: colors.ink,
-    fontSize: 15,
-    lineHeight: 20,
-    includeFontPadding: false,
-  },
-  voiceCaptionInputDark: { color: "#FFFFFF" },
   voiceSendButton: {
     width: 42,
     height: 42,
@@ -12743,6 +12780,16 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(0,128,105,0.12)",
   },
   composerAttachmentIconDark: { backgroundColor: "rgba(6,207,156,0.12)" },
+  composerAudioReplyPlayButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,128,105,0.12)",
+  },
+  composerAudioReplyPlayButtonDark: { backgroundColor: "rgba(6,207,156,0.12)" },
+  composerAudioReplyContent: { flex: 1, minWidth: 0 },
   composerAttachmentTitle: { color: colors.ink, fontSize: 13, fontWeight: "600" },
   composerAttachmentTitleDark: { color: "#FFFFFF" },
   composerAttachmentMeta: { color: colors.muted, fontSize: 11, marginTop: 3 },
