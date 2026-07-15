@@ -24,8 +24,11 @@ import * as Clipboard from "expo-clipboard";
 import * as DeviceContacts from "expo-contacts";
 import Constants from "expo-constants";
 import * as DocumentPicker from "expo-document-picker";
+import { Image as ExpoImage } from "expo-image";
 import * as ImagePicker from "expo-image-picker";
 import * as Notifications from "expo-notifications";
+import { VideoView, useVideoPlayer } from "expo-video";
+import type { VideoThumbnail, VideoView as ExpoVideoView } from "expo-video";
 import type { RealtimeChannel, Session } from "@supabase/supabase-js";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -37,6 +40,7 @@ import {
   Dimensions,
   Easing,
   Image,
+  ImageStyle,
   Keyboard,
   KeyboardAvoidingView,
   LayoutAnimation,
@@ -123,7 +127,17 @@ type Tab = "chats" | "tasks" | "status" | "contacts" | "calls" | "settings" | "a
 type AuthMode = "signin" | "signup";
 type AppThemeMode = "light" | "dark";
 type AccentThemeId = "green" | "blue" | "purple" | "rose" | "amber";
-type ChatMessage = BackendMessage & { localState?: "sending" | "queued" | "failed" };
+type ChatMessage = BackendMessage & {
+  localState?: "sending" | "queued" | "failed";
+  localUpload?: {
+    label: string;
+    progress: number;
+  };
+};
+type VideoPlaybackTarget = {
+  filename: string;
+  url: string;
+};
 type MessageActionAnchor = {
   height: number;
   mine: boolean;
@@ -540,6 +554,11 @@ function initials(name: string) {
     .toUpperCase();
 }
 
+function isBuggyAgentName(name: string) {
+  const normalized = name.toLowerCase().replace(/\s+/g, " ").trim();
+  return normalized.includes("buggy") || normalized.includes("bug fixer") || normalized.includes("bug reporter");
+}
+
 function formatTime(iso: string) {
   return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
 }
@@ -770,9 +789,8 @@ function messageSignature(message: Pick<BackendMessage, "senderId" | "body" | "k
 
 function isSameLocalAndServerMessage(localMessage: ChatMessage, serverMessage: BackendMessage) {
   if (
-    localMessage.localState &&
     serverMessage.clientMessageId &&
-    localMessage.id === serverMessage.clientMessageId
+    (localMessage.id === serverMessage.clientMessageId || localMessage.clientMessageId === serverMessage.clientMessageId)
   ) {
     return true;
   }
@@ -1338,23 +1356,16 @@ function mergeMessagePayload(existing: ChatMessage, incoming: BackendMessage): B
 }
 
 function upsertMessage(messages: ChatMessage[], incoming: BackendMessage): ChatMessage[] {
-  const existingById = messages.find((message) => message.id === incoming.id);
-  if (existingById) {
-    const mergedIncoming = mergeMessagePayload(existingById, incoming);
-    return messages
-      .map((message) => (message.id === incoming.id ? mergedIncoming : message))
-      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-  }
-
-  const withoutDuplicate = messages;
-  const matchingLocal = withoutDuplicate.find((message) => {
-    if (!message.localState) return false;
-    return isSameLocalAndServerMessage(message, incoming);
-  });
-  const mergedIncoming = matchingLocal ? mergeMessagePayload(matchingLocal, incoming) : incoming;
-  const next = matchingLocal
-    ? withoutDuplicate.map((message) => (message.id === matchingLocal.id ? mergedIncoming : message))
-    : [...withoutDuplicate, mergedIncoming];
+  const existing = messages.find((message) => message.id === incoming.id || isSameLocalAndServerMessage(message, incoming));
+  const mergedIncoming = existing ? mergeMessagePayload(existing, incoming) : incoming;
+  const next = [
+    ...messages.filter((message) => {
+      if (message.id === mergedIncoming.id) return false;
+      if (incoming.clientMessageId && (message.id === incoming.clientMessageId || message.clientMessageId === incoming.clientMessageId)) return false;
+      return true;
+    }),
+    mergedIncoming,
+  ];
 
   return next.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 }
@@ -1522,6 +1533,7 @@ function Avatar({
   }, [isBot, pulse]);
 
   const hasImage = Boolean(avatarUrl) && !failed;
+  const isBuggyAgent = isBot && isBuggyAgentName(name);
   const pulseScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.12] });
   const pulseOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.62, 0.2] });
   return (
@@ -1552,6 +1564,13 @@ function Avatar({
           onError={() => setFailed(true)}
           style={[styles.avatarImage, { width: size, height: size, borderRadius: size / 2 }]}
         />
+      ) : isBuggyAgent ? (
+        <View style={[styles.buggyAvatarFace, { borderColor: themeColors.primarySoft }]}>
+          <Ionicons color={themeColors.primaryDark} name="bug-outline" size={Math.max(18, Math.round(size * 0.42))} />
+          <View style={[styles.buggyAvatarChip, { backgroundColor: themeColors.accent, borderColor: themeColors.primarySoft }]}>
+            <Ionicons color={themeColors.primaryDark} name="construct-outline" size={9} />
+          </View>
+        </View>
       ) : isBot ? (
         <View style={[styles.botAvatarFace, { borderColor: themeColors.primarySoft }]}>
           <View style={styles.botAvatarEyeRow}>
@@ -2729,6 +2748,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [statusOpen, setStatusOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const [videoPlaybackTarget, setVideoPlaybackTarget] = useState<VideoPlaybackTarget | null>(null);
   const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
   const [forwardPickerOpen, setForwardPickerOpen] = useState(false);
   const [messageActionTarget, setMessageActionTarget] = useState<MessageActionTarget>(null);
@@ -3656,6 +3676,20 @@ function MessengerShell({ session }: { session: Session }) {
     }
   }, []);
 
+  const updateLocalMessageUpload = useCallback((conversationId: string, localId: string, localUpload: ChatMessage["localUpload"]) => {
+    const currentForConversation = messagesByConversationRef.current[conversationId] ?? [];
+    const next = currentForConversation.map((message) =>
+      message.id === localId ? { ...message, localUpload } : message,
+    );
+    messagesByConversationRef.current = {
+      ...messagesByConversationRef.current,
+      [conversationId]: next,
+    };
+    if (selectedIdRef.current === conversationId) {
+      setSelectedMessages(next);
+    }
+  }, []);
+
   const processQueuedOutbox = useCallback(async () => {
     if (Platform.OS !== "web" || !profileId || processingOutboxRef.current) return;
     if (typeof navigator !== "undefined" && !navigator.onLine) return;
@@ -4164,6 +4198,26 @@ function MessengerShell({ session }: { session: Session }) {
     setAttachmentMenuOpen(false);
   }
 
+  async function pickVideoAttachment() {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ["videos"],
+      quality: 0.9,
+      selectionLimit: 1,
+    });
+    if (result.canceled || !result.assets?.[0]) return;
+    const asset = result.assets[0];
+    setComposerAttachment({
+      localId: `video-${Date.now()}`,
+      kind: "video",
+      uri: asset.uri,
+      name: asset.fileName || `video-${Date.now()}.mp4`,
+      mimeType: asset.mimeType || "video/mp4",
+      sizeBytes: asset.fileSize ?? null,
+      durationMs: typeof asset.duration === "number" ? asset.duration : null,
+    });
+    setAttachmentMenuOpen(false);
+  }
+
   async function takePhotoAttachment() {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
@@ -4404,30 +4458,44 @@ function MessengerShell({ session }: { session: Session }) {
       createdAt: new Date().toISOString(),
       status: "sent",
       localState: "sending",
+      localUpload: attachment
+        ? {
+            label: attachment.kind === "video" ? "Preparing video..." : "Preparing upload...",
+            progress: 0.06,
+          }
+        : undefined,
     };
 
     setDraft("");
     setComposerAttachment(null);
     setReplyingToMessage(null);
     setError("");
-    setSelectedMessages((current) => {
-      const next = [...current, optimisticMessage];
-      messagesByConversationRef.current = {
-        ...messagesByConversationRef.current,
-        [selected.id]: next,
-      };
-      return next;
-    });
+    // Upload progress can arrive before React commits a state updater. Put the
+    // optimistic message in the authoritative ref first so progress updates
+    // cannot replace it with the previous message list.
+    const optimisticMessages = [
+      ...(messagesByConversationRef.current[selected.id] ?? selectedMessages),
+      optimisticMessage,
+    ];
+    messagesByConversationRef.current = {
+      ...messagesByConversationRef.current,
+      [selected.id]: optimisticMessages,
+    };
+    setSelectedMessages(optimisticMessages);
     void upsertCachedMessage(profile.id, optimisticMessage).catch(() => undefined);
     updateConversationPreview(optimisticMessage);
-    if (expectsAgentReply) {
-      setAgentThinkingFor((current) => ({ ...current, [selected.id]: optimisticMessage.createdAt }));
-    }
 
     let attachmentId: string | undefined;
     let webAttachmentFile: File | undefined;
+    let uploadProgress = 0.06;
+    const setUploadProgress = (progress: number, label: string) => {
+      uploadProgress = clamp(progress, 0, 1);
+      updateLocalMessageUpload(selected.id, tempId, { label, progress: uploadProgress });
+    };
     try {
       if (attachment) {
+        const uploadLabel = attachment.kind === "video" ? "Uploading video..." : "Uploading attachment...";
+        setUploadProgress(0.01, uploadLabel);
         if (__DEV__) {
           console.info("[orbita-send] uploading attachment", {
             conversationId: selected.id,
@@ -4445,6 +4513,7 @@ function MessengerShell({ session }: { session: Session }) {
           kind: attachment.kind,
           durationMs: attachment.durationMs,
           waveformSamples: attachment.waveformSamples,
+          onProgress: (progress) => setUploadProgress(progress, uploadLabel),
           file:
             Platform.OS === "web"
               ? webAttachmentFile!
@@ -4455,6 +4524,7 @@ function MessengerShell({ session }: { session: Session }) {
                 },
         });
         attachmentId = uploadResult.attachment.id;
+        setUploadProgress(1, "Upload complete");
         if (__DEV__) {
           console.info("[orbita-send] attachment uploaded", {
             conversationId: selected.id,
@@ -4483,6 +4553,9 @@ function MessengerShell({ session }: { session: Session }) {
         taskManagerMentioned,
         ...((modelText && modelText !== text) || taskManagerMentioned ? { taskManagerText: modelText || text } : {}),
       });
+      if (attachment) {
+        setUploadProgress(1, "Sent");
+      }
       if (__DEV__) {
         console.info("[orbita-send] message accepted", {
           conversationId: selected.id,
@@ -4492,10 +4565,7 @@ function MessengerShell({ session }: { session: Session }) {
       }
       const mergedMessage = mergeAttachmentWaveforms(result.message, optimisticMessage);
       setSelectedMessages((current) => {
-        const withoutTemp = current.filter(
-          (message) => message.id !== tempId && message.id !== mergedMessage.id,
-        );
-        const next = [...withoutTemp, mergedMessage];
+        const next = upsertMessage(current, mergedMessage);
         messagesByConversationRef.current = {
           ...messagesByConversationRef.current,
           [selected.id]: next,
@@ -4587,7 +4657,13 @@ function MessengerShell({ session }: { session: Session }) {
           taskManagerText: (modelText && modelText !== text) || taskManagerMentioned ? modelText || text : undefined,
           userId: profile.id,
         });
-        const queuedMessage = { ...optimisticMessage, localState: "queued" as const };
+        const queuedMessage = {
+          ...optimisticMessage,
+          localState: "queued" as const,
+          localUpload: attachment
+            ? { label: "Queued for upload", progress: Math.max(uploadProgress, 0.12) }
+            : undefined,
+        };
         void upsertCachedMessage(profile.id, queuedMessage).catch(() => undefined);
         setSelectedMessages((current) => {
           const next = current.map((message) =>
@@ -4607,8 +4683,11 @@ function MessengerShell({ session }: { session: Session }) {
       if (replyTarget && canRestoreAttachmentDraft) setReplyingToMessage(replyTarget);
       void markCachedMessageFailed(profile.id, optimisticMessage).catch(() => undefined);
       setSelectedMessages((current) => {
+        const failedUpload = attachment
+          ? { label: attachment.kind === "video" ? "Video failed to send" : "Attachment failed to send", progress: Math.max(uploadProgress, 0.12) }
+          : undefined;
         const next = current.map((message) =>
-          message.id === tempId ? { ...message, localState: "failed" as const } : message,
+          message.id === tempId ? { ...message, localState: "failed" as const, localUpload: failedUpload } : message,
         );
         messagesByConversationRef.current = {
           ...messagesByConversationRef.current,
@@ -4828,6 +4907,7 @@ function MessengerShell({ session }: { session: Session }) {
                 onReplyToMessage={setReplyingToMessage}
                 onLoadOlder={() => loadOlderMessages(selected.id)}
                 onOpenAttachmentMenu={() => setAttachmentMenuOpen(true)}
+                onOpenVideo={(attachment) => setVideoPlaybackTarget({ filename: attachment.filename, url: attachment.url })}
                 onTakePhoto={() => void takePhotoAttachment()}
                 onBack={() => selectConversation("")}
                 onCreateTaskShell={() => startCreateTaskTitlePrompt(selected.id)}
@@ -4929,6 +5009,10 @@ function MessengerShell({ session }: { session: Session }) {
         }}
         visible={membersOpen}
       />
+      <VideoPlayerModal
+        onClose={() => setVideoPlaybackTarget(null)}
+        video={videoPlaybackTarget}
+      />
       <CreateTaskThreadSubtaskModal
         contacts={subtaskAssigneeCandidates}
         onClose={() => setSubtaskParentConversation(null)}
@@ -4982,6 +5066,7 @@ function MessengerShell({ session }: { session: Session }) {
         onPickAudio={() => void pickFileAttachment("audio")}
         onPickDocument={() => void pickFileAttachment("document")}
         onPickImage={() => void pickImageAttachment()}
+        onPickVideo={() => void pickVideoAttachment()}
         visible={attachmentMenuOpen}
       />
       <MessageActionsModal
@@ -7336,6 +7421,7 @@ function ChatPane({
   onOpenSubtask,
   onOpenTaskThread,
   onOpenAttachmentMenu,
+  onOpenVideo,
   onTakePhoto,
   draft,
   setDraft,
@@ -7373,6 +7459,7 @@ function ChatPane({
   onOpenSubtask: (conversationId: string) => void;
   onOpenTaskThread: (conversationId: string) => void;
   onOpenAttachmentMenu: () => void;
+  onOpenVideo: (attachment: BackendAttachment) => void;
   onTakePhoto: () => void;
   draft: string;
   setDraft: (value: string) => void;
@@ -8454,7 +8541,15 @@ function ChatPane({
                             themeColors={themeColors}
                           />
                         ) : null}
-                        {message.attachments[0] ? <MessageAttachmentCard attachment={message.attachments[0]} mine={mine} /> : null}
+                        {message.attachments[0] ? (
+                          <MessageAttachmentCard
+                            attachment={message.attachments[0]}
+                            localState={message.localState}
+                            localUpload={message.localUpload}
+                            mine={mine}
+                            onOpenVideo={onOpenVideo}
+                          />
+                        ) : null}
                         {message.body ? <MessageBody mine={mine} text={message.body} /> : null}
                         {taskInvite ? (
                           <TaskThreadInviteCard invite={taskInvite} onOpen={onOpenTaskThread} />
@@ -8872,15 +8967,36 @@ function ComposerAttachmentPreview({
     return <ComposerAudioAttachmentPreview attachment={attachment} onRemove={onRemove} />;
   }
 
+  const attachmentIconName: keyof typeof Ionicons.glyphMap =
+    attachment.kind === "document"
+      ? "document-text-outline"
+      : attachment.kind === "video"
+        ? "videocam-outline"
+        : "mic-outline";
+  const attachmentMeta =
+    attachment.kind === "document"
+      ? formatBytes(attachment.sizeBytes)
+      : attachment.kind === "video"
+        ? attachment.durationMs
+          ? `Video - ${formatDurationMs(attachment.durationMs)}`
+          : attachment.sizeBytes
+            ? `Video - ${formatBytes(attachment.sizeBytes)}`
+            : "Video"
+        : attachment.kind === "image"
+          ? "Photo"
+          : "Audio";
+
   return (
     <View style={[styles.composerAttachment, isDarkTheme && styles.composerAttachmentDark]}>
       {attachment.kind === "image" ? (
         <Image source={{ uri: attachment.uri }} style={styles.composerAttachmentImage} />
+      ) : attachment.kind === "video" ? (
+        <VideoThumbnailCover style={styles.composerAttachmentImage} url={attachment.uri} />
       ) : (
         <View style={[styles.composerAttachmentIcon, isDarkTheme && styles.composerAttachmentIconDark]}>
           <Ionicons
             color={isDarkTheme ? themeColors.accent : themeColors.primaryDark}
-            name={attachment.kind === "document" ? "document-text-outline" : "mic-outline"}
+            name={attachmentIconName}
             size={18}
           />
         </View>
@@ -8888,13 +9004,7 @@ function ComposerAttachmentPreview({
       <View style={styles.chatRowBody}>
         <Text numberOfLines={1} style={[styles.composerAttachmentTitle, isDarkTheme && styles.composerAttachmentTitleDark]}>{attachment.name}</Text>
         <Text style={[styles.composerAttachmentMeta, isDarkTheme && styles.composerAttachmentMetaDark]}>
-          {attachment.kind === "document"
-            ? formatBytes(attachment.sizeBytes)
-            : attachment.durationMs
-              ? formatDurationMs(attachment.durationMs)
-              : attachment.kind === "image"
-                ? "Photo"
-                : "Audio"}
+          {attachmentMeta}
         </Text>
       </View>
       <Pressable onPress={onRemove} style={({ pressed }) => [styles.composerAttachmentClose, pressed && styles.pressablePressed]}>
@@ -8960,12 +9070,31 @@ function ComposerAudioAttachmentPreview({
 
 function MessageAttachmentCard({
   attachment,
+  localState,
+  localUpload,
   mine,
+  onOpenVideo,
 }: {
   attachment: BackendAttachment;
+  localState?: ChatMessage["localState"];
+  localUpload?: ChatMessage["localUpload"];
   mine: boolean;
+  onOpenVideo: (attachment: BackendAttachment) => void;
 }) {
   const { isDarkTheme, themeColors } = useAppTheme();
+  const showUploadProgress = Boolean(localUpload && localState);
+  const uploadProgress = clamp(localUpload?.progress ?? 0, 0, 1);
+  const uploadFillWidth = `${Math.max(4, Math.round(uploadProgress * 100))}%` as `${number}%`;
+  const uploadTrackStyle = [
+    styles.attachmentUploadTrack,
+    mine && (isDarkTheme ? styles.attachmentUploadTrackMineDark : styles.attachmentUploadTrackMine),
+  ];
+  const uploadFillStyle = [
+    styles.attachmentUploadFill,
+    localState === "failed" && styles.attachmentUploadFillFailed,
+    localState === "queued" && styles.attachmentUploadFillQueued,
+    { width: uploadFillWidth },
+  ];
 
   if (attachment.kind === "image") {
     return (
@@ -8974,6 +9103,57 @@ function MessageAttachmentCard({
         <Text numberOfLines={1} style={[styles.attachmentCaption, mine && (isDarkTheme ? styles.attachmentCaptionMineDark : styles.attachmentCaptionMine)]}>
           {attachment.filename}
         </Text>
+      </Pressable>
+    );
+  }
+
+  if (attachment.kind === "video") {
+    return (
+      <Pressable
+        disabled={showUploadProgress}
+        onPress={() => onOpenVideo(attachment)}
+        style={({ pressed }) => [styles.imageAttachment, pressed && styles.pressablePressed]}
+      >
+        <View style={[styles.videoAttachmentMedia, mine && (isDarkTheme ? styles.videoAttachmentMediaMineDark : styles.videoAttachmentMediaMine)]}>
+          <VideoThumbnailCover style={styles.videoAttachmentThumbnail} url={attachment.url} />
+          <View style={styles.videoAttachmentScrim} />
+          {showUploadProgress && localState === "failed" ? (
+            <Ionicons color={colors.danger} name="alert-circle" size={38} />
+          ) : showUploadProgress && localState === "queued" ? (
+            <Ionicons color={mine ? (isDarkTheme ? "#E9EDEF" : themeColors.primaryDark) : themeColors.primaryDark} name="cloud-upload-outline" size={38} />
+          ) : showUploadProgress ? (
+            <View style={[styles.videoUploadCircle, mine && (isDarkTheme ? styles.videoUploadCircleMineDark : styles.videoUploadCircleMine)]}>
+              <ActivityIndicator color={mine ? (isDarkTheme ? "#E9EDEF" : themeColors.primaryDark) : themeColors.primaryDark} size="small" />
+              <Text style={[styles.videoUploadPercent, mine && (isDarkTheme ? styles.videoUploadPercentMineDark : styles.videoUploadPercentMine)]}>
+                {Math.round(uploadProgress * 100)}%
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.videoPlayButton}>
+              <Ionicons color="#FFFFFF" name="play" size={24} />
+            </View>
+          )}
+        </View>
+        <Text numberOfLines={1} style={[styles.attachmentCaption, mine && (isDarkTheme ? styles.attachmentCaptionMineDark : styles.attachmentCaptionMine)]}>
+          {attachment.filename}
+        </Text>
+        {showUploadProgress ? (
+          <View style={styles.attachmentUploadStatus}>
+            <View style={uploadTrackStyle}>
+              <View style={uploadFillStyle} />
+            </View>
+            <Text
+              numberOfLines={1}
+              style={[
+                styles.attachmentUploadText,
+                mine && (isDarkTheme ? styles.attachmentUploadTextMineDark : styles.attachmentUploadTextMine),
+                localState === "failed" && styles.attachmentUploadTextFailed,
+              ]}
+            >
+              {localUpload?.label ?? "Uploading..."} {localState === "sending" ? `${Math.round(uploadProgress * 100)}%` : ""}
+            </Text>
+          </View>
+        ) : null}
       </Pressable>
     );
   }
@@ -9004,6 +9184,99 @@ function MessageAttachmentCard({
       </View>
       <Ionicons color={mine ? (isDarkTheme ? "rgba(233,237,239,0.8)" : themeColors.primaryDark) : themeColors.primaryDark} name="open-outline" size={18} />
     </Pressable>
+  );
+}
+
+function VideoThumbnailCover({ style, url }: { style: StyleProp<ImageStyle>; url: string }) {
+  const [thumbnail, setThumbnail] = useState<VideoThumbnail | null>(null);
+  const player = useVideoPlayer(url, (nextPlayer) => {
+    nextPlayer.loop = false;
+    nextPlayer.muted = true;
+  });
+
+  useEffect(() => {
+    let active = true;
+    setThumbnail(null);
+
+    if (Platform.OS === "web") return () => { active = false; };
+
+    void player.generateThumbnailsAsync(0.1, { maxHeight: 360, maxWidth: 480 })
+      .then(([nextThumbnail]) => {
+        if (active && nextThumbnail) setThumbnail(nextThumbnail);
+      })
+      .catch(() => undefined);
+
+    return () => {
+      active = false;
+    };
+  }, [player, url]);
+
+  if (thumbnail) {
+    return <ExpoImage contentFit="cover" source={thumbnail} style={style} transition={120} />;
+  }
+
+  return (
+    <VideoView
+      contentFit="cover"
+      nativeControls={false}
+      player={player}
+      style={style}
+      surfaceType="textureView"
+    />
+  );
+}
+
+function VideoPlayerModal({
+  onClose,
+  video,
+}: {
+  onClose: () => void;
+  video: VideoPlaybackTarget | null;
+}) {
+  return (
+    <Modal animationType="fade" onRequestClose={onClose} transparent visible={Boolean(video)}>
+      <SafeAreaView style={styles.videoModalBackdrop}>
+        <View style={styles.videoModalPanel}>
+          <View style={styles.videoModalHeader}>
+            <Text numberOfLines={1} style={styles.videoModalTitle}>{video?.filename ?? "Video"}</Text>
+            <Pressable onPress={onClose} style={({ pressed }) => [styles.videoModalIconButton, pressed && styles.pressablePressed]}>
+              <Ionicons color="#FFFFFF" name="close" size={20} />
+            </Pressable>
+          </View>
+          {video ? <VideoPlaybackView video={video} /> : null}
+        </View>
+      </SafeAreaView>
+    </Modal>
+  );
+}
+
+function VideoPlaybackView({ video }: { video: VideoPlaybackTarget }) {
+  const videoRef = useRef<ExpoVideoView | null>(null);
+  const player = useVideoPlayer(video.url, (nextPlayer) => {
+    nextPlayer.loop = false;
+  });
+
+  return (
+    <View style={styles.videoPlayerStage}>
+      <VideoView
+        ref={videoRef}
+        contentFit="contain"
+        fullscreenOptions={{ enable: true, orientation: "default" }}
+        nativeControls
+        player={player}
+        style={styles.videoPlayerView}
+        surfaceType="textureView"
+      />
+      <Pressable
+        accessibilityLabel="Open fullscreen video"
+        onPress={() => {
+          void videoRef.current?.enterFullscreen();
+        }}
+        style={({ pressed }) => [styles.videoFullscreenButton, pressed && styles.pressablePressed]}
+      >
+        <Ionicons color="#FFFFFF" name="expand-outline" size={20} />
+      </Pressable>
+    </View>
   );
 }
 
@@ -10127,12 +10400,14 @@ function AttachmentMenuModal({
   onPickAudio,
   onPickDocument,
   onPickImage,
+  onPickVideo,
   visible,
 }: {
   onClose: () => void;
   onPickAudio: () => void;
   onPickDocument: () => void;
   onPickImage: () => void;
+  onPickVideo: () => void;
   visible: boolean;
 }) {
   const { themeColors } = useAppTheme();
@@ -10143,6 +10418,7 @@ function AttachmentMenuModal({
     onPress: () => void;
   }> = [
     { icon: "image-outline", label: "Photo", subtitle: "Pick from your library", onPress: onPickImage },
+    { icon: "videocam-outline", label: "Video", subtitle: "Send a video", onPress: onPickVideo },
     { icon: "headset-outline", label: "Audio", subtitle: "Send an audio file", onPress: onPickAudio },
     { icon: "document-text-outline", label: "Document", subtitle: "PDF, DOCX, XLSX, PPTX", onPress: onPickDocument },
   ];
@@ -12029,6 +12305,30 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "rgba(0,128,105,0.28)",
   },
+  buggyAvatarFace: {
+    width: "80%",
+    height: "80%",
+    borderRadius: 999,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#E7FFF2",
+    borderWidth: 1,
+    borderColor: "rgba(0,128,105,0.22)",
+    position: "relative",
+  },
+  buggyAvatarChip: {
+    position: "absolute",
+    right: -1,
+    bottom: -1,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.accent,
+    borderWidth: 1,
+    borderColor: "rgba(0,128,105,0.28)",
+  },
   avatarImage: { resizeMode: "cover" },
   avatarText: { color: "#FFFFFF", fontWeight: "700" },
   chatRowBody: { flex: 1, minWidth: 0 },
@@ -12397,9 +12697,67 @@ const styles = StyleSheet.create({
   metaTextMineDark: { color: "rgba(233,237,239,0.72)" },
   imageAttachment: { gap: 8, marginBottom: 2 },
   imageAttachmentMedia: { width: 184, height: 156, borderRadius: 12, backgroundColor: "#E9EDEF" },
+  videoAttachmentMedia: {
+    width: 184,
+    height: 156,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+    backgroundColor: "rgba(0,128,105,0.12)",
+  },
+  videoAttachmentThumbnail: { ...StyleSheet.absoluteFillObject },
+  videoAttachmentScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.18)" },
+  videoPlayButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingLeft: 2,
+    backgroundColor: "rgba(0,0,0,0.62)",
+  },
+  videoAttachmentMediaMine: { backgroundColor: "rgba(17,27,33,0.06)" },
+  videoAttachmentMediaMineDark: { backgroundColor: "rgba(255,255,255,0.14)" },
+  videoUploadCircle: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    borderWidth: 3,
+    borderColor: colors.primaryDark,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 2,
+    backgroundColor: "rgba(255,255,255,0.38)",
+  },
+  videoUploadCircleMine: { backgroundColor: "rgba(255,255,255,0.25)" },
+  videoUploadCircleMineDark: { borderColor: "rgba(233,237,239,0.78)", backgroundColor: "rgba(255,255,255,0.12)" },
+  videoUploadPercent: { color: colors.primaryDark, fontSize: 10, fontWeight: "800" },
+  videoUploadPercentMine: { color: colors.primaryDark },
+  videoUploadPercentMineDark: { color: "#E9EDEF" },
   attachmentCaption: { color: colors.muted, fontSize: 12, fontWeight: "700" },
   attachmentCaptionMine: { color: colors.muted },
   attachmentCaptionMineDark: { color: "rgba(233,237,239,0.78)" },
+  attachmentUploadStatus: { gap: 5, width: 184 },
+  attachmentUploadTrack: {
+    height: 4,
+    borderRadius: 999,
+    overflow: "hidden",
+    backgroundColor: "rgba(17,27,33,0.12)",
+  },
+  attachmentUploadTrackMine: { backgroundColor: "rgba(17,27,33,0.14)" },
+  attachmentUploadTrackMineDark: { backgroundColor: "rgba(255,255,255,0.18)" },
+  attachmentUploadFill: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: colors.primaryDark,
+  },
+  attachmentUploadFillFailed: { backgroundColor: colors.danger },
+  attachmentUploadFillQueued: { backgroundColor: "#F59E0B" },
+  attachmentUploadText: { color: colors.muted, fontSize: 11, fontWeight: "700" },
+  attachmentUploadTextMine: { color: colors.muted },
+  attachmentUploadTextMineDark: { color: "rgba(233,237,239,0.78)" },
+  attachmentUploadTextFailed: { color: colors.danger },
   documentAttachment: {
     flexDirection: "row",
     alignItems: "center",
@@ -12426,6 +12784,53 @@ const styles = StyleSheet.create({
   documentAttachmentMeta: { color: colors.muted, fontSize: 11, marginTop: 2 },
   documentAttachmentMetaMine: { color: colors.muted },
   documentAttachmentMetaMineDark: { color: "rgba(233,237,239,0.72)" },
+  videoModalBackdrop: {
+    flex: 1,
+    backgroundColor: "#000000",
+  },
+  videoModalPanel: {
+    flex: 1,
+    overflow: "hidden",
+    backgroundColor: "#050505",
+  },
+  videoModalHeader: {
+    minHeight: 50,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: "rgba(0,0,0,0.72)",
+  },
+  videoModalTitle: { flex: 1, minWidth: 0, color: "#FFFFFF", fontSize: 14, fontWeight: "700" },
+  videoModalIconButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.12)",
+  },
+  videoPlayerStage: {
+    flex: 1,
+    width: "100%",
+    backgroundColor: "#000000",
+  },
+  videoPlayerView: {
+    width: "100%",
+    height: "100%",
+  },
+  videoFullscreenButton: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.58)",
+  },
   audioAttachment: {
     flexDirection: "row",
     alignItems: "center",

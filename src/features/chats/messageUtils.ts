@@ -20,6 +20,7 @@ export function messageAttachmentLabel(message: Pick<BackendMessage, "kind" | "a
   if (!attachment) return "";
   if (message.kind === "voice" || message.kind === "audio") return "Voice note";
   if (message.kind === "image") return "Photo";
+  if (message.kind === "video") return "Video";
   return attachment.filename ? `Document: ${attachment.filename}` : "Document";
 }
 

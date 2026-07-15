@@ -46,6 +46,7 @@
         "android.permission.WRITE_CONTACTS",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
         "android.permission.SYSTEM_ALERT_WINDOW"
       ]
     },
@@ -63,7 +64,9 @@
       "expo-notifications",
       "expo-font",
       "expo-audio",
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-video",
+      "./plugins/withAndroid15BootCompletedFix"
     ],
     "experiments": {
       "typedRoutes": true

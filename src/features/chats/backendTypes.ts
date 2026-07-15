@@ -44,7 +44,7 @@ export type BackendConversation = {
 
 export type BackendAttachment = {
   id: string;
-  kind: "image" | "document" | "audio" | "voice";
+  kind: "image" | "video" | "document" | "audio" | "voice";
   mimeType: string;
   filename: string;
   sizeBytes: number;

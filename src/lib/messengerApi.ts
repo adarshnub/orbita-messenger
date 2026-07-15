@@ -13,7 +13,8 @@ import { supabase } from "./supabase";
 const rawOrbitaApiUrl = process.env.EXPO_PUBLIC_ORBITA_API_URL?.replace(/\/$/, "");
 const orbitaApiUrl = resolveOrbitaApiUrl(rawOrbitaApiUrl);
 const API_TIMEOUT_MS = 25_000;
-const MEDIA_UPLOAD_TIMEOUT_MS = 60_000;
+const MEDIA_UPLOAD_TIMEOUT_MS = 300_000;
+type UploadProgressHandler = (progress: number) => void;
 
 type ApiAction =
   | "bootstrap"
@@ -108,7 +109,7 @@ async function backendRequest(path: string, token: string, body: string) {
   return { data, response };
 }
 
-function parseBackendResponse<T>(response: Response, data: unknown) {
+function parseBackendResponse<T>(response: Pick<Response, "ok" | "status">, data: unknown) {
 
   if (!response.ok) {
     const message = apiError(data) ?? `Orbita backend request failed: ${response.status}`;
@@ -123,35 +124,60 @@ function parseBackendResponse<T>(response: Response, data: unknown) {
   return data as T;
 }
 
-async function uploadBackendMedia<T>(form: FormData, token: string, endpoint = "media") {
-  const result = await backendUploadRequest(`/api/messenger/${endpoint}`, token, form);
+async function uploadBackendMedia<T>(form: FormData, token: string, endpoint = "media", onProgress?: UploadProgressHandler) {
+  const result = await backendUploadRequest(`/api/messenger/${endpoint}`, token, form, onProgress);
   return parseBackendResponse<T>(result.response, result.data);
 }
 
-async function backendUploadRequest(path: string, token: string, form: FormData) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS);
-  let response: Response;
-  try {
-    response = await fetch(`${orbitaApiUrl}${path}`, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-      body: form,
-    });
-  } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(`Orbita backend request timed out. Check that the backend is running at ${orbitaApiUrl}.`);
-    }
-    throw error;
-  } finally {
-    clearTimeout(timeout);
-  }
+async function backendUploadRequest(path: string, token: string, form: FormData, onProgress?: UploadProgressHandler) {
+  return new Promise<{ data: unknown; response: Pick<Response, "ok" | "status"> }>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    };
+    const timeout = setTimeout(() => {
+      xhr.abort();
+      finish(() => reject(new Error(`Orbita backend request timed out. Check that the backend is running at ${orbitaApiUrl}.`)));
+    }, MEDIA_UPLOAD_TIMEOUT_MS);
 
-  const data = (await response.json().catch(() => null)) as unknown;
-  return { data, response };
+    xhr.open("POST", `${orbitaApiUrl}${path}`);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || !event.total) return;
+      onProgress?.(Math.min(0.98, Math.max(0, event.loaded / event.total)));
+    };
+    xhr.onload = () => {
+      finish(() => {
+        const data = parseJsonSafe(xhr.responseText);
+        resolve({
+          data,
+          response: {
+            ok: xhr.status >= 200 && xhr.status < 300,
+            status: xhr.status,
+          },
+        });
+      });
+    };
+    xhr.onerror = () => {
+      finish(() => reject(new Error("Orbita backend upload failed. Check your connection and retry.")));
+    };
+    xhr.onabort = () => {
+      finish(() => reject(new Error(`Orbita backend request timed out. Check that the backend is running at ${orbitaApiUrl}.`)));
+    };
+    xhr.send(form);
+  });
+}
+
+function parseJsonSafe(value: string) {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
 }
 
 function apiError(data: unknown) {
@@ -376,6 +402,7 @@ export const messengerApi = {
     kind: BackendAttachment["kind"];
     durationMs?: number | null;
     waveformSamples?: number[] | null;
+    onProgress?: UploadProgressHandler;
   }) {
     const buildForm = () => {
       const next = new FormData();
@@ -393,12 +420,13 @@ export const messengerApi = {
     };
     const token = await getAccessToken();
     try {
-      return await uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), token, "media");
+      return await uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), token, "media", input.onProgress);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!isExpiredTokenError(message)) throw error;
       const retryToken = await getAccessToken({ forceRefresh: true });
-      return uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), retryToken, "media");
+      input.onProgress?.(0);
+      return uploadBackendMedia<{ attachment: BackendAttachment }>(buildForm(), retryToken, "media", input.onProgress);
     }
   },
   async uploadProfileAvatar(input: {

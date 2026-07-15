@@ -532,6 +532,7 @@ function attachmentLabel(messageKind, attachment) {
   if (!attachment) return "";
   if (messageKind === "voice" || messageKind === "audio") return "Voice note";
   if (messageKind === "image") return "Photo";
+  if (messageKind === "video") return "Video";
   const filename = typeof attachment.filename === "string" ? attachment.filename.trim() : "";
   return filename ? `Document: ${filename}` : "Document";
 }
@@ -554,8 +555,10 @@ function messageKindFromAttachment(kind, mimeType = "") {
   const normalizedKind = String(kind || "").toLowerCase();
   if (normalizedKind === "voice" || normalizedKind === "audio") return normalizedKind;
   if (normalizedKind === "image") return "image";
+  if (normalizedKind === "video") return "video";
   if (normalizedKind === "document") return "document";
   if (mimeType.startsWith("image/")) return "image";
+  if (mimeType.startsWith("video/")) return "video";
   if (mimeType.startsWith("audio/")) return "voice";
   return "document";
 }
@@ -670,6 +673,7 @@ function pushPreviewForMessage(kind, body) {
   const text = typeof body === "string" ? body.trim() : "";
   if (text) return text;
   if (kind === "image") return "Photo";
+  if (kind === "video") return "Video";
   if (kind === "voice" || kind === "audio") return "Voice note";
   if (kind === "document") return "Document";
   return "New message";
@@ -2095,7 +2099,7 @@ function buildTaskThreadContextPayload(args) {
   };
 }
 
-async function ensureTaskThreadContextMessage(thread, payload) {
+async function ensureTaskThreadContextMessage(thread, payload, kind = "text") {
   const clientMessageId = `task-thread-context:${thread.taskmanager_org_id}:${thread.taskmanager_task_id}`;
   const { data: existing, error: existingError } = await supabase
     .from("messages")
@@ -2109,7 +2113,7 @@ async function ensureTaskThreadContextMessage(thread, payload) {
     const { error: updateError } = await supabase
       .from("messages")
       .update({
-        kind: "text",
+        kind,
         encrypted_payload: payload,
         deleted_at: null,
       })
@@ -2118,7 +2122,7 @@ async function ensureTaskThreadContextMessage(thread, payload) {
     return existing.id;
   }
 
-  const message = await insertMessageWithReceipts(thread.conversation_id, thread.agent_profile_id, "text", payload, {
+  const message = await insertMessageWithReceipts(thread.conversation_id, thread.agent_profile_id, kind, payload, {
     clientMessageId,
     pushSource: "task_thread_context",
   });
@@ -2323,6 +2327,7 @@ async function ensureTaskmanagerTaskThread(payload) {
   const departmentIds = [...new Set(stringArray(payload, "departmentIds").map((item) => item.trim()).filter(Boolean))].slice(0, 12);
   const departmentNames = [...new Set(stringArray(payload, "departmentNames").map((item) => item.trim()).filter(Boolean))].slice(0, 12);
   const notifySourceCreated = payload.notifySourceCreated === true;
+  const sourceAttachmentId = optionalString(payload, "sourceAttachmentId") || null;
   const sourceAgentProfileId = optionalString(payload, "sourceAgentProfileId") || null;
   const sourceAgentConversationId = optionalString(payload, "sourceAgentConversationId") || null;
   const sourceAgentDisplayNameInput = optionalString(payload, "sourceAgentDisplayName");
@@ -2463,7 +2468,20 @@ async function ensureTaskmanagerTaskThread(payload) {
     ...linkedRows.map((row) => ({ user_id: row.orbita_user_id, role: row.role })),
   ]);
 
-  await ensureTaskThreadContextMessage(
+  let sourceAttachment = null;
+  if (sourceAttachmentId) {
+    const { data, error } = await supabase
+      .from("media_attachments")
+      .select("*")
+      .eq("id", sourceAttachmentId)
+      .maybeSingle();
+    if (error) throw error;
+    sourceAttachment = data;
+  }
+  const contextKind = sourceAttachment
+    ? messageKindFromAttachment(attachmentMetadata(sourceAttachment).kind, sourceAttachment.mime_type)
+    : "text";
+  const contextMessageId = await ensureTaskThreadContextMessage(
     thread,
     buildTaskThreadContextPayload({
       taskmanagerOrgId,
@@ -2476,7 +2494,27 @@ async function ensureTaskmanagerTaskThread(payload) {
       completionNote,
       completedAt,
     }),
+    contextKind,
   );
+
+  if (sourceAttachment) {
+    const { data: existingAttachment, error: existingAttachmentError } = await supabase
+      .from("media_attachments")
+      .select("id")
+      .eq("message_id", contextMessageId)
+      .eq("object_path", sourceAttachment.object_path)
+      .maybeSingle();
+    if (existingAttachmentError) throw existingAttachmentError;
+    if (!existingAttachment) {
+      await cloneAttachmentForMessage(sourceAttachment, agentProfileId, contextMessageId);
+    }
+    await createRealtimeEvents(
+      linkedRows.map((row) => row.orbita_user_id).filter(Boolean),
+      "message_created",
+      thread.conversation_id,
+      { messageId: contextMessageId, senderId: agentProfileId },
+    );
+  }
 
   if (notifySourceCreated) {
     await notifySourceAgentConversationForThreadCreated(thread).catch((error) => {

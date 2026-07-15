@@ -3,3 +3,462 @@
 > node backend/server.mjs
 
 Orbita backend listening on http://0.0.0.0:8787
+[orbita-send-message] reply target {
+  conversationId: 'cbb5d5d3-2eb9-4769-ac6a-17c38e4652db',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1784096575229-89anlx5vsb4',
+  bodyPreview: 'My tasks',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"2b96ef25-753b-4efc-878f-af95dec6b75a","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: 'cbb5d5d3-2eb9-4769-ac6a-17c38e4652db',
+  messageId: '2b96ef25-753b-4efc-878f-af95dec6b75a',
+  taskmanagerUserId: 'usr_54f54bef38494150b2de334b4e4b7127',
+  replyToMessageId: null,
+  replyToBody: null
+}
+[orbita-send-message] async post-send completed {
+  conversationId: 'cbb5d5d3-2eb9-4769-ac6a-17c38e4652db',
+  messageId: '2b96ef25-753b-4efc-878f-af95dec6b75a',
+  kind: 'text',
+  taskManagerForwarded: true,
+  taskAcknowledged: false
+}
+{"event":"service.send_agent_message","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","taskmanagerOrgId":"org_7e2e793e46b649c3b56cf91ed1f67774","taskmanagerUserId":"usr_54f54bef38494150b2de334b4e4b7127","requesterTaskmanagerUserId":null}
+{"event":"service.send_agent_message","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","taskmanagerOrgId":"org_7e2e793e46b649c3b56cf91ed1f67774","taskmanagerUserId":"usr_54f54bef38494150b2de334b4e4b7127","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"b9a56c1c-c003-4a4d-8e96-ccf0fa16e9d6","recipients":1,"tokens":1,"title":"Orbita","subtitle":"VCare Agent","source":"send_agent_message"}
+{"event":"push.sending","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"4140d551-efb0-446d-936b-ded1b2e82c2d","recipients":1,"tokens":1,"title":"Orbita","subtitle":"VCare Agent","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"b9a56c1c-c003-4a4d-8e96-ccf0fa16e9d6","ticketIds":["019f6471-8518-759f-8f5b-e07211c9e0c9"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"b9a56c1c-c003-4a4d-8e96-ccf0fa16e9d6","taskmanagerUserId":"usr_54f54bef38494150b2de334b4e4b7127"}
+{"event":"push.ticket_ok","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"4140d551-efb0-446d-936b-ded1b2e82c2d","ticketIds":["019f6471-8576-71cf-8aa7-a7b562adfc5a"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"4140d551-efb0-446d-936b-ded1b2e82c2d","taskmanagerUserId":"usr_54f54bef38494150b2de334b4e4b7127"}
+[orbita-send-message] reply target {
+  conversationId: 'cbb5d5d3-2eb9-4769-ac6a-17c38e4652db',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1784096619558-ednuwj0ns66',
+  bodyPreview: 'Create a task to meet subeesh at meeting tomorrow',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"bfc7d648-92e4-48a7-81b0-5164a5477efe","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: 'cbb5d5d3-2eb9-4769-ac6a-17c38e4652db',
+  messageId: 'bfc7d648-92e4-48a7-81b0-5164a5477efe',
+  taskmanagerUserId: 'usr_54f54bef38494150b2de334b4e4b7127',
+  replyToMessageId: null,
+  replyToBody: null
+}
+[orbita-send-message] async post-send completed {
+  conversationId: 'cbb5d5d3-2eb9-4769-ac6a-17c38e4652db',
+  messageId: 'bfc7d648-92e4-48a7-81b0-5164a5477efe',
+  kind: 'text',
+  taskManagerForwarded: true,
+  taskAcknowledged: false
+}
+{"event":"service.send_agent_message","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","taskmanagerOrgId":"org_7e2e793e46b649c3b56cf91ed1f67774","taskmanagerUserId":"usr_54f54bef38494150b2de334b4e4b7127","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"c00bb986-898f-49e6-a3ee-51e70c294176","recipients":1,"tokens":1,"title":"Orbita","subtitle":"VCare Agent","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"c00bb986-898f-49e6-a3ee-51e70c294176","ticketIds":["019f6472-2083-729e-a623-ede7f9662802"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"c00bb986-898f-49e6-a3ee-51e70c294176","taskmanagerUserId":"usr_54f54bef38494150b2de334b4e4b7127"}
+{"event":"push.sending","conversationId":"a64bf37c-0383-4dc2-bd25-087f01104426","messageId":"be6c583f-81c6-4679-8135-a44b30c1dec2","recipients":2,"tokens":2,"title":"Orbita","subtitle":"VCare Agent","source":"task_thread_context"}
+{"event":"push.ticket_ok","conversationId":"a64bf37c-0383-4dc2-bd25-087f01104426","messageId":"be6c583f-81c6-4679-8135-a44b30c1dec2","ticketIds":["019f6472-24f2-71bc-8810-9a8f99d6445a","019f6472-24f2-71bc-8810-9f92e069f85a"],"source":"task_thread_context"}
+{"event":"push.sending","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"0a1c020c-8ae7-4510-8021-f711f14e65e0","recipients":1,"tokens":1,"title":"Orbita","subtitle":"VCare Agent","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"0a1c020c-8ae7-4510-8021-f711f14e65e0","ticketIds":["019f6472-285a-762f-bd4a-7278ff1dd798"],"source":"task_thread_source_created"}
+{"event":"push.sending","conversationId":"7aef2f09-f0fc-4a08-bc10-05da9a03c24e","messageId":"c24cf8aa-5994-4ec4-a063-9df8ba5f7c84","recipients":1,"tokens":1,"title":"Orbita","subtitle":"VCare Agent","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"7aef2f09-f0fc-4a08-bc10-05da9a03c24e","messageId":"c24cf8aa-5994-4ec4-a063-9df8ba5f7c84","ticketIds":["019f6472-2da9-7007-98d6-e8266a396c72"],"source":"task_thread_source_created"}
+{"event":"service.send_agent_message","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","taskmanagerOrgId":"org_7e2e793e46b649c3b56cf91ed1f67774","taskmanagerUserId":"usr_54f54bef38494150b2de334b4e4b7127","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"f2d8aa12-086d-4b84-ad9b-bcef20757f98","recipients":1,"tokens":1,"title":"Orbita","subtitle":"VCare Agent","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"f2d8aa12-086d-4b84-ad9b-bcef20757f98","ticketIds":["019f6472-366c-776d-8bd8-3b5464162464"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"cbb5d5d3-2eb9-4769-ac6a-17c38e4652db","messageId":"f2d8aa12-086d-4b84-ad9b-bcef20757f98","taskmanagerUserId":"usr_54f54bef38494150b2de334b4e4b7127"}
+{"event":"service.send_task_thread_agent_message","conversationId":"a64bf37c-0383-4dc2-bd25-087f01104426","taskmanagerOrgId":"org_7e2e793e46b649c3b56cf91ed1f67774","taskmanagerUserId":"usr_96b1cd860a5841df894f64309c2b8923","taskmanagerTaskId":"tsk_f0cdaa4b311e4c2392d6bfdad8c64f87"}
+{"event":"push.sending","conversationId":"a64bf37c-0383-4dc2-bd25-087f01104426","messageId":"d3a2fc43-5550-46c6-85c7-805df4c57faf","recipients":2,"tokens":2,"title":"Orbita","subtitle":"VCare Agent","source":"send_task_thread_agent_message"}
+{"event":"push.ticket_ok","conversationId":"a64bf37c-0383-4dc2-bd25-087f01104426","messageId":"d3a2fc43-5550-46c6-85c7-805df4c57faf","ticketIds":["019f6472-4c4c-717f-a7eb-7417be488a5f","019f6472-4c4c-717f-a7eb-79a2e8bbdb28"],"source":"send_task_thread_agent_message"}
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'voice',
+  kind: 'voice',
+  filename: 'voice-note-1784098542020.m4a',
+  mimeType: 'audio/mp4',
+  byteLength: 176511,
+  durationMs: 10988,
+  waveformSamples: 48
+}
+[orbita-media-upload] staged {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  attachmentId: 'aff04a41-f0f5-422b-9bfc-0b637a4d4706',
+  kind: 'voice',
+  bucket: 'voice-notes',
+  byteLength: 176511
+}
+[orbita-send-message] reply target {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1784098567192-okv82zwcq2',
+  bodyPreview: '@adarsh',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"2a9d082b-6e3d-4de9-bad5-362be9ed6498","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  messageId: '2a9d082b-6e3d-4de9-bad5-362be9ed6498',
+  taskmanagerUserId: 'usr_817d42388ec04ec2ad8dcddf3b585237',
+  replyToMessageId: null,
+  replyToBody: null
+}
+[orbita-send-message] async post-send completed {
+  conversationId: '868e1be4-622b-4a2a-8942-eabc53d41bc1',
+  messageId: '2a9d082b-6e3d-4de9-bad5-362be9ed6498',
+  kind: 'voice',
+  taskManagerForwarded: true,
+  taskAcknowledged: false
+}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"cc2bf137-a4af-49c1-b330-df26e7d49f1c","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"cc2bf137-a4af-49c1-b330-df26e7d49f1c","ticketIds":["019f648f-e988-745b-a8fd-1c81963b8b45"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"cc2bf137-a4af-49c1-b330-df26e7d49f1c","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+{"event":"push.sending","conversationId":"fd5c0178-61f2-4878-abee-f26d702031c2","messageId":"064b49ad-19bd-465c-92aa-183120bc4a1c","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_context"}
+{"event":"push.ticket_ok","conversationId":"fd5c0178-61f2-4878-abee-f26d702031c2","messageId":"064b49ad-19bd-465c-92aa-183120bc4a1c","ticketIds":["019f648f-f520-77d4-aa8c-50f447a0f8da"],"source":"task_thread_context"}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"3dee1f5f-a674-412d-9839-a270103c783d","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"3dee1f5f-a674-412d-9839-a270103c783d","ticketIds":["019f648f-f8b4-7522-8380-83a1caf0a6f1"],"source":"task_thread_source_created"}
+{"event":"service.send_agent_message","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","taskmanagerOrgId":"org_d68d040155944e1faf5d1dd545eef4db","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"aa210c6a-c073-4bb6-8dcc-61192c949564","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Dasappan","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"aa210c6a-c073-4bb6-8dcc-61192c949564","ticketIds":["019f6490-0157-71ef-bfb9-09dc500e4201"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"868e1be4-622b-4a2a-8942-eabc53d41bc1","messageId":"aa210c6a-c073-4bb6-8dcc-61192c949564","taskmanagerUserId":"usr_817d42388ec04ec2ad8dcddf3b585237"}
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'video',
+  kind: 'document',
+  filename: '1000053328.mp4',
+  mimeType: 'video/mp4',
+  byteLength: 30249964,
+  durationMs: 11680,
+  waveformSamples: 0
+}
+[orbita-media-upload] staged {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  attachmentId: 'a9ca4fe7-4cd6-4bf1-9d09-b038d285841d',
+  kind: 'document',
+  bucket: 'chat-media',
+  byteLength: 30249964
+}
+
+> orbita-messenger@0.1.4 backend
+> node backend/server.mjs
+
+Orbita backend listening on http://0.0.0.0:8787
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'video',
+  kind: 'video',
+  filename: '1000053399.mp4',
+  mimeType: 'video/mp4',
+  byteLength: 20313185,
+  durationMs: 7396,
+  waveformSamples: 0
+}
+[orbita-media-upload] staged {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  attachmentId: '5fadaba0-d711-4d87-bc3a-23d9947bda3a',
+  kind: 'video',
+  bucket: 'chat-media',
+  byteLength: 20313185
+}
+[orbita-send-message] reply target {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1784100722466-g8vozmzshdp',
+  bodyPreview: '',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"f0d16f39-2ec3-4601-9add-5abff3e1998c","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  messageId: 'f0d16f39-2ec3-4601-9add-5abff3e1998c',
+  taskmanagerUserId: 'usr_71d419f2df374a42b7555a4f37511f5e',
+  replyToMessageId: null,
+  replyToBody: null
+}
+[orbita-send-message] async post-send completed {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  messageId: 'f0d16f39-2ec3-4601-9add-5abff3e1998c',
+  kind: 'video',
+  taskManagerForwarded: true,
+  taskAcknowledged: false
+}
+{"event":"service.send_agent_message","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","taskmanagerOrgId":"org_06ad423545664aa88b2e732b04ac9cd0","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"f87dbf74-b09f-469d-ba6b-b309a893d203","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"send_agent_message"}
+{"event":"service.send_agent_message","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","taskmanagerOrgId":"org_06ad423545664aa88b2e732b04ac9cd0","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e","requesterTaskmanagerUserId":null}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"f87dbf74-b09f-469d-ba6b-b309a893d203","ticketIds":["019f64b1-ac5e-7279-9db9-77648a90e9ae"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"f87dbf74-b09f-469d-ba6b-b309a893d203","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e"}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"6a21d0b5-97a8-4100-b6ff-ddfac159b977","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"6a21d0b5-97a8-4100-b6ff-ddfac159b977","ticketIds":["019f64b1-af5e-73db-90dd-d73b06bc27c2"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"6a21d0b5-97a8-4100-b6ff-ddfac159b977","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e"}
+[orbita-send-message] reply target {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1784101044762-t806nzqm8ma',
+  bodyPreview: 'Do you have the ability to analyse a video, nif I send a video attachment',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"ef25a6c3-f1ed-49f0-87a6-671d61f90333","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  messageId: 'ef25a6c3-f1ed-49f0-87a6-671d61f90333',
+  taskmanagerUserId: 'usr_71d419f2df374a42b7555a4f37511f5e',
+  replyToMessageId: null,
+  replyToBody: null
+}
+[orbita-send-message] async post-send completed {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  messageId: 'ef25a6c3-f1ed-49f0-87a6-671d61f90333',
+  kind: 'text',
+  taskManagerForwarded: true,
+  taskAcknowledged: false
+}
+{"event":"service.send_agent_message","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","taskmanagerOrgId":"org_06ad423545664aa88b2e732b04ac9cd0","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e","requesterTaskmanagerUserId":null}
+{"event":"service.send_agent_message","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","taskmanagerOrgId":"org_06ad423545664aa88b2e732b04ac9cd0","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"a5b02fb2-83c8-4c6a-95cc-b9207d017f3e","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"send_agent_message"}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"6acb848e-fd51-4249-8ea3-a878b0261c95","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"a5b02fb2-83c8-4c6a-95cc-b9207d017f3e","ticketIds":["019f64b5-b6d2-7660-90d9-2f0af601ac00"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"a5b02fb2-83c8-4c6a-95cc-b9207d017f3e","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e"}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"6acb848e-fd51-4249-8ea3-a878b0261c95","ticketIds":["019f64b5-b6ef-7622-a40e-98b97da447a7"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"6acb848e-fd51-4249-8ea3-a878b0261c95","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e"}
+TypeError: fetch failed {
+  message: 'TypeError: fetch failed',
+  details: 'TypeError: fetch failed\n' +
+    '\n' +
+    'Caused by: ConnectTimeoutError: Connect Timeout Error (attempted addresses: 172.64.149.246:443, 104.18.38.10:443, timeout: 10000ms) (UND_ERR_CONNECT_TIMEOUT)\n' +
+    'ConnectTimeoutError: Connect Timeout Error (attempted addresses: 172.64.149.246:443, 104.18.38.10:443, timeout: 10000ms)\n' +
+    '    at onConnectTimeout (node:internal/deps/undici/undici:2602:28)\n' +
+    '    at Immediate._onImmediate (node:internal/deps/undici/undici:2568:35)\n' +
+    '    at process.processImmediate (node:internal/timers:483:21)',
+  hint: '',
+  code: ''
+}
+[orbita-send-message] reply target {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1784101732934-4w5x25nl8av',
+  bodyPreview: 'Hey',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  messageId: '959506e9-02b7-4904-a675-ce7c600e654f',
+  taskmanagerUserId: 'usr_71d419f2df374a42b7555a4f37511f5e',
+  replyToMessageId: null,
+  replyToBody: null
+}
+{"event":"push.no_recipients","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"959506e9-02b7-4904-a675-ce7c600e654f","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-send-message] async post-send completed {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  messageId: '959506e9-02b7-4904-a675-ce7c600e654f',
+  kind: 'text',
+  taskManagerForwarded: true,
+  taskAcknowledged: false
+}
+{"event":"service.send_agent_message","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","taskmanagerOrgId":"org_06ad423545664aa88b2e732b04ac9cd0","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"40f1ac5a-f48a-4494-a291-1f13891e98af","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"send_agent_message"}
+{"event":"service.send_agent_message","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","taskmanagerOrgId":"org_06ad423545664aa88b2e732b04ac9cd0","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e","requesterTaskmanagerUserId":null}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"40f1ac5a-f48a-4494-a291-1f13891e98af","ticketIds":["019f64c0-20ab-723b-b266-f400a7394da6"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"40f1ac5a-f48a-4494-a291-1f13891e98af","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e"}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"1d54ffda-9c76-4373-8c7b-8838949c886d","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"1d54ffda-9c76-4373-8c7b-8838949c886d","ticketIds":["019f64c0-2312-7124-afd3-08732d71bcf7"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"1d54ffda-9c76-4373-8c7b-8838949c886d","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e"}
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'video',
+  kind: 'video',
+  filename: '1000053328.mp4',
+  mimeType: 'video/mp4',
+  byteLength: 30249964,
+  durationMs: 11680,
+  waveformSamples: 0
+}
+[orbita-media-upload] staged {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  attachmentId: '983891c0-8780-4255-b0fc-a7932d6a039d',
+  kind: 'video',
+  bucket: 'chat-media',
+  byteLength: 30249964
+}
+[orbita-send-message] reply target {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1784101813625-x19z0zi0m8',
+  bodyPreview: 'Fix the cars display issue assign it to myself',
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"e0cba379-81a2-49b5-9b67-4e528b92b7b8","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  messageId: 'e0cba379-81a2-49b5-9b67-4e528b92b7b8',
+  taskmanagerUserId: 'usr_71d419f2df374a42b7555a4f37511f5e',
+  replyToMessageId: null,
+  replyToBody: null
+}
+[orbita-send-message] async post-send completed {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  messageId: 'e0cba379-81a2-49b5-9b67-4e528b92b7b8',
+  kind: 'video',
+  taskManagerForwarded: true,
+  taskAcknowledged: false
+}
+{"event":"service.send_agent_message","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","taskmanagerOrgId":"org_06ad423545664aa88b2e732b04ac9cd0","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"fff8de9c-5e2f-4a44-b486-e25ef4d797c9","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"fff8de9c-5e2f-4a44-b486-e25ef4d797c9","ticketIds":["019f64c2-77c2-77cf-8841-5b761964a7aa"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"fff8de9c-5e2f-4a44-b486-e25ef4d797c9","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e"}
+{"event":"push.sending","conversationId":"17433be2-0b0c-4b78-80de-68f6b9c45130","messageId":"431e9c61-1ac1-4de2-91fd-606ca0310522","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"task_thread_context"}
+{"event":"push.ticket_ok","conversationId":"17433be2-0b0c-4b78-80de-68f6b9c45130","messageId":"431e9c61-1ac1-4de2-91fd-606ca0310522","ticketIds":["019f64c2-8149-745a-a1cb-361547608d76"],"source":"task_thread_context"}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"6882116d-0b4e-4b41-88a1-a491b80a5a1f","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"6882116d-0b4e-4b41-88a1-a491b80a5a1f","ticketIds":["019f64c2-84b7-773a-8899-d435af592061"],"source":"task_thread_source_created"}
+{"event":"service.send_agent_message","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","taskmanagerOrgId":"org_06ad423545664aa88b2e732b04ac9cd0","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"74a88369-cc15-45e0-bfff-0c8caa2db361","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"74a88369-cc15-45e0-bfff-0c8caa2db361","ticketIds":["019f64c2-8d0c-76c9-a392-31ea957df323"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"74a88369-cc15-45e0-bfff-0c8caa2db361","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e"}
+
+> orbita-messenger@0.1.4 backend
+> node backend/server.mjs
+
+Orbita backend listening on http://0.0.0.0:8787
+[orbita-media-upload] received {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  requestedKind: 'video',
+  kind: 'video',
+  filename: '1000053626.mp4',
+  mimeType: 'video/mp4',
+  byteLength: 8374806,
+  durationMs: 19481,
+  waveformSamples: 0
+}
+[orbita-media-upload] staged {
+  userId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  attachmentId: '30164934-eeeb-4db0-ace8-692f569fb730',
+  kind: 'video',
+  bucket: 'chat-media',
+  byteLength: 8374806
+}
+[orbita-send-message] reply target {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  senderId: 'd2c30688-0f51-4fd5-b4cf-67efa344cf54',
+  clientMessageId: 'local-1784103711361-b062gfv0kma',
+  bodyPreview: "Create a task to fix the main layout bug and assign it to me, this video attachment contains it's example",
+  taskManagerTextPreview: '',
+  taskManagerMentioned: false,
+  bodyHasMention: false,
+  taskManagerTextHasMention: false,
+  replyToMessageId: null,
+  resolvedReplyToMessageId: null,
+  storedReplyToMessageId: null,
+  replyToBody: null,
+  replyToLookupError: null,
+  usedClientReplyPreview: false
+}
+{"event":"push.no_recipients","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"9e036769-fd08-4dd0-a59f-9cf09d5a4ffd","senderId":"d2c30688-0f51-4fd5-b4cf-67efa344cf54","source":"message"}
+[orbita-taskmanager-forward] direct agent payload {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  messageId: '9e036769-fd08-4dd0-a59f-9cf09d5a4ffd',
+  taskmanagerUserId: 'usr_71d419f2df374a42b7555a4f37511f5e',
+  replyToMessageId: null,
+  replyToBody: null
+}
+[orbita-send-message] async post-send completed {
+  conversationId: 'fecfd44e-ecac-43db-939d-c911ce9642a5',
+  messageId: '9e036769-fd08-4dd0-a59f-9cf09d5a4ffd',
+  kind: 'video',
+  taskManagerForwarded: true,
+  taskAcknowledged: false
+}
+{"event":"service.send_agent_message","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","taskmanagerOrgId":"org_06ad423545664aa88b2e732b04ac9cd0","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"39ff4e9e-2376-44e6-99ac-35af28dc6cc4","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"send_agent_message"}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"39ff4e9e-2376-44e6-99ac-35af28dc6cc4","ticketIds":["019f64de-b92f-77ad-8ab5-9d9b7a1e6ba9"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"39ff4e9e-2376-44e6-99ac-35af28dc6cc4","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e"}
+{"event":"push.sending","conversationId":"a435a036-23c3-4e0b-82bd-da5d9cfb3902","messageId":"d5af6d6a-bf0b-4a98-a4ee-1f63f73b7d88","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"task_thread_context"}
+{"event":"push.ticket_ok","conversationId":"a435a036-23c3-4e0b-82bd-da5d9cfb3902","messageId":"d5af6d6a-bf0b-4a98-a4ee-1f63f73b7d88","ticketIds":["019f64de-c25b-75f8-be1d-51170e697b66"],"source":"task_thread_context"}
+{"event":"service.send_agent_message","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","taskmanagerOrgId":"org_06ad423545664aa88b2e732b04ac9cd0","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e","requesterTaskmanagerUserId":null}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"e1e86e1a-75b5-4255-93a3-2ad61cae1ad9","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"send_agent_message"}
+{"event":"push.sending","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"d358826f-a807-4371-9202-4f6f2ead48ec","recipients":1,"tokens":1,"title":"Orbita","subtitle":"Buggy","source":"task_thread_source_created"}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"e1e86e1a-75b5-4255-93a3-2ad61cae1ad9","ticketIds":["019f64de-c97f-735e-8912-d81570ee69bf"],"source":"send_agent_message"}
+{"event":"service.send_agent_message_inserted","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"e1e86e1a-75b5-4255-93a3-2ad61cae1ad9","taskmanagerUserId":"usr_71d419f2df374a42b7555a4f37511f5e"}
+{"event":"push.ticket_ok","conversationId":"fecfd44e-ecac-43db-939d-c911ce9642a5","messageId":"d358826f-a807-4371-9202-4f6f2ead48ec","ticketIds":["019f64de-cb8e-7788-8bc8-82ab5b4edb2d"],"source":"task_thread_source_created"}
+fetch failed StorageUnknownError: fetch failed
+    at handleError (file:///C:/Users/adars/Documents/GitHub/orbita-messenger/node_modules/@supabase/storage-js/dist/index.mjs:320:16)
+    at file:///C:/Users/adars/Documents/GitHub/orbita-messenger/node_modules/@supabase/storage-js/dist/index.mjs:369:53
+    at process.processTicksAndRejections (node:internal/process/task_queues:95:5) {
+  __isStorageError: true,
+  namespace: 'storage',
+  status: undefined,
+  statusCode: undefined,
+  originalError: TypeError: fetch failed
+      at node:internal/deps/undici/undici:13502:13
+      at process.processTicksAndRejections (node:internal/process/task_queues:95:5) {
+    [cause]: ConnectTimeoutError: Connect Timeout Error (attempted addresses: 172.64.149.246:443, 104.18.38.10:443, timeout: 10000ms)
+        at onConnectTimeout (node:internal/deps/undici/undici:2602:28)
+        at Immediate._onImmediate (node:internal/deps/undici/undici:2568:35)
+        at process.processImmediate (node:internal/timers:483:21) {
+      code: 'UND_ERR_CONNECT_TIMEOUT'
+    }
+  }
+}
