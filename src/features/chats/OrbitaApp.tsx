@@ -7104,12 +7104,16 @@ function TasksPanel({
                         style={({ pressed }) => [
                           styles.taskFilterMenuOption,
                           isDarkTheme && styles.taskFilterMenuOptionDark,
-                          selected && { borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark, backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
+                          selected && styles.taskFilterMenuOptionSelected,
+                          selected && isDarkTheme && styles.taskFilterMenuOptionSelectedDark,
                           pressed && styles.pressablePressed,
                         ]}
                       >
-                        <Text numberOfLines={1} style={[styles.taskFilterMenuOptionText, selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark }, isDarkTheme && styles.taskFilterMenuOptionTextDark]}>{item.label}</Text>
-                        <Text style={[styles.taskFilterMenuOptionCount, selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark }]}>{item.count}</Text>
+                        <View style={[styles.taskFilterSelectionMark, selected && styles.taskFilterSelectionMarkSelected, isDarkTheme && styles.taskFilterSelectionMarkDark, selected && isDarkTheme && styles.taskFilterSelectionMarkSelectedDark]}>
+                          {selected ? <Ionicons color={isDarkTheme ? "#0B141A" : "#FFFFFF"} name="checkmark" size={9} /> : null}
+                        </View>
+                        <Text numberOfLines={1} style={[styles.taskFilterMenuOptionText, selected && styles.taskFilterMenuOptionTextSelected, isDarkTheme && styles.taskFilterMenuOptionTextDark, selected && isDarkTheme && styles.taskFilterMenuOptionTextSelectedDark]}>{item.label}</Text>
+                        <Text style={[styles.taskFilterMenuOptionCount, selected && styles.taskFilterMenuOptionCountSelected, isDarkTheme && styles.taskFilterMenuOptionCountDark, selected && isDarkTheme && styles.taskFilterMenuOptionCountSelectedDark]}>{item.count}</Text>
                       </Pressable>
                     );
                   })}
@@ -7120,7 +7124,6 @@ function TasksPanel({
                 <View style={styles.taskFilterOptionGrid}>
                   {orgFilterOptions.map((item) => {
                     const selected = orgFilter === item.id;
-                    const orgColorway = item.id === "all" ? null : taskOrgColorway(item.id);
                     return (
                       <Pressable
                         key={item.id}
@@ -7131,29 +7134,28 @@ function TasksPanel({
                         style={({ pressed }) => [
                           styles.taskOrgFilterChip,
                           isDarkTheme && styles.taskOrgFilterChipDark,
-                          selected && { borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark, backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
-                          orgColorway && {
-                            backgroundColor: isDarkTheme ? orgColorway.darkBg : selected ? orgColorway.selectedBg : orgColorway.bg,
-                            borderColor: isDarkTheme ? orgColorway.darkBorder : orgColorway.border,
-                          },
+                          selected && styles.taskFilterMenuOptionSelected,
+                          selected && isDarkTheme && styles.taskFilterMenuOptionSelectedDark,
                           pressed && styles.pressablePressed,
                         ]}
                       >
                         <View
                           style={[
-                            styles.taskOrgFilterDot,
-                            { backgroundColor: selected ? themeColors.primaryDark : colors.faint },
-                            isDarkTheme && { backgroundColor: selected ? themeColors.accent : "rgba(233,237,239,0.48)" },
-                            orgColorway && { backgroundColor: orgColorway.dot },
+                            styles.taskFilterSelectionMark,
+                            selected && styles.taskFilterSelectionMarkSelected,
+                            isDarkTheme && styles.taskFilterSelectionMarkDark,
+                            selected && isDarkTheme && styles.taskFilterSelectionMarkSelectedDark,
                           ]}
-                        />
+                        >
+                          {selected ? <Ionicons color={isDarkTheme ? "#0B141A" : "#FFFFFF"} name="checkmark" size={9} /> : null}
+                        </View>
                         <Text
                           numberOfLines={1}
                           style={[
                             styles.taskOrgFilterText,
-                            selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                            selected && styles.taskOrgFilterTextSelected,
                             isDarkTheme && styles.taskOrgFilterTextDark,
-                            orgColorway && { color: isDarkTheme ? orgColorway.darkText : orgColorway.text },
+                            selected && isDarkTheme && styles.taskOrgFilterTextSelectedDark,
                           ]}
                         >
                           {item.label}
@@ -7161,8 +7163,9 @@ function TasksPanel({
                         <Text
                           style={[
                             styles.taskOrgFilterCount,
-                            selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
-                            orgColorway && { color: isDarkTheme ? orgColorway.darkText : orgColorway.text },
+                            selected && styles.taskOrgFilterCountSelected,
+                            isDarkTheme && styles.taskFilterMenuOptionCountDark,
+                            selected && isDarkTheme && styles.taskFilterMenuOptionCountSelectedDark,
                           ]}
                         >
                           {item.count}
@@ -7185,26 +7188,28 @@ function TasksPanel({
                           style={({ pressed }) => [
                             styles.taskOrgFilterChip,
                             isDarkTheme && styles.taskOrgFilterChipDark,
-                            selected && {
-                              borderColor: isDarkTheme ? themeColors.accent : themeColors.primaryDark,
-                              backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft,
-                            },
+                            selected && styles.taskFilterMenuOptionSelected,
+                            selected && isDarkTheme && styles.taskFilterMenuOptionSelectedDark,
                             pressed && styles.pressablePressed,
                           ]}
                         >
                           <View
                             style={[
-                              styles.taskOrgFilterDot,
-                              { backgroundColor: selected ? themeColors.primaryDark : colors.faint },
-                              isDarkTheme && { backgroundColor: selected ? themeColors.accent : "rgba(233,237,239,0.48)" },
+                              styles.taskFilterSelectionMark,
+                              selected && styles.taskFilterSelectionMarkSelected,
+                              isDarkTheme && styles.taskFilterSelectionMarkDark,
+                              selected && isDarkTheme && styles.taskFilterSelectionMarkSelectedDark,
                             ]}
-                          />
+                          >
+                            {selected ? <Ionicons color={isDarkTheme ? "#0B141A" : "#FFFFFF"} name="checkmark" size={9} /> : null}
+                          </View>
                           <Text
                             numberOfLines={1}
                             style={[
                               styles.taskOrgFilterText,
-                              selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                              selected && styles.taskOrgFilterTextSelected,
                               isDarkTheme && styles.taskOrgFilterTextDark,
+                              selected && isDarkTheme && styles.taskOrgFilterTextSelectedDark,
                             ]}
                           >
                             {item.label}
@@ -7212,7 +7217,9 @@ function TasksPanel({
                           <Text
                             style={[
                               styles.taskOrgFilterCount,
-                              selected && { color: isDarkTheme ? themeColors.accent : themeColors.primaryDark },
+                              selected && styles.taskOrgFilterCountSelected,
+                              isDarkTheme && styles.taskFilterMenuOptionCountDark,
+                              selected && isDarkTheme && styles.taskFilterMenuOptionCountSelectedDark,
                             ]}
                           >
                             {item.count}
@@ -11415,9 +11422,44 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.10)",
     backgroundColor: "rgba(255,255,255,0.06)",
   },
+  taskFilterMenuOptionSelected: {
+    borderColor: colors.primaryDark,
+    backgroundColor: "rgba(0,168,132,0.12)",
+  },
+  taskFilterMenuOptionSelectedDark: {
+    borderColor: colors.accent,
+    backgroundColor: "rgba(6,207,156,0.16)",
+  },
+  taskFilterSelectionMark: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderColor: "rgba(17,27,33,0.22)",
+    backgroundColor: "transparent",
+    flexShrink: 0,
+  },
+  taskFilterSelectionMarkDark: {
+    borderColor: "rgba(233,237,239,0.42)",
+  },
+  taskFilterSelectionMarkSelected: {
+    borderColor: colors.primaryDark,
+    backgroundColor: colors.primaryDark,
+  },
+  taskFilterSelectionMarkSelectedDark: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accent,
+  },
   taskFilterMenuOptionText: { color: colors.muted, fontSize: 11, fontWeight: "700", maxWidth: 92 },
   taskFilterMenuOptionTextDark: { color: "rgba(233,237,239,0.68)" },
+  taskFilterMenuOptionTextSelected: { color: colors.primaryDark, fontWeight: "800" },
+  taskFilterMenuOptionTextSelectedDark: { color: colors.accent },
   taskFilterMenuOptionCount: { color: colors.faint, fontSize: 11, fontWeight: "700" },
+  taskFilterMenuOptionCountDark: { color: "rgba(233,237,239,0.58)" },
+  taskFilterMenuOptionCountSelected: { color: colors.primaryDark, fontWeight: "800" },
+  taskFilterMenuOptionCountSelectedDark: { color: colors.accent },
   tasksOrgRail: { gap: 8, paddingRight: 16 },
   taskOrgFilterChip: {
     maxWidth: 164,
@@ -11438,7 +11480,10 @@ const styles = StyleSheet.create({
   taskOrgFilterDot: { width: 7, height: 7, borderRadius: 4, flexShrink: 0 },
   taskOrgFilterText: { color: colors.muted, fontSize: 11, fontWeight: "700", maxWidth: 96 },
   taskOrgFilterTextDark: { color: "rgba(233,237,239,0.68)" },
+  taskOrgFilterTextSelected: { color: colors.primaryDark, fontWeight: "800" },
+  taskOrgFilterTextSelectedDark: { color: colors.accent },
   taskOrgFilterCount: { color: colors.faint, fontSize: 11, fontWeight: "700" },
+  taskOrgFilterCountSelected: { color: colors.primaryDark, fontWeight: "800" },
   tasksListContent: { gap: 9, paddingTop: 14, paddingBottom: 132 },
   tasksSectionLabel: {
     color: colors.faint,
