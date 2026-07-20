@@ -4,6 +4,8 @@ import {
   BackendMessage,
   BackendProfile,
   BackendStatus,
+  BackendTaskmanagerMentionDepartment,
+  BackendTaskmanagerMentionUser,
   BootstrapPayload,
 } from "@/features/chats/backendTypes";
 import Constants from "expo-constants";
@@ -332,13 +334,23 @@ export const messengerApi = {
       memberIds,
     });
   },
-  addTaskThreadMembers(conversationId: string, memberIds: string[]) {
+  addTaskThreadMembers(conversationId: string, taskmanagerUserIds: string[]) {
+    const legacyPrefix = "legacy:";
+    const memberIds = taskmanagerUserIds
+      .filter((userId) => userId.startsWith(legacyPrefix))
+      .map((userId) => userId.slice(legacyPrefix.length))
+      .filter(Boolean);
     return callApi<{ conversation: BackendConversation }>("add_task_thread_members", {
       conversationId,
-      memberIds,
+      taskmanagerUserIds: taskmanagerUserIds.filter((userId) => !userId.startsWith(legacyPrefix)),
+      ...(memberIds.length ? { memberIds } : {}),
     });
   },
-  createTaskmanagerTaskShell(conversationId: string, title: string) {
+  createTaskmanagerTaskShell(
+    conversationId: string,
+    title: string,
+    mentions: { userIds?: string[]; departmentIds?: string[] } = {},
+  ) {
     return callApi<{
       conversation: BackendConversation;
       message?: BackendMessage;
@@ -347,11 +359,17 @@ export const messengerApi = {
     }>("create_taskmanager_task_shell", {
       conversationId,
       title,
+      mentionedTaskmanagerUserIds: mentions.userIds ?? [],
+      mentionedDepartmentIds: mentions.departmentIds ?? [],
       clientPlatform: Platform.OS === "web" ? "web" : "mobile",
     });
   },
   listTaskmanagerOrgMembers(conversationId: string) {
-    return callApi<{ members: BackendProfile[] }>("list_taskmanager_org_members", { conversationId });
+    return callApi<{
+      members: BackendProfile[];
+      users?: BackendTaskmanagerMentionUser[];
+      departments?: BackendTaskmanagerMentionDepartment[];
+    }>("list_taskmanager_org_members", { conversationId });
   },
   createTaskThreadSubtask(input: {
     conversationId: string;
@@ -389,6 +407,8 @@ export const messengerApi = {
     replyTo?: BackendMessage["replyTo"];
     taskManagerText?: string;
     taskManagerMentioned?: boolean;
+    mentionedTaskmanagerUserIds?: string[];
+    mentionedDepartmentIds?: string[];
   }) {
     return callApi<{
       message: BackendMessage;

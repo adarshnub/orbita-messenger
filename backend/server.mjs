@@ -63,6 +63,12 @@ const TASK_MANAGER_ORBITA_TASK_SHELL_URL =
 const TASK_MANAGER_ORBITA_TASK_THREAD_STATUS_URL =
   process.env.TASK_MANAGER_ORBITA_TASK_THREAD_STATUS_URL ||
   deriveTaskManagerTaskThreadStatusUrl(process.env.TASK_MANAGER_ORBITA_WEBHOOK_URL);
+const TASK_MANAGER_ORBITA_TASK_THREAD_MEMBERS_URL =
+  process.env.TASK_MANAGER_ORBITA_TASK_THREAD_MEMBERS_URL ||
+  deriveTaskManagerTaskThreadMembersUrl(process.env.TASK_MANAGER_ORBITA_WEBHOOK_URL);
+const TASK_MANAGER_ORBITA_MENTIONS_URL =
+  process.env.TASK_MANAGER_ORBITA_MENTIONS_URL ||
+  deriveTaskManagerMentionsUrl(process.env.TASK_MANAGER_ORBITA_WEBHOOK_URL);
 
 createServer(async (req, res) => {
   const pathname = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -406,6 +412,16 @@ function deriveTaskManagerTaskThreadStatusUrl(webhookUrl) {
   return webhookUrl.replace(/\/webhooks\/orbita\/messages\/?$/i, "/webhooks/orbita/task-thread-status");
 }
 
+function deriveTaskManagerTaskThreadMembersUrl(webhookUrl) {
+  if (!webhookUrl) return "";
+  return webhookUrl.replace(/\/webhooks\/orbita\/messages\/?$/i, "/webhooks/orbita/task-thread-members");
+}
+
+function deriveTaskManagerMentionsUrl(webhookUrl) {
+  if (!webhookUrl) return "";
+  return webhookUrl.replace(/\/webhooks\/orbita\/messages\/?$/i, "/webhooks/orbita/mentions");
+}
+
 function deriveTaskManagerApiBaseUrl(sessionUrl) {
   if (!sessionUrl) return "";
   return sessionUrl.replace(/\/orbita\/admin\/sessions\/?$/i, "");
@@ -595,6 +611,19 @@ async function postTaskmanagerWebhook(webhookUrl, raw, secret) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function loadTaskmanagerMentionCatalog({ taskmanagerOrgId, taskmanagerUserId, orbitaUserId }) {
+  const secret = process.env.TASK_MANAGER_ORBITA_SECRET;
+  if (!TASK_MANAGER_ORBITA_MENTIONS_URL || !secret) return null;
+  const raw = JSON.stringify({ taskmanagerOrgId, taskmanagerUserId, orbitaUserId });
+  const response = await postTaskmanagerWebhook(TASK_MANAGER_ORBITA_MENTIONS_URL, raw, secret);
+  const responseText = await response.text().catch(() => "");
+  const data = responseText ? safeJsonParse(responseText) : null;
+  if (!response.ok || !Array.isArray(data?.users) || !Array.isArray(data?.departments)) {
+    throw new Error(apiErrorMessage(data) || `Task Manager mention catalog failed: ${response.status}`);
+  }
+  return data;
 }
 
 function attachmentLabel(messageKind, attachment) {
@@ -1710,6 +1739,21 @@ async function loadConversations(userId) {
     .in("conversation_id", ids);
   if (taskThreadRowsError) throw taskThreadRowsError;
   const taskThreadByConversationId = new Map((taskThreadRows ?? []).map((row) => [row.conversation_id, row]));
+  const taskThreadIds = [...new Set((taskThreadRows ?? []).map((row) => row.taskmanager_task_id).filter(Boolean))];
+  const { data: taskThreadMemberRows, error: taskThreadMemberRowsError } = taskThreadIds.length
+    ? await supabase
+        .from("taskmanager_task_thread_members")
+        .select("taskmanager_org_id,taskmanager_task_id,taskmanager_user_id,status")
+        .in("taskmanager_task_id", taskThreadIds)
+    : { data: [], error: null };
+  if (taskThreadMemberRowsError) throw taskThreadMemberRowsError;
+  const taskThreadMembersByTaskKey = new Map();
+  for (const member of taskThreadMemberRows ?? []) {
+    const key = `${member.taskmanager_org_id}:${member.taskmanager_task_id}`;
+    const current = taskThreadMembersByTaskKey.get(key) ?? [];
+    current.push(member);
+    taskThreadMembersByTaskKey.set(key, current);
+  }
   const taskmanagerConversationIds = new Set([
     ...(linkedRows ?? []).map((row) => row.conversation_id),
     ...taskThreadByConversationId.keys(),
@@ -1788,6 +1832,16 @@ async function loadConversations(userId) {
               dueDate: taskThreadByConversationId.get(conversation.id).due_date ?? null,
               departmentIds: taskThreadByConversationId.get(conversation.id).department_ids ?? [],
               departmentNames: taskThreadByConversationId.get(conversation.id).department_names ?? [],
+              memberUserIds: (
+                taskThreadMembersByTaskKey.get(
+                  `${taskThreadByConversationId.get(conversation.id).taskmanager_org_id}:${taskThreadByConversationId.get(conversation.id).taskmanager_task_id}`,
+                ) ?? []
+              ).map((member) => member.taskmanager_user_id),
+              pendingMemberUserIds: (
+                taskThreadMembersByTaskKey.get(
+                  `${taskThreadByConversationId.get(conversation.id).taskmanager_org_id}:${taskThreadByConversationId.get(conversation.id).taskmanager_task_id}`,
+                ) ?? []
+              ).filter((member) => member.status === "pending").map((member) => member.taskmanager_user_id),
             }
           : null,
       };
@@ -2145,6 +2199,7 @@ function formatTaskDueDate(value) {
 function buildTaskThreadContextPayload(args) {
   const lines = [
     `${args.taskNumber} · ${args.title}`,
+    `Assigned to: ${args.assigneeName || "Unassigned"}`,
     `Status: ${formatTaskStatusLabel(args.status)}`,
     `Progress: ${progressLabelForTaskStatus(args.status, args.completedAt)}`,
   ];
@@ -2382,6 +2437,7 @@ async function ensureTaskmanagerTaskThread(payload) {
   const rootTaskId = optionalString(payload, "rootTaskId") || taskmanagerTaskId;
   const creatorUserId = requiredString(payload, "creatorUserId");
   const assigneeUserId = requiredString(payload, "assigneeUserId");
+  const assigneeName = optionalString(payload, "assigneeName") || assigneeUserId;
   const memberUserIds = [
     ...new Set([creatorUserId, assigneeUserId, ...stringArray(payload, "memberUserIds")].filter(Boolean)),
   ];
@@ -2554,6 +2610,7 @@ async function ensureTaskmanagerTaskThread(payload) {
       taskmanagerTaskId,
       taskNumber,
       title,
+      assigneeName,
       status: thread.status,
       description,
       dueDate,
@@ -2856,6 +2913,7 @@ async function forwardTaskmanagerInbound(
   taskManagerTextOverride = "",
   clientPlatform = "",
   taskManagerMentioned = false,
+  structuredMentions = {},
 ) {
   const webhookUrl = process.env.TASK_MANAGER_ORBITA_WEBHOOK_URL;
   const secret = process.env.TASK_MANAGER_ORBITA_SECRET;
@@ -2946,6 +3004,8 @@ async function forwardTaskmanagerInbound(
       kind: message.kind,
       text: taskThreadText || undefined,
       taskManagerMentioned: true,
+      mentionedTaskmanagerUserIds: stringArray(structuredMentions, "userIds"),
+      mentionedDepartmentIds: stringArray(structuredMentions, "departmentIds"),
       ...replyFields,
       attachment: attachments[0] ?? null,
       attachments,
@@ -3075,6 +3135,8 @@ async function forwardTaskmanagerInbound(
     messageId: message.id,
     kind: message.kind,
     text: taskManagerTextOverride || message.body || undefined,
+    mentionedTaskmanagerUserIds: stringArray(structuredMentions, "userIds"),
+    mentionedDepartmentIds: stringArray(structuredMentions, "departmentIds"),
     ...replyFields,
     attachment: attachments[0] ?? null,
     attachments,
@@ -3571,8 +3633,11 @@ async function handleAction(user, action, payload, req) {
 
   if (action === "add_task_thread_members") {
     const conversationId = requiredString(payload, "conversationId");
-    const memberIds = [...new Set(stringArray(payload, "memberIds").filter((id) => id !== user.id))];
-    if (!memberIds.length) throw new Error("Choose at least one member.");
+    const requestedTaskmanagerUserIds = [...new Set(stringArray(payload, "taskmanagerUserIds"))].slice(0, 100);
+    const legacyOrbitaUserIds = [...new Set(stringArray(payload, "memberIds").filter((id) => id !== user.id))].slice(0, 100);
+    if (!requestedTaskmanagerUserIds.length && !legacyOrbitaUserIds.length) {
+      throw new Error("Choose at least one member.");
+    }
     await getConversation(user.id, conversationId);
 
     const { data: thread, error: threadError } = await supabase
@@ -3583,22 +3648,65 @@ async function handleAction(user, action, payload, req) {
     if (threadError) throw threadError;
     if (!thread) throw new Error("Task thread not found.");
 
+    const { data: links, error: linkError } = await supabase
+      .from("taskmanager_agent_links")
+      .select("taskmanager_user_id, orbita_user_id")
+      .eq("taskmanager_org_id", thread.taskmanager_org_id)
+      .eq("enabled", true);
+    if (linkError) throw linkError;
+    const linkByOrbitaUserId = new Map((links ?? []).map((link) => [link.orbita_user_id, link]));
+    const requesterLink = linkByOrbitaUserId.get(user.id);
+    if (!requesterLink?.taskmanager_user_id) {
+      throw new Error("Your Orbita account is not linked to this Task Manager organization.");
+    }
+    const legacyTaskmanagerUserIds = legacyOrbitaUserIds
+      .map((orbitaUserId) => linkByOrbitaUserId.get(orbitaUserId)?.taskmanager_user_id)
+      .filter(Boolean);
+    const taskmanagerUserIds = [
+      ...new Set([...requestedTaskmanagerUserIds, ...legacyTaskmanagerUserIds]),
+    ];
+    if (!taskmanagerUserIds.length) throw new Error("None of the selected employees belong to this organization.");
+
+    const secret = process.env.TASK_MANAGER_ORBITA_SECRET;
+    let useLegacyFallback = !TASK_MANAGER_ORBITA_TASK_THREAD_MEMBERS_URL || !secret;
+    if (!useLegacyFallback) {
+      const raw = JSON.stringify({
+        taskmanagerOrgId: thread.taskmanager_org_id,
+        taskmanagerUserId: requesterLink.taskmanager_user_id,
+        orbitaUserId: user.id,
+        taskId: thread.taskmanager_task_id,
+        memberUserIds: taskmanagerUserIds,
+      });
+      const response = await postTaskmanagerWebhook(TASK_MANAGER_ORBITA_TASK_THREAD_MEMBERS_URL, raw, secret);
+      const responseText = await response.text().catch(() => "");
+      const responseJson = responseText ? safeJsonParse(responseText) : null;
+      const endpointUnavailable = response.status === 404 || response.status === 405;
+      if ((!response.ok || responseJson?.error) && (!endpointUnavailable || !legacyOrbitaUserIds.length)) {
+        throw new Error(responseJson?.error || responseText || `Task Manager member update failed: ${response.status}`);
+      }
+      if (!endpointUnavailable) {
+        const updated = (await loadConversations(user.id)).find((item) => item.id === conversationId);
+        if (!updated) throw new Error("Unable to load updated task thread.");
+        return { conversation: updated };
+      }
+      useLegacyFallback = true;
+    }
+
+    // Backward-compatible fallback for deployments where the new Task Manager
+    // endpoint is not available yet. Only already-linked Orbita users can be
+    // materialized without Task Manager user validation.
+    const memberIds = useLegacyFallback ? legacyOrbitaUserIds : [];
+    if (!memberIds.length) {
+      throw new Error("Task Manager member updates are not configured on this backend yet.");
+    }
     await ensureConversationParticipants(
       conversationId,
       memberIds.map((memberId) => ({ user_id: memberId, role: "member" })),
     );
 
-    const { data: links, error: linkError } = await supabase
-      .from("taskmanager_agent_links")
-      .select("taskmanager_user_id, orbita_user_id")
-      .eq("taskmanager_org_id", thread.taskmanager_org_id)
-      .eq("enabled", true)
-      .in("orbita_user_id", memberIds);
-    if (linkError) throw linkError;
-
     const now = new Date().toISOString();
     const linkedRows = (links ?? [])
-      .filter((link) => link.taskmanager_user_id && link.orbita_user_id)
+      .filter((link) => link.taskmanager_user_id && link.orbita_user_id && memberIds.includes(link.orbita_user_id))
       .map((link) => ({
         taskmanager_org_id: thread.taskmanager_org_id,
         taskmanager_task_id: thread.taskmanager_task_id,
@@ -3631,6 +3739,8 @@ async function handleAction(user, action, payload, req) {
     const conversationId = requiredString(payload, "conversationId");
     const title = requiredString(payload, "title").slice(0, 500);
     const clientPlatform = normalizeClientPlatform(optionalString(payload, "clientPlatform"));
+    const mentionedTaskmanagerUserIds = [...new Set(stringArray(payload, "mentionedTaskmanagerUserIds"))].slice(0, 20);
+    const mentionedDepartmentIds = [...new Set(stringArray(payload, "mentionedDepartmentIds"))].slice(0, 20);
     const secret = process.env.TASK_MANAGER_ORBITA_SECRET;
     if (!TASK_MANAGER_ORBITA_TASK_SHELL_URL || !secret) {
       throw new Error("Task Manager task creation is not configured.");
@@ -3653,6 +3763,8 @@ async function handleAction(user, action, payload, req) {
       sourceAgentProfileId: link.agent_profile_id,
       sourceAgentConversationId: link.conversation_id,
       sourceAgentDisplayName: sourceAgentProfile?.display_name ?? "",
+      mentionedTaskmanagerUserIds,
+      mentionedDepartmentIds,
     });
     const response = await postTaskmanagerWebhook(TASK_MANAGER_ORBITA_TASK_SHELL_URL, raw, secret);
     const responseText = await response.text().catch(() => "");
@@ -3673,6 +3785,7 @@ async function handleAction(user, action, payload, req) {
 
     const taskNumber = typeof task?.display_number === "string" ? task.display_number : thread.task_number;
     const displayBody = `Task title: ${title}`;
+    const shouldRequestAssignee = !mentionedTaskmanagerUserIds.length && !mentionedDepartmentIds.length;
     const taskManagerPrompt =
       `@orbita Task ${taskNumber || ""} was just created from the main agent chat with title "${title}". ` +
       "Do not create another task or subtask. Use this current task thread and ask one question only: who should this task be assigned to? " +
@@ -3695,22 +3808,24 @@ async function handleAction(user, action, payload, req) {
       pushSource: "create_taskmanager_task_shell",
     });
     const mappedMessage = await mapMessageWithAttachments(message);
-    const taskManagerForward = await forwardTaskmanagerInbound(
-      thread.conversation_id,
-      user.id,
-      mappedMessage,
-      [],
-      taskManagerPrompt,
-      clientPlatform,
-      true,
-    ).catch((error) => {
-      console.error("[create-task-shell] follow-up forward failed", {
-        conversationId: thread.conversation_id,
-        taskmanagerTaskId: taskId,
-        error: errorMessage(error),
-      });
-      return { forwarded: false, reason: errorMessage(error) };
-    });
+    const taskManagerForward = shouldRequestAssignee
+      ? await forwardTaskmanagerInbound(
+          thread.conversation_id,
+          user.id,
+          mappedMessage,
+          [],
+          taskManagerPrompt,
+          clientPlatform,
+          true,
+        ).catch((error) => {
+          console.error("[create-task-shell] follow-up forward failed", {
+            conversationId: thread.conversation_id,
+            taskmanagerTaskId: taskId,
+            error: errorMessage(error),
+          });
+          return { forwarded: false, reason: errorMessage(error) };
+        })
+      : { forwarded: true, assigneeResolvedFromMention: true };
 
     const conversation = (await loadConversations(user.id)).find((item) => item.id === thread.conversation_id);
     if (!conversation) throw new Error("Unable to load created task thread.");
@@ -3728,27 +3843,30 @@ async function handleAction(user, action, payload, req) {
     await getConversation(user.id, conversationId);
     const taskThreadContext = await loadTaskThreadForwardingContext(conversationId, user.id);
     let taskmanagerOrgId = taskThreadContext && !taskThreadContext.skip ? taskThreadContext.taskmanagerOrgId : "";
+    let requesterTaskmanagerUserId = taskThreadContext && !taskThreadContext.skip ? taskThreadContext.taskmanagerUserId : "";
     if (!taskmanagerOrgId) {
       const { data: directLink, error: directLinkError } = await supabase
         .from("taskmanager_agent_links")
-        .select("taskmanager_org_id")
+        .select("taskmanager_org_id, taskmanager_user_id")
         .eq("conversation_id", conversationId)
         .eq("orbita_user_id", user.id)
         .eq("enabled", true)
         .maybeSingle();
       if (directLinkError) throw directLinkError;
       taskmanagerOrgId = directLink?.taskmanager_org_id ?? "";
+      requesterTaskmanagerUserId = directLink?.taskmanager_user_id ?? "";
     }
     if (!taskmanagerOrgId) {
       const { data: userLink, error: userLinkError } = await supabase
         .from("taskmanager_agent_links")
-        .select("taskmanager_org_id")
+        .select("taskmanager_org_id, taskmanager_user_id")
         .eq("orbita_user_id", user.id)
         .eq("enabled", true)
         .limit(1)
         .maybeSingle();
       if (userLinkError) throw userLinkError;
       taskmanagerOrgId = userLink?.taskmanager_org_id ?? "";
+      requesterTaskmanagerUserId = userLink?.taskmanager_user_id ?? "";
     }
     if (!taskmanagerOrgId) {
       throw new Error("This account is not linked to a Task Manager organization.");
@@ -3756,25 +3874,71 @@ async function handleAction(user, action, payload, req) {
 
     const { data: links, error: linkError } = await supabase
       .from("taskmanager_agent_links")
-      .select("orbita_user_id")
+      .select("taskmanager_user_id, orbita_user_id")
       .eq("taskmanager_org_id", taskmanagerOrgId)
       .eq("enabled", true);
     if (linkError) throw linkError;
 
     const profileIds = [...new Set((links ?? []).map((link) => link.orbita_user_id).filter(Boolean))];
-    if (!profileIds.length) return { members: [] };
-
-    const { data: profiles, error: profileError } = await supabase
-      .from("profiles")
-      .select("*")
-      .in("id", profileIds);
+    const { data: profiles, error: profileError } = profileIds.length
+      ? await supabase.from("profiles").select("*").in("id", profileIds)
+      : { data: [], error: null };
     if (profileError) throw profileError;
 
     const contactNicknames = await loadContactNicknames(user.id);
+    const mappedProfiles = (profiles ?? [])
+      .map((profile) => mapProfile({ ...profile, nickname: contactNicknames.get(profile.id) }, user.id))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+    const profileById = new Map(mappedProfiles.map((profile) => [profile.id, profile]));
+    const catalog = requesterTaskmanagerUserId
+      ? await loadTaskmanagerMentionCatalog({
+          taskmanagerOrgId,
+          taskmanagerUserId: requesterTaskmanagerUserId,
+          orbitaUserId: user.id,
+        }).catch((error) => {
+          console.warn("[taskmanager-mentions] catalog unavailable; using linked-user fallback", {
+            conversationId,
+            taskmanagerOrgId,
+            error: errorMessage(error),
+          });
+          return null;
+        })
+      : null;
+    const fallbackTaskmanagerIdByOrbitaId = new Map(
+      (links ?? []).filter((link) => link.orbita_user_id && link.taskmanager_user_id)
+        .map((link) => [link.orbita_user_id, link.taskmanager_user_id]),
+    );
+    const mentionUsers = catalog
+      ? catalog.users.map((catalogUser) => {
+          const orbitaUserId = typeof catalogUser.orbitaUserId === "string" ? catalogUser.orbitaUserId : "";
+          const profile = orbitaUserId ? profileById.get(orbitaUserId) : null;
+          return {
+            taskmanagerUserId: String(catalogUser.taskmanagerUserId ?? ""),
+            orbitaUserId: orbitaUserId || null,
+            displayName: String(catalogUser.name ?? profile?.displayName ?? "Employee"),
+            avatarUrl: profile?.avatarUrl ?? null,
+            phone: profile?.phone ?? null,
+            departmentIds: Array.isArray(catalogUser.departmentIds) ? catalogUser.departmentIds.filter((id) => typeof id === "string") : [],
+          };
+        }).filter((catalogUser) => catalogUser.taskmanagerUserId)
+      : mappedProfiles.map((profile) => ({
+          taskmanagerUserId: fallbackTaskmanagerIdByOrbitaId.get(profile.id) ?? "",
+          orbitaUserId: profile.id,
+          displayName: profile.displayName,
+          avatarUrl: profile.avatarUrl,
+          phone: profile.phone,
+          departmentIds: [],
+        })).filter((catalogUser) => catalogUser.taskmanagerUserId);
     return {
-      members: (profiles ?? [])
-        .map((profile) => mapProfile({ ...profile, nickname: contactNicknames.get(profile.id) }, user.id))
-        .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+      members: mappedProfiles,
+      users: mentionUsers.sort((a, b) => a.displayName.localeCompare(b.displayName)),
+      departments: (catalog?.departments ?? []).map((department) => ({
+        departmentId: String(department.departmentId ?? ""),
+        name: String(department.name ?? "Department"),
+        memberUserIds: Array.isArray(department.memberUserIds)
+          ? department.memberUserIds.filter((id) => typeof id === "string")
+          : [],
+      })).filter((department) => department.departmentId),
     };
   }
 
@@ -3999,6 +4163,8 @@ async function handleAction(user, action, payload, req) {
     const clientMessageId = optionalString(payload, "clientMessageId").slice(0, 128);
     const taskManagerText = optionalString(payload, "taskManagerText").slice(0, 5000);
     const taskManagerMentioned = payload.taskManagerMentioned === true;
+    const mentionedTaskmanagerUserIds = [...new Set(stringArray(payload, "mentionedTaskmanagerUserIds"))].slice(0, 20);
+    const mentionedDepartmentIds = [...new Set(stringArray(payload, "mentionedDepartmentIds"))].slice(0, 20);
     const clientPlatform = normalizeClientPlatform(optionalString(payload, "clientPlatform"));
     const attachmentId = optionalString(payload, "attachmentId");
     const replyToMessageId = optionalString(payload, "replyToMessageId");
@@ -4075,6 +4241,7 @@ async function handleAction(user, action, payload, req) {
         taskManagerText,
         clientPlatform,
         taskManagerMentioned,
+        { userIds: mentionedTaskmanagerUserIds, departmentIds: mentionedDepartmentIds },
       ).catch((error) => {
         const reason = errorMessage(error);
         console.error(reason, error);

@@ -35,6 +35,8 @@ export type QueuedOutgoingMessage = {
   senderId: string;
   status: "queued" | "sending" | "failed";
   taskManagerText?: string;
+  mentionedTaskmanagerUserIds?: string[];
+  mentionedDepartmentIds?: string[];
   userId: string;
 };
 

@@ -68,6 +68,8 @@ import {
   BackendProfile,
   BackendReplyPreview,
   BackendStatus,
+  BackendTaskmanagerMentionDepartment,
+  BackendTaskmanagerMentionUser,
 } from "@/features/chats/backendTypes";
 import {
   attachmentFromMessage,
@@ -321,7 +323,11 @@ const ACCENT_THEMES: Array<{
 type QuickPrompt = { id: string; label: string; prompt: string; action?: "create_task_shell" };
 type MentionCandidate =
   | { id: "orbita"; kind: "orbita"; displayName: string; handle: string; subtitle: string }
-  | { id: string; kind: "member"; displayName: string; handle: string; subtitle: string; profile: BackendProfile };
+  | { id: string; kind: "user"; displayName: string; handle: string; subtitle: string; user: BackendTaskmanagerMentionUser }
+  | { id: string; kind: "department"; displayName: string; handle: string; subtitle: string; department: BackendTaskmanagerMentionDepartment };
+
+type StructuredTaskMentions = { userIds: string[]; departmentIds: string[] };
+type SelectedMention = { id: string; handle: string };
 
 const AGENT_QUICK_PROMPTS: QuickPrompt[] = [
   {
@@ -968,7 +974,8 @@ function conversationFallbackPreview(conversation: BackendConversation) {
     (participant) => participant.about?.trim().toLowerCase() !== "task manager agent",
   ).length;
   if (conversation.taskThread) {
-    return `${humanMemberCount} task member${humanMemberCount === 1 ? "" : "s"}`;
+    const taskMemberCount = conversation.taskThread.memberUserIds?.length ?? humanMemberCount;
+    return `${taskMemberCount} task member${taskMemberCount === 1 ? "" : "s"}`;
   }
   if (conversation.kind === "direct") return "1:1 conversation";
   return `${humanMemberCount} member${humanMemberCount === 1 ? "" : "s"}`;
@@ -979,7 +986,8 @@ function conversationSubtitle(conversation: BackendConversation) {
     (participant) => participant.about?.trim().toLowerCase() !== "task manager agent",
   ).length;
   if (conversation.taskThread) {
-    return `${humanMemberCount} task member${humanMemberCount === 1 ? "" : "s"}`;
+    const taskMemberCount = conversation.taskThread.memberUserIds?.length ?? humanMemberCount;
+    return `${taskMemberCount} task member${taskMemberCount === 1 ? "" : "s"}`;
   }
   if (conversation.kind === "group") {
     return `${humanMemberCount} member${humanMemberCount === 1 ? "" : "s"}`;
@@ -1249,14 +1257,6 @@ function insertMentionToken(text: string, handle: string) {
   return `${text}${text && !/\s$/.test(text) ? " " : ""}@${cleanHandle} `;
 }
 
-function mentionHandleForProfile(profile: BackendProfile) {
-  const namePart = profile.displayName.trim().split(/\s+/)[0] ?? "";
-  const normalizedName = namePart.replace(/[^a-z0-9_]/gi, "");
-  if (normalizedName) return normalizedName;
-  const phoneDigits = (profile.phone ?? "").replace(/\D/g, "");
-  return phoneDigits ? `user${phoneDigits.slice(-4)}` : "member";
-}
-
 function shouldShowSenderIdentity(conversation: BackendConversation) {
   return conversation.kind === "group" || isTaskConversation(conversation);
 }
@@ -1368,6 +1368,11 @@ function upsertMessage(messages: ChatMessage[], incoming: BackendMessage): ChatM
   ];
 
   return next.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+}
+
+function mentionHandleForLabel(label: string, fallback: string) {
+  const normalized = label.trim().replace(/\s+/g, "_").replace(/[^a-z0-9_]/gi, "");
+  return normalized || fallback;
 }
 
 function isNetworkSendError(error: unknown) {
@@ -1812,10 +1817,12 @@ function MessageBody({ mine, text }: { mine: boolean; text: string }) {
 
 function TaskThreadInviteCard({
   invite,
+  opening,
   onOpen,
 }: {
   invite: TaskThreadInvite;
-  onOpen: (conversationId: string) => void;
+  opening: boolean;
+  onOpen: (conversationId: string) => void | Promise<void>;
 }) {
   const { isDarkTheme, themeColors } = useAppTheme();
   return (
@@ -1838,17 +1845,24 @@ function TaskThreadInviteCard({
       </View>
       <Pressable
         accessibilityRole="button"
-        onPress={() => onOpen(invite.conversationId)}
+        accessibilityState={{ busy: opening, disabled: opening }}
+        disabled={opening}
+        onPress={() => void onOpen(invite.conversationId)}
         style={({ pressed }) => [
           styles.taskInviteButton,
           { backgroundColor: themeColors.primaryDark },
           isDarkTheme && { backgroundColor: themeColors.accent },
+          opening && styles.taskInviteButtonBusy,
           pressed && styles.pressablePressed,
         ]}
       >
-        <Ionicons color={isDarkTheme ? "#0B141A" : "#FFFFFF"} name="open-outline" size={16} />
+        {opening ? (
+          <ActivityIndicator color={isDarkTheme ? "#0B141A" : "#FFFFFF"} size="small" />
+        ) : (
+          <Ionicons color={isDarkTheme ? "#0B141A" : "#FFFFFF"} name="open-outline" size={16} />
+        )}
         <Text style={[styles.taskInviteButtonText, isDarkTheme && styles.taskInviteButtonTextDark]}>
-          {invite.isSubtask ? "Open subtask group" : "Open task group"}
+          {opening ? "Opening group..." : invite.isSubtask ? "Open subtask group" : "Open task group"}
         </Text>
       </Pressable>
     </View>
@@ -2708,6 +2722,8 @@ function MessengerShell({ session }: { session: Session }) {
   const [contacts, setContacts] = useState<BackendProfile[]>([]);
   const [conversations, setConversations] = useState<BackendConversation[]>([]);
   const [orgMembersByConversationId, setOrgMembersByConversationId] = useState<Record<string, BackendProfile[]>>({});
+  const [orgMentionUsersByConversationId, setOrgMentionUsersByConversationId] = useState<Record<string, BackendTaskmanagerMentionUser[]>>({});
+  const [orgMentionDepartmentsByConversationId, setOrgMentionDepartmentsByConversationId] = useState<Record<string, BackendTaskmanagerMentionDepartment[]>>({});
   const [orgMembersLoadingByConversationId, setOrgMembersLoadingByConversationId] = useState<Record<string, boolean>>({});
   const [statuses, setStatuses] = useState<BackendStatus[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -2716,6 +2732,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [draft, setDraft] = useState("");
   const [pendingCreateTaskTitleFor, setPendingCreateTaskTitleFor] = useState("");
   const [creatingTaskFor, setCreatingTaskFor] = useState("");
+  const [openingTaskThreadId, setOpeningTaskThreadId] = useState("");
   const [composerAttachment, setComposerAttachment] = useState<ComposerAttachment | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMessagesFor, setLoadingMessagesFor] = useState("");
@@ -3727,6 +3744,8 @@ function MessengerShell({ session }: { session: Session }) {
             replyToMessageId: queued.replyToMessageId ?? null,
             replyTo: queued.replyTo ?? null,
             ...(queued.taskManagerText && queued.taskManagerText !== queued.body ? { taskManagerText: queued.taskManagerText } : {}),
+            mentionedTaskmanagerUserIds: queued.mentionedTaskmanagerUserIds ?? [],
+            mentionedDepartmentIds: queued.mentionedDepartmentIds ?? [],
           });
           const queuedLocalMessage = messagesByConversationRef.current[queued.conversationId]?.find((message) => message.id === queued.localId);
           const mergedMessage = mergeAttachmentWaveforms(result.message, queuedLocalMessage);
@@ -3856,22 +3875,30 @@ function MessengerShell({ session }: { session: Session }) {
     scheduleMessageRefresh(conversationId);
   }, [scheduleBootstrapRefresh, scheduleMessageRefresh, selectConversation]);
 
-  const openTaskThreadConversation = useCallback((conversationId: string) => {
+  const openTaskThreadConversation = useCallback(async (conversationId: string) => {
     if (!conversationId) return;
     const exists = conversationsRef.current.some((conversation) => conversation.id === conversationId);
     if (exists) {
       selectConversation(conversationId);
       return;
     }
-    selectedIdRef.current = conversationId;
-    activeTabRef.current = "tasks";
-    setActiveTab("tasks");
-    setSelectedId(conversationId);
-    setSelectedMessages([]);
-    setLoadingMessagesFor(conversationId);
-    scheduleBootstrapRefresh();
-    scheduleMessageRefresh(conversationId);
-  }, [scheduleBootstrapRefresh, scheduleMessageRefresh, selectConversation]);
+
+    setOpeningTaskThreadId(conversationId);
+    try {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await loadBootstrap();
+        if (conversationsRef.current.some((conversation) => conversation.id === conversationId)) {
+          selectConversation(conversationId);
+          scheduleMessageRefresh(conversationId);
+          return;
+        }
+        if (attempt < 4) await delay(400 * (attempt + 1));
+      }
+      setError("This task group is still being prepared. Please try opening it again shortly.");
+    } finally {
+      setOpeningTaskThreadId((current) => (current === conversationId ? "" : current));
+    }
+  }, [loadBootstrap, scheduleMessageRefresh, selectConversation]);
 
   useEffect(() => {
     if (!profileId || Platform.OS === "web") return undefined;
@@ -3991,6 +4018,21 @@ function MessengerShell({ session }: { session: Session }) {
           ...current,
           [conversationId]: result.members,
         }));
+        setOrgMentionUsersByConversationId((current) => ({
+          ...current,
+          [conversationId]: result.users ?? result.members.map((member) => ({
+            taskmanagerUserId: `legacy:${member.id}`,
+            orbitaUserId: member.id,
+            displayName: member.displayName,
+            phone: member.phone,
+            avatarUrl: member.avatarUrl,
+            departmentIds: [],
+          })),
+        }));
+        setOrgMentionDepartmentsByConversationId((current) => ({
+          ...current,
+          [conversationId]: result.departments ?? [],
+        }));
       })
       .catch((nextError) => {
         if (!cancelled && selected.taskThread) {
@@ -4047,13 +4089,6 @@ function MessengerShell({ session }: { session: Session }) {
       })),
     [contactsWithDefaultAgent, existingConversationByContactId],
   );
-  const taskMemberCandidates = useMemo<BackendProfile[]>(() => {
-    if (!selected?.taskThread) return [];
-    return (orgMembersByConversationId[selected.id] ?? selected.participants)
-      .filter((profile) => profile.id !== profileId)
-      .filter((profile) => profile.about?.trim().toLowerCase() !== "task manager agent")
-      .sort((a, b) => a.displayName.localeCompare(b.displayName));
-  }, [orgMembersByConversationId, profileId, selected]);
   const subtaskAssigneeCandidates = useMemo<BackendProfile[]>(() => {
     const byId = new Map<string, BackendProfile>();
     const addCandidate = (candidate: BackendProfile | null | undefined) => {
@@ -4309,13 +4344,17 @@ function MessengerShell({ session }: { session: Session }) {
     });
   }
 
-  async function createTaskShellFromAgentChat(conversationId: string, title: string) {
+  async function createTaskShellFromAgentChat(
+    conversationId: string,
+    title: string,
+    mentions: StructuredTaskMentions = { userIds: [], departmentIds: [] },
+  ) {
     if (!conversationId || creatingTaskFor === conversationId) return;
     setCreatingTaskFor(conversationId);
     setError("");
     setAgentThinkingFor((current) => ({ ...current, [conversationId]: new Date().toISOString() }));
     try {
-      const result = await messengerApi.createTaskmanagerTaskShell(conversationId, title);
+      const result = await messengerApi.createTaskmanagerTaskShell(conversationId, title, mentions);
       const nextMessage = result.message;
       const nextConversation = nextMessage
         ? { ...result.conversation, lastMessage: nextMessage, updatedAt: nextMessage.createdAt, unreadCount: 0 }
@@ -4368,6 +4407,7 @@ function MessengerShell({ session }: { session: Session }) {
     body = draft.trim(),
     attachment = composerAttachment,
     modelBodyOverride?: string,
+    structuredMentions: StructuredTaskMentions = { userIds: [], departmentIds: [] },
   ) {
     const text = body.trim();
     const baseModelText = (modelBodyOverride ?? body).trim();
@@ -4378,7 +4418,8 @@ function MessengerShell({ session }: { session: Session }) {
         setError("Send the task title as text first.");
         return;
       }
-      if (!text) {
+      const taskTitle = text.replace(/(^|\s)@[a-z0-9_]+\b/gi, " ").replace(/\s+/g, " ").trim();
+      if (!taskTitle) {
         setError("Enter a task title first.");
         return;
       }
@@ -4401,7 +4442,7 @@ function MessengerShell({ session }: { session: Session }) {
       setError("");
       setPendingCreateTaskTitleFor("");
       appendLocalMessage(titleMessage);
-      await createTaskShellFromAgentChat(selected.id, text);
+      await createTaskShellFromAgentChat(selected.id, taskTitle, structuredMentions);
       return;
     }
     const replyTarget = replyingToMessage?.conversationId === selected.id ? replyingToMessage : null;
@@ -4551,6 +4592,8 @@ function MessengerShell({ session }: { session: Session }) {
         replyToMessageId: replyTo?.messageId ?? null,
         replyTo,
         taskManagerMentioned,
+        mentionedTaskmanagerUserIds: structuredMentions.userIds,
+        mentionedDepartmentIds: structuredMentions.departmentIds,
         ...((modelText && modelText !== text) || taskManagerMentioned ? { taskManagerText: modelText || text } : {}),
       });
       if (attachment) {
@@ -4655,6 +4698,8 @@ function MessengerShell({ session }: { session: Session }) {
           senderId: profile.id,
           status: "queued",
           taskManagerText: (modelText && modelText !== text) || taskManagerMentioned ? modelText || text : undefined,
+          mentionedTaskmanagerUserIds: structuredMentions.userIds,
+          mentionedDepartmentIds: structuredMentions.departmentIds,
           userId: profile.id,
         });
         const queuedMessage = {
@@ -4895,9 +4940,12 @@ function MessengerShell({ session }: { session: Session }) {
                 isWide={isWide}
                 loadingOlder={loadingOlderFor === selected.id}
                 mentionMembers={orgMembersByConversationId[selected.id] ?? []}
+                mentionUsers={orgMentionUsersByConversationId[selected.id] ?? []}
+                mentionDepartments={orgMentionDepartmentsByConversationId[selected.id] ?? []}
                 mentionMembersLoading={Boolean(orgMembersLoadingByConversationId[selected.id])}
                 messages={selectedMessages.filter((message) => message.conversationId === selected.id)}
                 messagesLoading={loadingMessagesFor === selected.id}
+                openingTaskThreadId={openingTaskThreadId}
                 onAddMembers={() => setMembersOpen(true)}
                 onCreateSubtask={() => setSubtaskParentConversation(selected)}
                 onMessageActions={setMessageActionTarget}
@@ -4913,8 +4961,8 @@ function MessengerShell({ session }: { session: Session }) {
                 onCreateTaskShell={() => startCreateTaskTitlePrompt(selected.id)}
                 onRemoveAttachment={() => setComposerAttachment(null)}
                 onRemoveReply={() => setReplyingToMessage(null)}
-                onSend={(nextKind, nextBody, nextAttachment, modelBodyOverride) =>
-                  sendMessage(nextKind, nextBody, nextAttachment, modelBodyOverride)}
+                onSend={(nextKind, nextBody, nextAttachment, modelBodyOverride, structuredMentions) =>
+                  sendMessage(nextKind, nextBody, nextAttachment, modelBodyOverride, structuredMentions)}
                 onStageVoiceAttachment={setComposerAttachment}
                 onSaveContact={() => {
                   if (selectedUnsavedPeer) setSaveContactPeer(selectedUnsavedPeer);
@@ -4991,24 +5039,37 @@ function MessengerShell({ session }: { session: Session }) {
         }}
         visible={groupOpen}
       />
-      <AddMembersModal
-        contacts={selected?.taskThread ? taskMemberCandidates : contacts}
-        conversation={selected}
-        onClose={() => setMembersOpen(false)}
-        onSave={async (memberIds) => {
-          if (!selected) return;
-          await run(async () => {
-            if (selected.taskThread) {
-              await messengerApi.addTaskThreadMembers(selected.id, memberIds);
-            } else {
+      {selected?.taskThread ? (
+        <TaskThreadMembersModal
+          conversation={selected}
+          loading={Boolean(orgMembersLoadingByConversationId[selected.id])}
+          onClose={() => setMembersOpen(false)}
+          onSave={async (taskmanagerUserIds) => {
+            await run(async () => {
+              await messengerApi.addTaskThreadMembers(selected.id, taskmanagerUserIds);
+              setMembersOpen(false);
+              await loadBootstrap();
+            });
+          }}
+          users={orgMentionUsersByConversationId[selected.id] ?? []}
+          visible={membersOpen}
+        />
+      ) : (
+        <AddMembersModal
+          contacts={contacts}
+          conversation={selected}
+          onClose={() => setMembersOpen(false)}
+          onSave={async (memberIds) => {
+            if (!selected) return;
+            await run(async () => {
               await messengerApi.addGroupMembers(selected.id, memberIds);
-            }
-            setMembersOpen(false);
-            await loadBootstrap();
-          });
-        }}
-        visible={membersOpen}
-      />
+              setMembersOpen(false);
+              await loadBootstrap();
+            });
+          }}
+          visible={membersOpen}
+        />
+      )}
       <VideoPlayerModal
         onClose={() => setVideoPlaybackTarget(null)}
         video={videoPlaybackTarget}
@@ -7421,6 +7482,7 @@ function ChatPane({
   currentUserId,
   messages,
   messagesLoading,
+  openingTaskThreadId,
   onMessageActions,
   onReplyToMessage,
   onCreateSubtask,
@@ -7443,6 +7505,8 @@ function ChatPane({
   isWide,
   loadingOlder,
   mentionMembers,
+  mentionUsers,
+  mentionDepartments,
   mentionMembersLoading,
   onLoadOlder,
   replyingToMessage,
@@ -7459,6 +7523,7 @@ function ChatPane({
   currentUserId: string;
   messages: ChatMessage[];
   messagesLoading: boolean;
+  openingTaskThreadId: string;
   onMessageActions: (target: NonNullable<MessageActionTarget>) => void;
   onReplyToMessage: (message: ChatMessage) => void;
   onCreateSubtask: () => void;
@@ -7478,6 +7543,7 @@ function ChatPane({
     body?: string,
     attachment?: ComposerAttachment | null,
     modelBodyOverride?: string,
+    structuredMentions?: StructuredTaskMentions,
   ) => Promise<void> | void;
   onStageVoiceAttachment: (attachment: ComposerAttachment) => void;
   onBack: () => void;
@@ -7486,6 +7552,8 @@ function ChatPane({
   isWide: boolean;
   loadingOlder: boolean;
   mentionMembers: BackendProfile[];
+  mentionUsers: BackendTaskmanagerMentionUser[];
+  mentionDepartments: BackendTaskmanagerMentionDepartment[];
   mentionMembersLoading: boolean;
   onLoadOlder: () => void;
   replyingToMessage: ChatMessage | null;
@@ -7525,6 +7593,8 @@ function ChatPane({
   const [subtaskPanelOpen, setSubtaskPanelOpen] = useState(false);
   const [membersPanelOpen, setMembersPanelOpen] = useState(false);
   const [subtaskPromptFollowupActive, setSubtaskPromptFollowupActive] = useState(false);
+  const [selectedMentionUsers, setSelectedMentionUsers] = useState<SelectedMention[]>([]);
+  const [selectedMentionDepartments, setSelectedMentionDepartments] = useState<SelectedMention[]>([]);
   const [composerInputHeight, setComposerInputHeight] = useState(COMPOSER_INPUT_MIN_HEIGHT);
   const [simformRecorderStartPending, setSimformRecorderStartPending] = useState(false);
   const [simformElapsedMs, setSimformElapsedMs] = useState(0);
@@ -7547,33 +7617,65 @@ function ChatPane({
   const mentionCandidates = useMemo<MentionCandidate[]>(() => {
     if (mentionQuery === null) return [];
     const normalizedQuery = mentionQuery.trim().toLowerCase();
+    const usedHandles = new Set<string>();
+    const uniqueHandle = (label: string, fallback: string, suffix: string) => {
+      const base = mentionHandleForLabel(label, fallback);
+      const normalizedBase = base.toLowerCase();
+      if (!usedHandles.has(normalizedBase)) {
+        usedHandles.add(normalizedBase);
+        return base;
+      }
+      const next = `${base}_${suffix}`;
+      usedHandles.add(next.toLowerCase());
+      return next;
+    };
     const candidates: MentionCandidate[] = [];
-    if (isTaskThreadConversation) {
+    const orbitaMatches = !normalizedQuery || searchableText(["Orbita", "task agent"]).includes(normalizedQuery);
+    if (isAgentConversation && orbitaMatches) {
       candidates.push({
         id: "orbita",
         kind: "orbita",
         displayName: "Orbita",
-        handle: "orbita",
+        handle: uniqueHandle("orbita", "orbita", "agent"),
         subtitle: "Ask the task agent",
       });
     }
-    for (const member of mentionMembers) {
-      if (member.id === currentUserId) continue;
-      if (member.about?.trim().toLowerCase() === "task manager agent") continue;
-      const handle = mentionHandleForProfile(member);
-      const haystack = searchableText([member.displayName, member.phone, handle]);
+
+    const departmentNameById = new Map(mentionDepartments.map((department) => [department.departmentId, department.name]));
+    let visibleUserCount = 0;
+    for (const user of mentionUsers) {
+      const haystack = searchableText([user.displayName, user.phone, ...user.departmentIds.map((id) => departmentNameById.get(id) ?? "")]);
+      if (normalizedQuery && !haystack.includes(normalizedQuery)) continue;
+      const departmentNames = user.departmentIds.map((id) => departmentNameById.get(id)).filter(Boolean);
+      candidates.push({
+        id: user.taskmanagerUserId,
+        kind: "user",
+        displayName: user.displayName,
+        handle: uniqueHandle(user.displayName, "employee", user.taskmanagerUserId.slice(-4)),
+        subtitle: user.orbitaUserId === currentUserId
+          ? "You"
+          : departmentNames.join(", ") || user.phone || "Organization member",
+        user,
+      });
+      visibleUserCount += 1;
+      if (visibleUserCount >= 6) break;
+    }
+    for (const department of mentionDepartments) {
+      const handle = mentionHandleForLabel(department.name, "department");
+      const haystack = searchableText([department.name, handle, "department"]);
       if (normalizedQuery && !haystack.includes(normalizedQuery)) continue;
       candidates.push({
-        id: member.id,
-        kind: "member",
-        displayName: member.displayName,
-        handle,
-        subtitle: member.phone || "Organization member",
-        profile: member,
+        id: department.departmentId,
+        kind: "department",
+        displayName: department.name,
+        handle: uniqueHandle(department.name, "department", "dept"),
+        subtitle: `${department.memberUserIds.length} ${department.memberUserIds.length === 1 ? "member" : "members"} - Department`,
+        department,
       });
+      if (candidates.filter((candidate) => candidate.kind === "department").length >= 6) break;
     }
-    return candidates.slice(0, 7);
-  }, [currentUserId, isTaskThreadConversation, mentionMembers, mentionQuery]);
+    return candidates;
+  }, [currentUserId, isAgentConversation, mentionDepartments, mentionQuery, mentionUsers]);
   const showMentionLoading = mentionQuery !== null && mentionMembersLoading;
   const showMentionSuggestions = mentionCandidates.length > 0 || showMentionLoading;
   const showComposerMentionHighlight = hasAnyMention(draft);
@@ -7587,10 +7689,30 @@ function ChatPane({
   const archivedTaskTitle = isArchivedTaskThread ? taskThreadArchiveTitle(taskThread?.status) : "";
   const archivedTaskLabel = isArchivedTaskThread ? taskThreadStatusLabel(taskThread?.status) : "";
   const resolvedSubtasks = subtaskConversations.filter((conversation) => isCompletedTaskThreadStatus(conversation.taskThread?.status)).length;
-  const visibleMembers = useMemo(
-    () => conversation.participants.filter((participant) => participant.about?.trim().toLowerCase() !== "task manager agent"),
-    [conversation.participants],
-  );
+  const visibleMembers = useMemo(() => {
+    const linkedMembers = conversation.participants.filter(
+      (participant) => participant.about?.trim().toLowerCase() !== "task manager agent",
+    );
+    if (!conversation.taskThread?.pendingMemberUserIds?.length) return linkedMembers;
+
+    const linkedOrbitaIds = new Set(linkedMembers.map((member) => member.id));
+    const pendingIds = new Set(conversation.taskThread.pendingMemberUserIds);
+    const pendingMembers = mentionUsers
+      .filter((user) => pendingIds.has(user.taskmanagerUserId) && (!user.orbitaUserId || !linkedOrbitaIds.has(user.orbitaUserId)))
+      .map((user) => ({
+        id: user.orbitaUserId ?? `taskmanager:${user.taskmanagerUserId}`,
+        displayName: user.displayName,
+        phone: user.phone,
+        avatarUrl: user.avatarUrl,
+        about: "",
+        isOnline: false,
+        lastSeenAt: null,
+        role: "member" as const,
+        pendingOrbitaLink: true,
+        taskmanagerUserId: user.taskmanagerUserId,
+      }));
+    return [...linkedMembers, ...pendingMembers];
+  }, [conversation.participants, conversation.taskThread, mentionUsers]);
 
   const scrollToLatest = useCallback((animated = true) => {
     const scroll = () => {
@@ -8313,47 +8435,83 @@ function ChatPane({
     setComposerInputHeight((current) => (Math.abs(current - normalizedHeight) > 1 ? normalizedHeight : current));
   }, []);
 
+  const mentionTokenIsPresent = (handle: string) => new RegExp(`(^|\\s)@${handle}\\b`, "i").test(draft);
+  const activeStructuredMentions = (): StructuredTaskMentions => ({
+    userIds: selectedMentionUsers.filter((mention) => mentionTokenIsPresent(mention.handle)).map((mention) => mention.id),
+    departmentIds: selectedMentionDepartments.filter((mention) => mentionTokenIsPresent(mention.handle)).map((mention) => mention.id),
+  });
+  const selectMention = (candidate: MentionCandidate) => {
+    setDraft(insertMentionToken(draft, candidate.handle));
+    if (candidate.kind === "user") {
+      setSelectedMentionUsers((current) => [
+        ...current.filter((mention) => mention.id !== candidate.id),
+        { id: candidate.id, handle: candidate.handle },
+      ]);
+    } else if (candidate.kind === "department") {
+      setSelectedMentionDepartments((current) => [
+        ...current.filter((mention) => mention.id !== candidate.id),
+        { id: candidate.id, handle: candidate.handle },
+      ]);
+    }
+  };
+  const sendComposerMessage = (
+    kind?: BackendMessage["kind"],
+    body?: string,
+    nextAttachment?: ComposerAttachment | null,
+    modelBodyOverride?: string,
+  ) => onSend(kind, body, nextAttachment, modelBodyOverride, activeStructuredMentions());
+
   const renderMentionSuggestions = () => showMentionSuggestions ? (
     <View style={[styles.mentionSuggestionList, isDarkTheme && styles.mentionSuggestionListDark]}>
-      {mentionCandidates.map((candidate) => (
-        <Pressable
-          accessibilityLabel={`Mention ${candidate.displayName}`}
-          key={`${candidate.kind}:${candidate.id}`}
-          onPress={() => setDraft(insertMentionToken(draft, candidate.handle))}
-          style={({ pressed }) => [
-            styles.mentionSuggestion,
-            isDarkTheme && styles.mentionSuggestionDark,
-            pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
-          ]}
-        >
-          <View style={[styles.mentionSuggestionAvatar, isDarkTheme && styles.mentionSuggestionAvatarDark]}>
-            {candidate.kind === "orbita" ? (
-              <Ionicons color={isDarkTheme ? "#111B21" : "#FFFFFF"} name="sparkles-outline" size={16} />
-            ) : (
-              <Text style={styles.mentionSuggestionAvatarText}>
-                {initials(candidate.displayName)}
+      <ScrollView
+        contentContainerStyle={styles.mentionSuggestionContent}
+        keyboardShouldPersistTaps="always"
+        nestedScrollEnabled
+        showsVerticalScrollIndicator
+        style={[styles.mentionSuggestionScroller, { maxHeight: Math.min(360, Math.max(216, height * 0.44)) }]}
+      >
+        {mentionCandidates.map((candidate) => (
+          <Pressable
+            accessibilityLabel={`Mention ${candidate.displayName}`}
+            key={`${candidate.kind}:${candidate.id}`}
+            onPress={() => selectMention(candidate)}
+            style={({ pressed }) => [
+              styles.mentionSuggestion,
+              isDarkTheme && styles.mentionSuggestionDark,
+              pressed && (isDarkTheme ? styles.rowPressedDark : styles.rowPressed),
+            ]}
+          >
+            <View style={[styles.mentionSuggestionAvatar, isDarkTheme && styles.mentionSuggestionAvatarDark]}>
+              {candidate.kind === "orbita" ? (
+                <Ionicons color={isDarkTheme ? "#111B21" : "#FFFFFF"} name="sparkles-outline" size={16} />
+              ) : candidate.kind === "department" ? (
+                <Ionicons color={isDarkTheme ? "#111B21" : "#FFFFFF"} name="people-outline" size={16} />
+              ) : (
+                <Text style={styles.mentionSuggestionAvatarText}>
+                  {initials(candidate.displayName)}
+                </Text>
+              )}
+            </View>
+            <View style={styles.mentionSuggestionBody}>
+              <Text numberOfLines={1} style={[styles.mentionSuggestionName, isDarkTheme && styles.mentionSuggestionNameDark]}>
+                {candidate.displayName}
               </Text>
-            )}
-          </View>
-          <View style={styles.mentionSuggestionBody}>
-            <Text numberOfLines={1} style={[styles.mentionSuggestionName, isDarkTheme && styles.mentionSuggestionNameDark]}>
-              {candidate.displayName}
+              <Text numberOfLines={1} style={[styles.mentionSuggestionHandle, isDarkTheme && styles.mentionSuggestionHandleDark]}>
+                @{candidate.handle} - {candidate.subtitle}
+              </Text>
+            </View>
+            <Ionicons color={isDarkTheme ? "rgba(233,237,239,0.62)" : colors.faint} name="return-down-forward-outline" size={17} />
+          </Pressable>
+        ))}
+        {showMentionLoading ? (
+          <View style={[styles.mentionSuggestionLoading, isDarkTheme && styles.mentionSuggestionLoadingDark]}>
+            <ActivityIndicator color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} size="small" />
+            <Text style={[styles.mentionSuggestionLoadingText, isDarkTheme && styles.mentionSuggestionLoadingTextDark]}>
+              Loading employees...
             </Text>
-            <Text numberOfLines={1} style={[styles.mentionSuggestionHandle, isDarkTheme && styles.mentionSuggestionHandleDark]}>
-              @{candidate.handle} - {candidate.subtitle}
-            </Text>
           </View>
-          <Ionicons color={isDarkTheme ? "rgba(233,237,239,0.62)" : colors.faint} name="return-down-forward-outline" size={17} />
-        </Pressable>
-      ))}
-      {showMentionLoading ? (
-        <View style={[styles.mentionSuggestionLoading, isDarkTheme && styles.mentionSuggestionLoadingDark]}>
-          <ActivityIndicator color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} size="small" />
-          <Text style={[styles.mentionSuggestionLoadingText, isDarkTheme && styles.mentionSuggestionLoadingTextDark]}>
-            Loading employees...
-          </Text>
-        </View>
-      ) : null}
+        ) : null}
+      </ScrollView>
     </View>
   ) : null;
 
@@ -8559,7 +8717,11 @@ function ChatPane({
                         ) : null}
                         {message.body ? <MessageBody mine={mine} text={message.body} /> : null}
                         {taskInvite ? (
-                          <TaskThreadInviteCard invite={taskInvite} onOpen={onOpenTaskThread} />
+                          <TaskThreadInviteCard
+                            invite={taskInvite}
+                            opening={openingTaskThreadId === taskInvite.conversationId}
+                            onOpen={onOpenTaskThread}
+                          />
                         ) : null}
                         <View style={styles.messageMeta}>
                           <Text style={[styles.metaText, mine && (isDarkTheme ? styles.metaTextMineDark : styles.metaTextMine)]}>{formatTime(message.createdAt)}</Text>
@@ -8787,10 +8949,10 @@ function ChatPane({
                     };
                     if (webEvent.nativeEvent.key !== "Enter" || webEvent.nativeEvent.shiftKey) return;
                     webEvent.preventDefault?.();
-                    if (!creatingTask) onSend();
+                    if (!creatingTask) sendComposerMessage();
                   }}
                   onSubmitEditing={() => {
-                    if (Platform.OS !== "web" && !creatingTask) onSend();
+                    if (Platform.OS !== "web" && !creatingTask) sendComposerMessage();
                   }}
                   placeholder="Message"
                   placeholderTextColor={isDarkTheme ? "rgba(255,255,255,0.45)" : colors.faint}
@@ -8810,7 +8972,7 @@ function ChatPane({
               <Pressable
                 accessibilityLabel="Send message"
                 disabled={composerSendDisabled}
-                onPress={() => onSend()}
+                onPress={() => sendComposerMessage()}
                 style={({ pressed }) => [styles.sendButton, { backgroundColor: themeColors.primaryDark }, pressed && styles.pressablePressed, composerSendDisabled && styles.buttonDisabled]}
               >
                 {creatingTask ? <ActivityIndicator color="#FFFFFF" size="small" /> : <Ionicons color="#FFFFFF" name="send" size={20} />}
@@ -10089,7 +10251,11 @@ function MembersListModal({
   visible,
 }: {
   currentUserId: string;
-  members: Array<BackendProfile & { role?: "owner" | "admin" | "member" }>;
+  members: Array<BackendProfile & {
+    role?: "owner" | "admin" | "member";
+    pendingOrbitaLink?: boolean;
+    taskmanagerUserId?: string;
+  }>;
   onClose: () => void;
   onOpenMember: (memberId: string) => void | Promise<void>;
   title: string;
@@ -10105,15 +10271,16 @@ function MembersListModal({
       <ScrollView style={styles.modalList}>
         {members.length ? members.map((member) => {
           const isSelf = member.id === currentUserId;
+          const isPending = member.pendingOrbitaLink === true;
           return (
             <Pressable
               key={member.id}
-              disabled={isSelf}
+              disabled={isSelf || isPending}
               onPress={() => onOpenMember(member.id)}
               style={({ pressed }) => [
                 styles.modalRow,
                 pressed && styles.modalRowPressed,
-                isSelf && styles.memberRowDisabled,
+                (isSelf || isPending) && styles.memberRowDisabled,
               ]}
             >
               <Avatar
@@ -10124,11 +10291,15 @@ function MembersListModal({
               <View style={styles.chatRowBody}>
                 <Text style={styles.chatTitle}>{isSelf ? "You" : member.displayName}</Text>
                 <Text style={styles.chatPreview}>
-                  {[member.role ? member.role : "", member.phone ?? ""].filter(Boolean).join(" - ") || "Member"}
+                  {isPending
+                    ? "Task member - pending Orbita signup"
+                    : [member.role ? member.role : "", member.phone ?? ""].filter(Boolean).join(" - ") || "Member"}
                 </Text>
               </View>
               {isSelf ? (
                 <Text style={styles.memberSelfTag}>You</Text>
+              ) : isPending ? (
+                <Text style={styles.memberSelfTag}>Pending</Text>
               ) : (
                 <Ionicons color={themeColors.primaryDark} name="chatbubble-outline" size={21} />
               )}
@@ -10143,24 +10314,31 @@ function MembersListModal({
 
 function TaskThreadMembersModal({
   conversation,
+  loading,
   onClose,
   onSave,
   users,
   visible,
 }: {
   conversation: BackendConversation | null;
+  loading: boolean;
   onClose: () => void;
   onSave: (userIds: string[]) => Promise<void>;
-  users: TaskManagerAdminUser[];
+  users: BackendTaskmanagerMentionUser[];
   visible: boolean;
 }) {
   const { themeColors } = useAppTheme();
   const [selected, setSelected] = useState<string[]>([]);
+  const existingTaskmanagerUserIds = new Set(conversation?.taskThread?.memberUserIds ?? []);
   const existingOrbitaProfileIds = new Set(conversation?.participants.map((participant) => participant.id) ?? []);
-  const available = users.filter((user) => {
-    const orbitaProfileId = user.channels?.orbita?.profile_id;
-    return !orbitaProfileId || !existingOrbitaProfileIds.has(orbitaProfileId);
-  });
+  const available = users
+    .filter((user) => !existingTaskmanagerUserIds.has(user.taskmanagerUserId))
+    .filter((user) => !user.orbitaUserId || !existingOrbitaProfileIds.has(user.orbitaUserId))
+    .sort((left, right) => left.displayName.localeCompare(right.displayName));
+
+  useEffect(() => {
+    if (!visible) setSelected([]);
+  }, [visible]);
 
   function toggle(id: string) {
     setSelected((current) => (current.includes(id) ? current.filter((value) => value !== id) : [...current, id]));
@@ -10175,27 +10353,29 @@ function TaskThreadMembersModal({
     <KeyboardAwareModal onClose={onClose} visible={visible}>
       <Text style={styles.modalTitle}>Add task members</Text>
       <ScrollView style={styles.modalList}>
-        {available.length ? available.map((user) => {
-          const linked = Boolean(user.channels?.orbita?.profile_id);
+        {loading ? (
+          <View style={styles.modalLoading}><ActivityIndicator color={themeColors.primaryDark} /></View>
+        ) : available.length ? available.map((user) => {
+          const linked = Boolean(user.orbitaUserId);
           return (
             <Pressable
-              key={user._id}
-              onPress={() => toggle(user._id)}
+              key={user.taskmanagerUserId}
+              onPress={() => toggle(user.taskmanagerUserId)}
               style={({ pressed }) => [styles.modalRow, pressed && styles.modalRowPressed]}
             >
-              <Avatar isBot={false} name={user.name} />
+              <Avatar avatarUrl={user.avatarUrl} isBot={false} name={user.displayName} />
               <View style={styles.chatRowBody}>
-                <Text style={styles.chatTitle}>{user.name}</Text>
+                <Text style={styles.chatTitle}>{user.displayName}</Text>
                 <Text style={styles.chatPreview}>{linked ? "Orbita linked" : "Pending until Orbita account is linked"}</Text>
               </View>
               <Ionicons
-                color={selected.includes(user._id) ? themeColors.primaryDark : colors.faint}
-                name={selected.includes(user._id) ? "checkbox" : "square-outline"}
+                color={selected.includes(user.taskmanagerUserId) ? themeColors.primaryDark : colors.faint}
+                name={selected.includes(user.taskmanagerUserId) ? "checkbox" : "square-outline"}
                 size={23}
               />
             </Pressable>
           );
-        }) : <EmptyState compact icon="people-outline" title="No employees available" copy="All linked employees are already in this thread." />}
+        }) : <EmptyState compact icon="people-outline" title="No employees available" copy="All organization employees are already in this thread." />}
       </ScrollView>
       <ModalActions onCancel={onClose} onSubmit={submit} submitLabel="Add" disabled={!selected.length} />
     </KeyboardAwareModal>
@@ -12676,6 +12856,7 @@ const styles = StyleSheet.create({
     gap: 7,
     paddingHorizontal: 12,
   },
+  taskInviteButtonBusy: { opacity: 0.88 },
   taskInviteButtonText: { color: "#FFFFFF", fontSize: 13, fontWeight: "800" },
   taskInviteButtonTextDark: { color: "#0B141A" },
   replyQuote: {
@@ -13079,6 +13260,12 @@ const styles = StyleSheet.create({
   mentionSuggestionListDark: {
     borderColor: "rgba(6,207,156,0.22)",
     backgroundColor: "rgba(6,207,156,0.12)",
+  },
+  mentionSuggestionScroller: {
+    flexGrow: 0,
+  },
+  mentionSuggestionContent: {
+    flexGrow: 0,
   },
   mentionSuggestion: {
     minHeight: 54,
@@ -13613,6 +13800,7 @@ const styles = StyleSheet.create({
   subtaskModalScroll: { flexShrink: 1 },
   subtaskModalContent: { gap: 12, paddingBottom: 4 },
   modalList: { maxHeight: 430, minHeight: 120, flexShrink: 1 },
+  modalLoading: { minHeight: 120, alignItems: "center", justifyContent: "center" },
   modalRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 8, paddingVertical: 10, borderRadius: 14 },
   memberRowDisabled: { opacity: 0.72 },
   memberSelfTag: {

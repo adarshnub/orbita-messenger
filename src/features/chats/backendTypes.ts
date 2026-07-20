@@ -8,6 +8,21 @@ export type BackendProfile = {
   lastSeenAt: string | null;
 };
 
+export type BackendTaskmanagerMentionUser = {
+  taskmanagerUserId: string;
+  orbitaUserId: string | null;
+  displayName: string;
+  phone: string | null;
+  avatarUrl: string | null;
+  departmentIds: string[];
+};
+
+export type BackendTaskmanagerMentionDepartment = {
+  departmentId: string;
+  name: string;
+  memberUserIds: string[];
+};
+
 export type BackendConversation = {
   id: string;
   kind: "direct" | "group" | "taskmanager";
@@ -39,6 +54,8 @@ export type BackendConversation = {
     dueDate?: string | null;
     departmentIds?: string[];
     departmentNames?: string[];
+    memberUserIds?: string[];
+    pendingMemberUserIds?: string[];
   } | null;
 };
 
