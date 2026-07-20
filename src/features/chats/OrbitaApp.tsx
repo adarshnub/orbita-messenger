@@ -126,6 +126,24 @@ import {
 import { colors, radii, shadow } from "@/theme/colors";
 
 type Tab = "chats" | "tasks" | "status" | "contacts" | "calls" | "settings" | "admin";
+type TaskListViewState = {
+  query: string;
+  status: "all" | "active" | "archived";
+  orgId: string;
+  departmentId: string;
+  showDetails: boolean;
+};
+type TaskListViewStateSetter = (
+  next: TaskListViewState | ((current: TaskListViewState) => TaskListViewState),
+) => void;
+
+const INITIAL_TASK_LIST_VIEW_STATE: TaskListViewState = {
+  query: "",
+  status: "all",
+  orgId: "all",
+  departmentId: "all",
+  showDetails: false,
+};
 type AuthMode = "signin" | "signup";
 type AppThemeMode = "light" | "dark";
 type AccentThemeId = "green" | "blue" | "purple" | "rose" | "amber";
@@ -2733,6 +2751,7 @@ function MessengerShell({ session }: { session: Session }) {
   const [pendingCreateTaskTitleFor, setPendingCreateTaskTitleFor] = useState("");
   const [creatingTaskFor, setCreatingTaskFor] = useState("");
   const [openingTaskThreadId, setOpeningTaskThreadId] = useState("");
+  const [taskListViewState, setTaskListViewState] = useState<TaskListViewState>(INITIAL_TASK_LIST_VIEW_STATE);
   const [composerAttachment, setComposerAttachment] = useState<ComposerAttachment | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingMessagesFor, setLoadingMessagesFor] = useState("");
@@ -4926,6 +4945,8 @@ function MessengerShell({ session }: { session: Session }) {
                 selectedId={selected?.id}
                 settingsNotice={settingsNotice}
                 statuses={statuses}
+                taskListViewState={taskListViewState}
+                onTaskListViewStateChange={setTaskListViewState}
               />
             ) : null}
             {activeConversationSurface && selected ? (
@@ -5324,6 +5345,8 @@ function Panel({
   selectedId,
   settingsNotice,
   statuses,
+  taskListViewState,
+  onTaskListViewStateChange,
 }: {
   activeTab: Tab;
   adminChats: TaskManagerChatMessage[];
@@ -5366,6 +5389,8 @@ function Panel({
   selectedId?: string;
   settingsNotice: string;
   statuses: BackendStatus[];
+  taskListViewState: TaskListViewState;
+  onTaskListViewStateChange: TaskListViewStateSetter;
 }) {
   const { isDarkTheme, themeColors } = useAppTheme();
   if (activeTab === "status") {
@@ -5394,6 +5419,8 @@ function Panel({
         onSelect={onSelect}
         onUpdateTaskStatus={onUpdateTaskThreadStatus}
         selectedId={selectedId}
+        viewState={taskListViewState}
+        onViewStateChange={onTaskListViewStateChange}
       />
     );
   }
@@ -6409,33 +6436,52 @@ function TasksPanel({
   isWide,
   onSelect,
   onUpdateTaskStatus,
+  onViewStateChange,
   selectedId,
+  viewState,
 }: {
   adminSession: TaskManagerAdminSession | null;
   conversations: BackendConversation[];
   isWide: boolean;
   onSelect: (id: string) => void;
   onUpdateTaskStatus: (taskId: string, status: TaskManagerAdminTask["status"]) => Promise<void>;
+  onViewStateChange: TaskListViewStateSetter;
   selectedId?: string;
+  viewState: TaskListViewState;
 }) {
   const { isDarkTheme, themeColors } = useAppTheme();
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<"all" | "active" | "archived">("all");
-  const [orgFilter, setOrgFilter] = useState("all");
-  const [departmentFilter, setDepartmentFilter] = useState("all");
+  const query = viewState.query;
+  const filter = viewState.status;
+  const orgFilter = viewState.orgId;
+  const departmentFilter = viewState.departmentId;
+  const showTaskDetails = viewState.showDetails;
+  const setQuery = (value: string) => onViewStateChange((current) => ({ ...current, query: value }));
+  const setFilter = (value: TaskListViewState["status"]) => onViewStateChange((current) => ({ ...current, status: value }));
+  const setOrgFilter = (value: string) => onViewStateChange((current) => ({ ...current, orgId: value }));
+  const setDepartmentFilter = (value: string) => onViewStateChange((current) => ({ ...current, departmentId: value }));
+  const setShowTaskDetails = (value: boolean | ((current: boolean) => boolean)) => onViewStateChange((current) => ({
+    ...current,
+    showDetails: typeof value === "function" ? value(current.showDetails) : value,
+  }));
   const [taskFilterMenuOpen, setTaskFilterMenuOpen] = useState(false);
   const [visibleTaskCount, setVisibleTaskCount] = useState(TASK_PAGE_SIZE);
   const [taskActionConversation, setTaskActionConversation] = useState<BackendConversation | null>(null);
   const [taskActionBusy, setTaskActionBusy] = useState<TaskManagerAdminTask["status"] | null>(null);
+  const [taskNotice, setTaskNotice] = useState("");
   const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
-  const [showTaskDetails, setShowTaskDetails] = useState(false);
   const normalizedQuery = query.trim().toLowerCase();
 
     const taskData = useMemo(() => {
     const allTaskThreads = conversations.filter((conversation) => conversation.taskThread);
+    const taskActivityAt = (conversation: BackendConversation) => Math.max(
+      Date.parse(conversation.taskThread?.updatedAt ?? "") || 0,
+      Date.parse(conversation.lastMessage?.createdAt ?? "") || 0,
+      Date.parse(conversation.updatedAt) || 0,
+      Date.parse(conversation.createdAt) || 0,
+    );
     const newestTaskFirst = (left: BackendConversation, right: BackendConversation) => {
-      const createdDiff = Date.parse(right.createdAt) - Date.parse(left.createdAt);
-      if (Number.isFinite(createdDiff) && createdDiff !== 0) return createdDiff;
+      const activityDiff = taskActivityAt(right) - taskActivityAt(left);
+      if (Number.isFinite(activityDiff) && activityDiff !== 0) return activityDiff;
       return (right.taskThread?.taskNumber ?? "").localeCompare(left.taskThread?.taskNumber ?? "", undefined, {
         numeric: true,
         sensitivity: "base",
@@ -6527,12 +6573,7 @@ function TasksPanel({
         childrenByParentTaskId.set(parentTaskId, children);
       }
       for (const children of childrenByParentTaskId.values()) {
-        children.sort((left, right) =>
-          (left.taskThread?.taskNumber ?? "").localeCompare(right.taskThread?.taskNumber ?? "", undefined, {
-            numeric: true,
-            sensitivity: "base",
-          }),
-        );
+        children.sort(newestTaskFirst);
       }
       return childrenByParentTaskId;
     };
@@ -6592,16 +6633,24 @@ function TasksPanel({
         topLevelById.set(topLevelTaskId, topLevel);
       }
       return Array.from(topLevelById.values())
-        .sort(newestTaskFirst)
         .map((conversation) => {
           const subtasks = collectDescendants(conversation);
           return {
             conversation,
             id: `task-panel-thread-${conversation.id}`,
+            latestActivityAt: [conversation, ...subtasks].reduce(
+              (latest, item) => Math.max(latest, taskActivityAt(item)),
+              0,
+            ),
             matchingSubtasks: normalizedQuery ? subtasks.filter(matchesQuery) : subtasks,
             subtaskCount: subtasks.length,
             subtasks,
           };
+        })
+        .sort((left, right) => {
+          const activityDiff = right.latestActivityAt - left.latestActivityAt;
+          if (activityDiff !== 0) return activityDiff;
+          return newestTaskFirst(left.conversation, right.conversation);
         });
     };
 
@@ -6669,6 +6718,12 @@ function TasksPanel({
     setDepartmentFilter("all");
   }, [departmentFilter, taskData.departmentOptions]);
 
+  useEffect(() => {
+    if (!taskNotice) return undefined;
+    const timeout = setTimeout(() => setTaskNotice(""), 5_000);
+    return () => clearTimeout(timeout);
+  }, [taskNotice]);
+
   function handleTaskScroll(event: {
     nativeEvent: {
       contentOffset: { y: number };
@@ -6697,6 +6752,12 @@ function TasksPanel({
     const subtaskActionsOpen = row.subtasks.some((subtask) => subtask.id === taskActionConversation?.id);
     const inlineActionTarget = taskActionsOpen ? conversation : row.subtasks.find((subtask) => subtask.id === taskActionConversation?.id) ?? null;
     const inlineActionTaskId = inlineActionTarget?.taskThread?.taskmanagerTaskId ?? inlineActionTarget?.id ?? taskId;
+    const unresolvedDirectSubtaskCount = inlineActionTarget
+      ? conversations.filter((subtask) => (
+          subtask.taskThread?.parentTaskId === inlineActionTaskId &&
+          isActiveTaskThreadStatus(subtask.taskThread?.status)
+        )).length
+      : 0;
     const statusLabel = taskThreadStatusLabel(taskThread?.status);
     const isCompletedTaskThread = isCompletedTaskThreadStatus(taskThread?.status);
     const orgLabel = taskThread?.taskmanagerOrgId
@@ -6875,6 +6936,8 @@ function TasksPanel({
                 {conversation.unreadCount > 0 ? <UnreadBadge count={conversation.unreadCount} /> : null}
                 <Pressable
                   accessibilityLabel="Task actions"
+                  testID="task-action-trigger"
+                  onTouchStart={(event) => event.stopPropagation?.()}
                   onPress={(event) => {
                     event.stopPropagation?.();
                     openTaskActions();
@@ -6937,8 +7000,9 @@ function TasksPanel({
                         pressed && styles.pressablePressed,
                       ]}
                     >
-                      {detailsExpanded ? (
-                        <View style={styles.subtaskStackRowTop}>
+                      <View style={styles.subtaskStackRowTop}>
+                        {detailsExpanded ? (
+                          <>
                           <TaskStatusMark isDarkTheme={isDarkTheme} size="small" status={subtaskThread?.status} />
                           <Text
                             numberOfLines={1}
@@ -6950,25 +7014,34 @@ function TasksPanel({
                           >
                             {subtaskThread?.taskNumber ?? "SUBTASK"}
                           </Text>
-                          <Pressable
-                            accessibilityLabel="Subtask actions"
-                            onPress={(event) => {
-                              event.stopPropagation?.();
-                              setTaskActionConversation((current) => current?.id === subtask.id ? null : subtask);
-                            }}
-                            style={({ pressed }) => [
-                              styles.subtaskDeckAction,
-                              subtaskActionsActive && { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
-                              pressed && styles.pressablePressed,
-                            ]}
-                          >
-                            <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="ellipsis-horizontal" size={14} />
-                          </Pressable>
-                        </View>
+                          </>
+                        ) : (
+                          <Text numberOfLines={1} style={[styles.subtaskStackTitle, styles.subtaskStackTitleCompact, isDarkTheme && styles.subtaskStackTitleDark]}>
+                            {subtaskThread?.title ?? subtask.title}
+                          </Text>
+                        )}
+                        <Pressable
+                          accessibilityLabel="Subtask actions"
+                          testID="task-action-trigger"
+                          onTouchStart={(event) => event.stopPropagation?.()}
+                          onPress={(event) => {
+                            event.stopPropagation?.();
+                            setTaskActionConversation((current) => current?.id === subtask.id ? null : subtask);
+                          }}
+                          style={({ pressed }) => [
+                            styles.subtaskDeckAction,
+                            subtaskActionsActive && { backgroundColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.accentSoft },
+                            pressed && styles.pressablePressed,
+                          ]}
+                        >
+                          <Ionicons color={isDarkTheme ? themeColors.accent : themeColors.primaryDark} name="ellipsis-horizontal" size={14} />
+                        </Pressable>
+                      </View>
+                      {detailsExpanded ? (
+                        <Text numberOfLines={2} style={[styles.subtaskStackTitle, isDarkTheme && styles.subtaskStackTitleDark]}>
+                          {subtaskThread?.title ?? subtask.title}
+                        </Text>
                       ) : null}
-                      <Text numberOfLines={detailsExpanded ? 2 : 1} style={[styles.subtaskStackTitle, isDarkTheme && styles.subtaskStackTitleDark]}>
-                        {subtaskThread?.title ?? subtask.title}
-                      </Text>
                       {detailsExpanded ? (
                         <View style={styles.subtaskStackFooter}>
                           <Text style={[styles.subtaskCardStatus, isDarkTheme && styles.subtaskCardStatusDark]}>
@@ -7002,6 +7075,15 @@ function TasksPanel({
             busyStatus={taskActionBusy}
             currentStatus={inlineActionTarget.taskThread?.status}
             isDarkTheme={isDarkTheme}
+            unresolvedSubtaskCount={unresolvedDirectSubtaskCount}
+            onBlocked={(status, count) => {
+              const action = status === "discarded" ? "close" : "complete";
+              setTaskNotice(
+                `Complete or close ${count} open subtask${count === 1 ? "" : "s"} before you ${action} this task.`,
+              );
+              setTaskActionConversation(null);
+            }}
+            onDismiss={() => setTaskActionConversation(null)}
             onUpdateStatus={async (status) => {
               setTaskActionBusy(status);
               try {
@@ -7018,7 +7100,12 @@ function TasksPanel({
   };
 
   return (
-    <View style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}>
+    <View
+      onTouchStart={() => {
+        if (taskActionConversation) setTaskActionConversation(null);
+      }}
+      style={[styles.listPanel, isDarkTheme && styles.listPanelDark, !isWide && styles.mobilePanel]}
+    >
       <View
         style={[
           styles.tasksPanelHeader,
@@ -7053,13 +7140,6 @@ function TasksPanel({
           </View>
         </View>
         <View style={styles.tasksPanelControls}>
-          {taskFilterMenuOpen ? (
-            <Pressable
-              accessibilityLabel="Close task filters"
-              onPress={() => setTaskFilterMenuOpen(false)}
-              style={styles.taskFilterDismissLayer}
-            />
-          ) : null}
           <View style={styles.tasksSearchFilterRow}>
             <View style={[styles.searchBox, styles.tasksSearchBox, isDarkTheme && styles.searchBoxDark]}>
               <Ionicons color={isDarkTheme ? "rgba(255,255,255,0.58)" : colors.muted} name="search-outline" size={18} />
@@ -7138,7 +7218,25 @@ function TasksPanel({
             </Pressable>
           </View>
           {taskFilterMenuOpen ? (
-            <View style={[styles.taskFilterPopover, isDarkTheme && styles.taskFilterPopoverDark]}>
+            <Modal
+              animationType="fade"
+              onRequestClose={() => setTaskFilterMenuOpen(false)}
+              transparent
+              visible
+            >
+              <Pressable
+                accessibilityLabel="Close task filters"
+                onPress={() => setTaskFilterMenuOpen(false)}
+                style={[styles.taskFilterModalBackdrop, isDarkTheme && styles.taskFilterModalBackdropDark]}
+              >
+                <Pressable
+                  onPress={(event) => event.stopPropagation?.()}
+                  style={[
+                    styles.taskFilterPopover,
+                    isDarkTheme && styles.taskFilterPopoverDark,
+                    isWide && styles.taskFilterPopoverWide,
+                  ]}
+                >
               <View style={styles.taskFilterPopoverHeader}>
                 <Text style={[styles.taskFilterPopoverTitle, isDarkTheme && styles.chatTitleDark]}>Filters</Text>
                 <Pressable
@@ -7291,7 +7389,9 @@ function TasksPanel({
                   </View>
                 </View>
               ) : null}
-            </View>
+                </Pressable>
+              </Pressable>
+            </Modal>
           ) : null}
         </View>
       </View>
@@ -7319,6 +7419,15 @@ function TasksPanel({
           </Text>
         ) : null}
       </ScrollView>
+      {taskNotice ? (
+        <View accessibilityLiveRegion="assertive" style={[styles.taskListToast, isDarkTheme && styles.taskListToastDark]}>
+          <Ionicons color="#FFFFFF" name="information-circle-outline" size={20} />
+          <Text style={styles.taskListToastText}>{taskNotice}</Text>
+          <Pressable accessibilityLabel="Dismiss message" onPress={() => setTaskNotice("")} style={styles.taskListToastClose}>
+            <Ionicons color="rgba(255,255,255,0.78)" name="close" size={18} />
+          </Pressable>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -7327,19 +7436,48 @@ function TaskThreadInlineActions({
   busyStatus,
   currentStatus,
   isDarkTheme,
+  onBlocked,
+  onDismiss,
   onUpdateStatus,
+  unresolvedSubtaskCount,
 }: {
   busyStatus: TaskManagerAdminTask["status"] | null;
   currentStatus?: string | null;
   isDarkTheme: boolean;
+  onBlocked: (status: TaskManagerAdminTask["status"], count: number) => void;
+  onDismiss: () => void;
   onUpdateStatus: (status: TaskManagerAdminTask["status"]) => Promise<void>;
+  unresolvedSubtaskCount: number;
 }) {
   const { themeColors } = useAppTheme();
   const [confirmStatus, setConfirmStatus] = useState<TaskManagerAdminTask["status"] | null>(null);
+  const popupRef = useRef<View | null>(null);
   const isCompleted = isCompletedTaskThreadStatus(currentStatus);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || confirmStatus) return undefined;
+    const handleOutsidePointer = (event: PointerEvent) => {
+      const popupElement = popupRef.current as unknown as {
+        contains?: (target: EventTarget | null) => boolean;
+      } | null;
+      if (popupElement?.contains?.(event.target)) return;
+      const trigger = (event.target as { closest?: (selector: string) => unknown } | null)?.closest?.(
+        '[data-testid="task-action-trigger"], [aria-label="Task actions"], [aria-label="Subtask actions"]',
+      );
+      if (trigger) return;
+      onDismiss();
+    };
+    document.addEventListener("pointerdown", handleOutsidePointer, true);
+    return () => document.removeEventListener("pointerdown", handleOutsidePointer, true);
+  }, [confirmStatus, onDismiss]);
 
   async function confirmUpdateStatus() {
     if (!confirmStatus) return;
+    if ((confirmStatus === "done" || confirmStatus === "discarded") && unresolvedSubtaskCount > 0) {
+      onBlocked(confirmStatus, unresolvedSubtaskCount);
+      setConfirmStatus(null);
+      return;
+    }
     await onUpdateStatus(confirmStatus);
     setConfirmStatus(null);
   }
@@ -7347,6 +7485,8 @@ function TaskThreadInlineActions({
   return (
     <>
       <View
+        ref={popupRef}
+        onTouchStart={(event) => event.stopPropagation?.()}
         style={[
           styles.taskInlineActions,
           { borderColor: isDarkTheme ? themeColors.darkAccentSoft : themeColors.primarySoft },
@@ -11414,7 +11554,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.06)",
   },
   taskDetailsToolbarCopy: { flex: 1, minWidth: 0 },
-  taskDetailsToolbarTitle: { color: colors.ink, fontSize: 12.5, fontWeight: "800" },
+  taskDetailsToolbarTitle: { color: colors.ink, fontSize: 12.5, fontWeight: "500" },
   taskDetailsToolbarTitleDark: { color: "#E9EDEF" },
   taskDetailsToolbarMeta: { color: colors.muted, fontSize: 11, fontWeight: "700", marginTop: 1 },
   taskDetailsToolbarMetaDark: { color: "rgba(233,237,239,0.62)" },
@@ -11422,7 +11562,7 @@ const styles = StyleSheet.create({
   tasksPanelTitle: { color: colors.ink, fontSize: 25, fontWeight: "700" },
   tasksPanelTitleInTopBar: { color: "#FFFFFF", fontSize: 23, lineHeight: 28, fontWeight: "700" },
   tasksPanelTitleDark: { color: "#FFFFFF" },
-  tasksPanelMeta: { color: colors.muted, fontSize: 12, fontWeight: "700", marginTop: 3 },
+  tasksPanelMeta: { color: colors.muted, fontSize: 12, fontWeight: "400", marginTop: 3 },
   tasksPanelMetaInTopBar: { color: "rgba(255,255,255,0.80)" },
   tasksPanelMetaDark: { color: "rgba(233,237,239,0.62)" },
   tasksPanelIcon: {
@@ -11496,14 +11636,14 @@ const styles = StyleSheet.create({
   },
   tasksFilterCountTextDark: { color: colors.accent },
   tasksSearchFilterRow: { flexDirection: "row", alignItems: "center", gap: 8 },
-  taskFilterDismissLayer: {
-    position: "absolute",
-    top: -110,
-    right: 0,
-    bottom: -1200,
-    left: 0,
-    zIndex: 70,
+  taskFilterModalBackdrop: {
+    flex: 1,
+    alignItems: "center",
+    paddingTop: Platform.select({ web: 176, default: 168 }),
+    paddingHorizontal: 16,
+    backgroundColor: "rgba(17,27,33,0.12)",
   },
+  taskFilterModalBackdropDark: { backgroundColor: "rgba(0,0,0,0.28)" },
   taskFilterButton: {
     width: 42,
     height: 42,
@@ -11548,16 +11688,13 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.10)",
     backgroundColor: "rgba(255,255,255,0.06)",
   },
-  activeTaskFilterText: { color: colors.muted, fontSize: 11, fontWeight: "700", maxWidth: 112 },
+  activeTaskFilterText: { color: colors.muted, fontSize: 11, fontWeight: "500", maxWidth: 112 },
   activeTaskFilterTextDark: { color: "rgba(233,237,239,0.68)" },
-  activeTaskFilterCount: { color: colors.faint, fontSize: 11, fontWeight: "700" },
+  activeTaskFilterCount: { color: colors.faint, fontSize: 11, fontWeight: "400" },
   activeTaskFilterCountDark: { color: "rgba(233,237,239,0.58)" },
   taskFilterPopover: {
-    position: "absolute",
-    top: 84,
-    left: 16,
-    right: 16,
-    zIndex: 90,
+    width: "100%",
+    maxWidth: 358,
     gap: 11,
     padding: 11,
     borderRadius: 16,
@@ -11569,6 +11706,10 @@ const styles = StyleSheet.create({
     shadowRadius: 18,
     shadowOffset: { width: 0, height: 10 },
     elevation: 8,
+  },
+  taskFilterPopoverWide: {
+    alignSelf: "flex-start",
+    marginLeft: Platform.select({ web: 122, default: 0 }),
   },
   taskFilterPopoverDark: {
     borderColor: "rgba(255,255,255,0.10)",
@@ -11665,11 +11806,35 @@ const styles = StyleSheet.create({
   taskOrgFilterCount: { color: colors.faint, fontSize: 11, fontWeight: "700" },
   taskOrgFilterCountSelected: { color: colors.primaryDark, fontWeight: "800" },
   tasksListContent: { gap: 9, paddingTop: 14, paddingBottom: 132 },
+  taskListToast: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 18,
+    zIndex: 120,
+    minHeight: 48,
+    borderRadius: 10,
+    paddingLeft: 13,
+    paddingRight: 7,
+    paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    backgroundColor: "#202C33",
+    shadowColor: "#000000",
+    shadowOpacity: 0.22,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 10,
+  },
+  taskListToastDark: { backgroundColor: "#0B141A", borderColor: "rgba(255,255,255,0.10)", borderWidth: 1 },
+  taskListToastText: { flex: 1, color: "#FFFFFF", fontSize: 13.5, lineHeight: 19, fontWeight: "400" },
+  taskListToastClose: { width: 32, height: 32, alignItems: "center", justifyContent: "center", borderRadius: 16 },
   tasksSectionLabel: {
     color: colors.faint,
-    fontSize: 11,
-    fontWeight: "700",
-    letterSpacing: 0.6,
+    fontSize: 12,
+    fontWeight: "500",
+    letterSpacing: 0.2,
     textTransform: "uppercase",
     paddingHorizontal: 6,
     paddingTop: 0,
@@ -12131,7 +12296,7 @@ const styles = StyleSheet.create({
     maxWidth: 72,
     marginTop: 0,
   },
-  taskNumberText: { color: colors.primaryDark, fontSize: 10, fontWeight: "700" },
+  taskNumberText: { color: colors.primaryDark, fontSize: 10, fontWeight: "600" },
   taskNumberTextDark: { color: colors.accent },
   taskNumberTextArchived: { color: colors.faint },
   taskThreadTitleRow: { flexDirection: "row", alignItems: "flex-start", gap: 7, minWidth: 0 },
@@ -12145,8 +12310,8 @@ const styles = StyleSheet.create({
     flexShrink: 0,
     marginTop: -1,
   },
-  taskThreadTitle: { flex: 1, minWidth: 0, fontSize: 15.5, lineHeight: 21 },
-  subtaskThreadTitle: { fontSize: 13, fontWeight: "700" },
+  taskThreadTitle: { flex: 1, minWidth: 0, fontSize: 16, lineHeight: 21, fontWeight: "500" },
+  subtaskThreadTitle: { fontSize: 14, fontWeight: "500" },
   taskThreadTitleArchived: { color: colors.faint },
   taskThreadMetaActions: { alignItems: "flex-end", gap: 8 },
   taskListRowBody: { alignItems: "flex-start", gap: 7, paddingTop: 0 },
@@ -12181,7 +12346,7 @@ const styles = StyleSheet.create({
     gap: 4,
     flexShrink: 0,
   },
-  taskDueText: { fontSize: 10.5, fontWeight: "700" },
+  taskDueText: { fontSize: 10.5, fontWeight: "500" },
   taskDetailsSwitch: {
     width: 34,
     height: 20,
@@ -12384,7 +12549,8 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(255,255,255,0.055)",
   },
   subtaskStackRowTop: { minHeight: 22, flexDirection: "row", alignItems: "center", gap: 6 },
-  subtaskStackTitle: { color: colors.ink, fontSize: 13, lineHeight: 18, fontWeight: "800" },
+  subtaskStackTitle: { color: colors.ink, fontSize: 14, lineHeight: 20, fontWeight: "500" },
+  subtaskStackTitleCompact: { flex: 1, minWidth: 0 },
   subtaskStackTitleDark: { color: "#E9EDEF" },
   subtaskStackFooter: { minHeight: 22, flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
   subtaskStackDueBadge: {
@@ -12397,7 +12563,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
   },
-  subtaskStackDueText: { fontSize: 10, fontWeight: "800" },
+  subtaskStackDueText: { fontSize: 10, fontWeight: "500" },
   taskOrgBadge: {
     maxWidth: 112,
     minHeight: 20,
@@ -12411,7 +12577,7 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   taskOrgBadgeDark: { backgroundColor: "rgba(255,255,255,0.08)", borderColor: "rgba(255,255,255,0.08)" },
-  taskOrgBadgeText: { color: colors.muted, fontSize: 10, fontWeight: "700" },
+  taskOrgBadgeText: { color: colors.muted, fontSize: 10, fontWeight: "500" },
   taskOrgBadgeTextDark: { color: "rgba(233,237,239,0.72)" },
   subtaskLabelPill: {
     minHeight: 20,
@@ -12562,13 +12728,13 @@ const styles = StyleSheet.create({
   chatListMetaColumn: { width: 58, alignItems: "flex-end", justifyContent: "center", gap: 7, flexShrink: 0 },
   row: { flexDirection: "row", alignItems: "center", gap: 12 },
   rowBetween: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  chatTitle: { color: colors.ink, fontSize: 16, fontWeight: "700", maxWidth: "100%" },
+  chatTitle: { color: colors.ink, fontSize: 16, lineHeight: 21, fontWeight: "500", maxWidth: "100%" },
   chatTitleDark: { color: "#FFFFFF" },
-  chatTime: { color: colors.faint, fontSize: 12, fontWeight: "700", textAlign: "right" },
+  chatTime: { color: colors.faint, fontSize: 12, fontWeight: "400", textAlign: "right" },
   chatTimeDark: { color: "rgba(255,255,255,0.48)" },
-  chatPreview: { color: colors.muted, fontSize: 12, lineHeight: 18 },
+  chatPreview: { color: colors.muted, fontSize: 14, lineHeight: 20, fontWeight: "400" },
   chatPreviewDark: { color: "rgba(255,255,255,0.62)" },
-  chatPreviewUnread: { color: colors.ink, fontWeight: "600" },
+  chatPreviewUnread: { color: colors.ink, fontWeight: "500" },
   chatPreviewUnreadDark: { color: "#FFFFFF" },
   unreadBadge: {
     minWidth: 22,
@@ -12731,7 +12897,7 @@ const styles = StyleSheet.create({
   subtaskCardTitle: { color: colors.ink, fontSize: 13, fontWeight: "700", lineHeight: 18 },
   subtaskCardTitleDark: { color: "#E9EDEF" },
   subtaskCardFooter: { flexDirection: "row", alignItems: "center", gap: 6 },
-  subtaskCardStatus: { color: colors.muted, fontSize: 11, fontWeight: "700", textTransform: "capitalize" },
+  subtaskCardStatus: { color: colors.muted, fontSize: 11, fontWeight: "400", textTransform: "capitalize" },
   subtaskCardStatusDark: { color: "rgba(233,237,239,0.68)" },
   subtasksEmptyText: { color: colors.muted, fontSize: 13, fontWeight: "700" },
   subtasksEmptyTextDark: { color: "rgba(233,237,239,0.62)" },

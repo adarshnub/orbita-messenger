@@ -1842,6 +1842,7 @@ async function loadConversations(userId) {
                   `${taskThreadByConversationId.get(conversation.id).taskmanager_org_id}:${taskThreadByConversationId.get(conversation.id).taskmanager_task_id}`,
                 ) ?? []
               ).filter((member) => member.status === "pending").map((member) => member.taskmanager_user_id),
+              updatedAt: taskThreadByConversationId.get(conversation.id).updated_at ?? null,
             }
           : null,
       };

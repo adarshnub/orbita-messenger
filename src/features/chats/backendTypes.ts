@@ -56,6 +56,7 @@ export type BackendConversation = {
     departmentNames?: string[];
     memberUserIds?: string[];
     pendingMemberUserIds?: string[];
+    updatedAt?: string | null;
   } | null;
 };
 
