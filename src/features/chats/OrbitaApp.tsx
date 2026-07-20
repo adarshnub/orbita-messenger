@@ -1255,6 +1255,12 @@ function isTaskConversation(conversation: BackendConversation) {
   return Boolean(conversation.taskThread);
 }
 
+function shouldUseTaskThreadMemberPicker(conversation: BackendConversation | null) {
+  if (!conversation) return false;
+  if (conversation.taskThread) return true;
+  return conversation.kind === "taskmanager" && /^TASK-\d+(?:-\d+)*\b/i.test(conversation.title.trim());
+}
+
 function shouldExpectTaskManagerAgentReply(conversation: BackendConversation, text: string, hasAttachment = false) {
   if (!isTaskManagerAgentConversation(conversation)) return false;
   if (!isTaskConversation(conversation)) return Boolean(text.trim() || hasAttachment);
@@ -2742,6 +2748,10 @@ function MessengerShell({ session }: { session: Session }) {
   const [orgMembersByConversationId, setOrgMembersByConversationId] = useState<Record<string, BackendProfile[]>>({});
   const [orgMentionUsersByConversationId, setOrgMentionUsersByConversationId] = useState<Record<string, BackendTaskmanagerMentionUser[]>>({});
   const [orgMentionDepartmentsByConversationId, setOrgMentionDepartmentsByConversationId] = useState<Record<string, BackendTaskmanagerMentionDepartment[]>>({});
+  const [taskThreadRosterByConversationId, setTaskThreadRosterByConversationId] = useState<Record<string, {
+    isTaskThread: boolean;
+    memberUserIds: string[];
+  }>>({});
   const [orgMembersLoadingByConversationId, setOrgMembersLoadingByConversationId] = useState<Record<string, boolean>>({});
   const [statuses, setStatuses] = useState<BackendStatus[]>([]);
   const [selectedId, setSelectedId] = useState("");
@@ -2815,6 +2825,12 @@ function MessengerShell({ session }: { session: Session }) {
   const processingOutboxRef = useRef(false);
   const openingAgentFromFabRef = useRef(false);
   const selected = conversations.find((conversation) => conversation.id === selectedId) ?? null;
+  const selectedUsesTaskThreadMemberPicker = Boolean(
+    selected && (
+      shouldUseTaskThreadMemberPicker(selected)
+      || taskThreadRosterByConversationId[selected.id]?.isTaskThread
+    )
+  );
   const visibleTabs = useMemo(() => (adminSession ? tabs : tabs.filter((tab) => tab.id !== "admin")), [adminSession]);
   const visibleTabIds = useMemo(() => new Set(visibleTabs.map((tab) => tab.id)), [visibleTabs]);
   const conversationIds = useMemo(() => conversations.map((conversation) => conversation.id), [conversations]);
@@ -4052,6 +4068,13 @@ function MessengerShell({ session }: { session: Session }) {
           ...current,
           [conversationId]: result.departments ?? [],
         }));
+        setTaskThreadRosterByConversationId((current) => ({
+          ...current,
+          [conversationId]: {
+            isTaskThread: Boolean(result.isTaskThread),
+            memberUserIds: result.taskThreadMemberUserIds ?? [],
+          },
+        }));
       })
       .catch((nextError) => {
         if (!cancelled && selected.taskThread) {
@@ -4967,7 +4990,15 @@ function MessengerShell({ session }: { session: Session }) {
                 messages={selectedMessages.filter((message) => message.conversationId === selected.id)}
                 messagesLoading={loadingMessagesFor === selected.id}
                 openingTaskThreadId={openingTaskThreadId}
-                onAddMembers={() => setMembersOpen(true)}
+                onAddMembers={() => {
+                  setMembersOpen(true);
+                  if (selectedUsesTaskThreadMemberPicker) {
+                    setOrgMembersByConversationId((current) => {
+                      const { [selected.id]: _staleRoster, ...remaining } = current;
+                      return remaining;
+                    });
+                  }
+                }}
                 onCreateSubtask={() => setSubtaskParentConversation(selected)}
                 onMessageActions={setMessageActionTarget}
                 onOpenMemberDirect={openContactConversation}
@@ -5060,9 +5091,13 @@ function MessengerShell({ session }: { session: Session }) {
         }}
         visible={groupOpen}
       />
-      {selected?.taskThread ? (
+      {selected && selectedUsesTaskThreadMemberPicker ? (
         <TaskThreadMembersModal
           conversation={selected}
+          existingTaskmanagerUserIds={selected ? [
+            ...(selected.taskThread?.memberUserIds ?? []),
+            ...(taskThreadRosterByConversationId[selected.id]?.memberUserIds ?? []),
+          ] : []}
           loading={Boolean(orgMembersLoadingByConversationId[selected.id])}
           onClose={() => setMembersOpen(false)}
           onSave={async (taskmanagerUserIds) => {
@@ -10454,6 +10489,7 @@ function MembersListModal({
 
 function TaskThreadMembersModal({
   conversation,
+  existingTaskmanagerUserIds,
   loading,
   onClose,
   onSave,
@@ -10461,6 +10497,7 @@ function TaskThreadMembersModal({
   visible,
 }: {
   conversation: BackendConversation | null;
+  existingTaskmanagerUserIds: string[];
   loading: boolean;
   onClose: () => void;
   onSave: (userIds: string[]) => Promise<void>;
@@ -10469,10 +10506,10 @@ function TaskThreadMembersModal({
 }) {
   const { themeColors } = useAppTheme();
   const [selected, setSelected] = useState<string[]>([]);
-  const existingTaskmanagerUserIds = new Set(conversation?.taskThread?.memberUserIds ?? []);
+  const existingTaskmanagerUserIdSet = new Set(existingTaskmanagerUserIds);
   const existingOrbitaProfileIds = new Set(conversation?.participants.map((participant) => participant.id) ?? []);
   const available = users
-    .filter((user) => !existingTaskmanagerUserIds.has(user.taskmanagerUserId))
+    .filter((user) => !existingTaskmanagerUserIdSet.has(user.taskmanagerUserId))
     .filter((user) => !user.orbitaUserId || !existingOrbitaProfileIds.has(user.orbitaUserId))
     .sort((left, right) => left.displayName.localeCompare(right.displayName));
 

@@ -369,6 +369,8 @@ export const messengerApi = {
       members: BackendProfile[];
       users?: BackendTaskmanagerMentionUser[];
       departments?: BackendTaskmanagerMentionDepartment[];
+      isTaskThread?: boolean;
+      taskThreadMemberUserIds?: string[];
     }>("list_taskmanager_org_members", { conversationId });
   },
   createTaskThreadSubtask(input: {

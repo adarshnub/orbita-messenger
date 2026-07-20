@@ -3842,10 +3842,18 @@ async function handleAction(user, action, payload, req) {
   if (action === "list_taskmanager_org_members") {
     const conversationId = requiredString(payload, "conversationId");
     await getConversation(user.id, conversationId);
+    const { data: taskThread, error: taskThreadError } = await supabase
+      .from("taskmanager_task_threads")
+      .select("taskmanager_org_id, taskmanager_task_id")
+      .eq("conversation_id", conversationId)
+      .maybeSingle();
+    if (taskThreadError) throw taskThreadError;
+
     const taskThreadContext = await loadTaskThreadForwardingContext(conversationId, user.id);
-    let taskmanagerOrgId = taskThreadContext && !taskThreadContext.skip ? taskThreadContext.taskmanagerOrgId : "";
+    let taskmanagerOrgId = taskThread?.taskmanager_org_id
+      ?? (taskThreadContext && !taskThreadContext.skip ? taskThreadContext.taskmanagerOrgId : "");
     let requesterTaskmanagerUserId = taskThreadContext && !taskThreadContext.skip ? taskThreadContext.taskmanagerUserId : "";
-    if (!taskmanagerOrgId) {
+    if (!taskmanagerOrgId || !requesterTaskmanagerUserId) {
       const { data: directLink, error: directLinkError } = await supabase
         .from("taskmanager_agent_links")
         .select("taskmanager_org_id, taskmanager_user_id")
@@ -3854,20 +3862,22 @@ async function handleAction(user, action, payload, req) {
         .eq("enabled", true)
         .maybeSingle();
       if (directLinkError) throw directLinkError;
-      taskmanagerOrgId = directLink?.taskmanager_org_id ?? "";
-      requesterTaskmanagerUserId = directLink?.taskmanager_user_id ?? "";
+      taskmanagerOrgId = taskmanagerOrgId || directLink?.taskmanager_org_id || "";
+      requesterTaskmanagerUserId = requesterTaskmanagerUserId || directLink?.taskmanager_user_id || "";
     }
-    if (!taskmanagerOrgId) {
-      const { data: userLink, error: userLinkError } = await supabase
+    if (!taskmanagerOrgId || !requesterTaskmanagerUserId) {
+      let userLinkQuery = supabase
         .from("taskmanager_agent_links")
         .select("taskmanager_org_id, taskmanager_user_id")
         .eq("orbita_user_id", user.id)
-        .eq("enabled", true)
-        .limit(1)
-        .maybeSingle();
+        .eq("enabled", true);
+      if (taskmanagerOrgId) {
+        userLinkQuery = userLinkQuery.eq("taskmanager_org_id", taskmanagerOrgId);
+      }
+      const { data: userLink, error: userLinkError } = await userLinkQuery.limit(1).maybeSingle();
       if (userLinkError) throw userLinkError;
-      taskmanagerOrgId = userLink?.taskmanager_org_id ?? "";
-      requesterTaskmanagerUserId = userLink?.taskmanager_user_id ?? "";
+      taskmanagerOrgId = taskmanagerOrgId || userLink?.taskmanager_org_id || "";
+      requesterTaskmanagerUserId = requesterTaskmanagerUserId || userLink?.taskmanager_user_id || "";
     }
     if (!taskmanagerOrgId) {
       throw new Error("This account is not linked to a Task Manager organization.");
@@ -3930,6 +3940,20 @@ async function handleAction(user, action, payload, req) {
           phone: profile.phone,
           departmentIds: [],
         })).filter((catalogUser) => catalogUser.taskmanagerUserId);
+
+    let taskThreadMemberUserIds = [];
+    if (taskThread?.taskmanager_org_id && taskThread?.taskmanager_task_id) {
+      const { data: taskThreadMembers, error: taskThreadMembersError } = await supabase
+        .from("taskmanager_task_thread_members")
+        .select("taskmanager_user_id")
+        .eq("taskmanager_org_id", taskThread.taskmanager_org_id)
+        .eq("taskmanager_task_id", taskThread.taskmanager_task_id);
+      if (taskThreadMembersError) throw taskThreadMembersError;
+      taskThreadMemberUserIds = [...new Set(
+        (taskThreadMembers ?? []).map((member) => member.taskmanager_user_id).filter(Boolean),
+      )];
+    }
+
     return {
       members: mappedProfiles,
       users: mentionUsers.sort((a, b) => a.displayName.localeCompare(b.displayName)),
@@ -3940,6 +3964,8 @@ async function handleAction(user, action, payload, req) {
           ? department.memberUserIds.filter((id) => typeof id === "string")
           : [],
       })).filter((department) => department.departmentId),
+      isTaskThread: Boolean(taskThread),
+      taskThreadMemberUserIds,
     };
   }
 
